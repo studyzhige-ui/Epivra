@@ -9,6 +9,8 @@ build/
 dist/
 *.egg-info/
 .env
+.env.*
+!.env.example
+.deep-research-agent/
 artifacts/
 runs/
-
