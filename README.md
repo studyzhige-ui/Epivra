@@ -11,7 +11,7 @@
 两份权威设计文档是：
 
 - [架构决策](docs/ARCHITECTURE.md)：保存当前有效的职责、研究循环、上下文、检索、停止、引用和交互设计；
-- [Prompt 规范](docs/PROMPTS.md)：保存五个角色已经确认的完整 Prompt，以及唯一正在讨论的草案，并明确标注状态。
+- [Prompt 规范](docs/PROMPTS.md)：保存三份已确认 Prompt、当前待确认的 Writer 草案和尚待讨论的 Editor 位置，并明确标注状态。
 
 被新决策替代的描述会从当前文档中删除；设计演变由 Git 历史保存。`PROJECT_CHARTER.md` 只说明稳定的项目使命和开发边界，不重复另一套架构。
 
