@@ -18,20 +18,24 @@ from typing import Any, Literal, TypedDict
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, START, StateGraph
 
+from .content_store import ContentStore
 from .guides import GuideCatalog, GuideFormatError, parse_guide_ref
 from .llm_roles import PlannerExecutor
 from .model import (
     DEFAULT_MAX_PAYLOAD_CHARS,
     ChatModel,
+    DurableBodyPage,
     MessageCapacityError,
     ModelProtocolError,
     ModelToolCall,
     ToolSpec,
-    compact_tool_loop_messages,
+    durable_tool_observation,
+    prepare_durable_tool_loop_messages,
     serialized_model_request_chars,
 )
 from .prompts import PLANNER_PROMPT
 from .roles import PlanOutput, PlannerContext
+from .state import BodyRef
 from .tools import SearchRequest, SearchRouting, SourceReader, TransparentSearchBroker
 
 
@@ -168,7 +172,7 @@ class _PresearchCandidate:
     candidate_id: str
     title: str
     url: str
-    content: str
+    body_ref: BodyRef | None
     origin: Literal["search", "reader"]
     provider_ids: tuple[str, ...] = ()
     content_provider_ids: tuple[str, ...] = ()
@@ -245,16 +249,28 @@ def _bounded_strings(values: Sequence[str]) -> list[str]:
     return [_clip(str(value), 256) for value in values[:16]]
 
 
-def _page(text: str, *, offset: int, limit: int) -> dict[str, Any]:
-    if offset > len(text):
+async def _body_page(
+    content_store: ContentStore,
+    body_ref: BodyRef | None,
+    *,
+    offset: int,
+    limit: int,
+) -> dict[str, Any]:
+    total_chars = body_ref.char_count if body_ref is not None else 0
+    if offset > total_chars:
         raise PlannerToolArgumentError("offset is beyond the available source text")
-    end = min(len(text), offset + limit)
+    end = min(total_chars, offset + limit)
+    content = (
+        await content_store.page(body_ref, offset=offset, limit=limit)
+        if body_ref is not None
+        else ""
+    )
     return {
-        "content": text[offset:end],
+        "content": content,
         "offset": offset,
-        "next_offset": end if end < len(text) else None,
-        "total_chars": len(text),
-        "content_truncated": end < len(text),
+        "next_offset": end if end < total_chars else None,
+        "total_chars": total_chars,
+        "content_truncated": end < total_chars,
     }
 
 
@@ -262,14 +278,14 @@ def _candidate(
     *,
     title: str,
     url: str,
-    content: str,
+    body_ref: BodyRef | None,
     origin: Literal["search", "reader"],
     provider_ids: Sequence[str] = (),
     content_provider_ids: Sequence[str] = (),
     snippet: str = "",
 ) -> _PresearchCandidate:
-    if not isinstance(content, str):
-        raise PlannerToolArgumentError("candidate content must be text")
+    if body_ref is not None and not isinstance(body_ref, BodyRef):
+        raise PlannerToolArgumentError("candidate body_ref must be a BodyRef")
     normalized_title = _text(title or url, "candidate title")
     normalized_url = _text(url, "candidate url")
     normalized_providers = tuple(str(value) for value in provider_ids)
@@ -283,7 +299,7 @@ def _candidate(
         {
             "title": normalized_title,
             "url": normalized_url,
-            "content": content,
+            "body_ref": asdict(body_ref) if body_ref is not None else None,
             "origin": origin,
             "provider_ids": normalized_providers,
             "content_provider_ids": normalized_content_providers,
@@ -297,7 +313,7 @@ def _candidate(
         candidate_id="pre_" + hashlib.sha256(identity.encode()).hexdigest()[:20],
         title=normalized_title,
         url=normalized_url,
-        content=content,
+        body_ref=body_ref,
         origin=origin,
         provider_ids=normalized_providers,
         content_provider_ids=normalized_content_providers,
@@ -310,7 +326,9 @@ def _candidate_value(candidate: _PresearchCandidate) -> dict[str, Any]:
         "candidate_id": candidate.candidate_id,
         "title": candidate.title,
         "url": candidate.url,
-        "content": candidate.content,
+        "body_ref": (
+            asdict(candidate.body_ref) if candidate.body_ref is not None else None
+        ),
         "origin": candidate.origin,
         "provider_ids": list(candidate.provider_ids),
         "content_provider_ids": list(candidate.content_provider_ids),
@@ -318,14 +336,97 @@ def _candidate_value(candidate: _PresearchCandidate) -> dict[str, Any]:
     }
 
 
+def _durable_observation_message(
+    call_id: str,
+    value: Mapping[str, Any],
+    *,
+    candidates: Mapping[str, _PresearchCandidate],
+) -> dict[str, Any]:
+    """Replace only ContentStore-backed body pages with durable references."""
+
+    pages: list[DurableBodyPage] = []
+    candidate_page = value.get("candidate")
+    if isinstance(candidate_page, Mapping):
+        candidate_id = candidate_page.get("candidate_id")
+        candidate = candidates.get(candidate_id) if isinstance(candidate_id, str) else None
+        if candidate is not None and candidate.body_ref is not None:
+            pages.append(
+                DurableBodyPage(
+                    ("candidate", "content"),
+                    candidate.body_ref,
+                    candidate_page.get("offset", 0),
+                )
+            )
+    results = value.get("results")
+    if isinstance(results, list):
+        for index, result in enumerate(results):
+            if not isinstance(result, Mapping):
+                continue
+            candidate_id = result.get("candidate_id")
+            candidate = (
+                candidates.get(candidate_id) if isinstance(candidate_id, str) else None
+            )
+            if candidate is not None and candidate.body_ref is not None:
+                pages.append(
+                    DurableBodyPage(
+                        ("results", index, "content"),
+                        candidate.body_ref,
+                        result.get("offset", 0),
+                    )
+                )
+    candidate_id = value.get("candidate_id")
+    candidate = candidates.get(candidate_id) if isinstance(candidate_id, str) else None
+    if (
+        candidate is not None
+        and candidate.body_ref is not None
+        and "content" in value
+    ):
+        pages.append(
+            DurableBodyPage(
+                ("content",), candidate.body_ref, value.get("offset", 0)
+            )
+        )
+    return durable_tool_observation(call_id, value, pages)
+
+
 def _candidate_from_value(value: Mapping[str, Any]) -> _PresearchCandidate:
+    expected_fields = {
+        "candidate_id",
+        "title",
+        "url",
+        "body_ref",
+        "origin",
+        "provider_ids",
+        "content_provider_ids",
+        "snippet",
+    }
+    if set(value) != expected_fields:
+        raise PlannerRuntimeError("checkpoint has invalid presearch candidate fields")
     origin = value.get("origin")
     if origin not in {"search", "reader"}:
         raise PlannerRuntimeError("checkpoint has an invalid presearch candidate")
+    raw_ref = value.get("body_ref")
+    if raw_ref is None:
+        body_ref = None
+    elif isinstance(raw_ref, Mapping) and set(raw_ref) == {
+        "content_hash",
+        "char_count",
+    }:
+        try:
+            body_ref = BodyRef(
+                content_hash=str(raw_ref["content_hash"]),
+                char_count=raw_ref["char_count"],
+            )
+        except (TypeError, ValueError) as exc:
+            raise PlannerRuntimeError(
+                "checkpoint has an invalid presearch body_ref"
+            ) from exc
+    else:
+        raise PlannerRuntimeError("checkpoint has an invalid presearch body_ref")
     restored = _candidate(
         title=_text(value.get("title"), "candidate title"),
         url=_text(value.get("url"), "candidate url"),
-        content=str(value.get("content", "")),
+        body_ref=body_ref,
         origin=origin,
         provider_ids=tuple(value.get("provider_ids", ())),
         content_provider_ids=tuple(value.get("content_provider_ids", ())),
@@ -334,6 +435,15 @@ def _candidate_from_value(value: Mapping[str, Any]) -> _PresearchCandidate:
     if restored.candidate_id != value.get("candidate_id"):
         raise PlannerRuntimeError("checkpoint presearch candidate identity changed")
     return restored
+
+
+async def _restore_candidate(
+    value: Mapping[str, Any], content_store: ContentStore
+) -> _PresearchCandidate:
+    candidate = _candidate_from_value(value)
+    if candidate.body_ref is not None:
+        await content_store.get(candidate.body_ref)
+    return candidate
 
 
 def planner_subgraph_input(context: PlannerContext) -> PlannerSubgraphState:
@@ -355,6 +465,7 @@ class AgenticPlanner:
         reader: SourceReader,
         *,
         guide_catalog: GuideCatalog | None = None,
+        content_store: ContentStore | None = None,
         runtime_turn_limit: int | None = None,
         max_payload_chars: int = DEFAULT_MAX_PAYLOAD_CHARS,
     ) -> None:
@@ -370,6 +481,7 @@ class AgenticPlanner:
         self._broker = broker
         self._reader = reader
         self._guide_catalog = guide_catalog if guide_catalog is not None else GuideCatalog()
+        self._content_store = content_store
         self._runtime_turn_limit = runtime_turn_limit
         self._max_payload_chars = max_payload_chars
         self._page_chars = max(256, min(8_000, max_payload_chars // 6))
@@ -389,12 +501,15 @@ class AgenticPlanner:
     def max_payload_chars(self) -> int:
         return self._max_payload_chars
 
-    def _bounded_messages(
-        self, messages: Sequence[Mapping[str, Any]]
-    ) -> list[dict[str, Any]]:
+    async def _prepare_messages(
+        self,
+        messages: Sequence[Mapping[str, Any]],
+        content_store: ContentStore,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         try:
-            return compact_tool_loop_messages(
+            return await prepare_durable_tool_loop_messages(
                 messages,
+                content_store,
                 max_payload_chars=self._max_payload_chars,
                 inspect_hint=(
                     "inspect_presearch_trace or inspect_presearch_candidate"
@@ -406,7 +521,15 @@ class AgenticPlanner:
             raise PlannerRuntimeError(str(exc)) from exc
 
     async def __call__(self, context: PlannerContext) -> PlanOutput:
-        return await self.run_with_subgraph(context, self.as_subgraph(), None)
+        if self._content_store is None:
+            raise PlannerRuntimeError(
+                "Planner requires an explicit ContentStore for presearch"
+            )
+        return await self.run_with_subgraph(
+            context,
+            self.as_subgraph(content_store=self._content_store),
+            None,
+        )
 
     async def run_with_subgraph(
         self,
@@ -439,7 +562,9 @@ class AgenticPlanner:
                 )
         return result
 
-    def as_subgraph(self, *, checkpointer: Any = None) -> Any:
+    def as_subgraph(
+        self, *, content_store: ContentStore, checkpointer: Any = None
+    ) -> Any:
         async def initialize(state: PlannerSubgraphState) -> PlannerSubgraphState:
             if state.get("messages"):
                 return {}
@@ -482,9 +607,11 @@ class AgenticPlanner:
                     "Planner runtime safety limit reached; presearch was not "
                     "treated as complete."
                 )
-            messages = self._bounded_messages(state.get("messages", ()))
+            messages, model_messages = await self._prepare_messages(
+                state.get("messages", ()), content_store
+            )
             reply = await self._model.complete(
-                messages,
+                model_messages,
                 tools=PLANNER_TOOL_SPECS,
                 tool_choice="auto",
             )
@@ -498,7 +625,9 @@ class AgenticPlanner:
                         ),
                     }
                 )
-                messages = self._bounded_messages(messages)
+                messages, _model_messages = await self._prepare_messages(
+                    messages, content_store
+                )
             return {
                 "messages": messages,
                 "pending_calls": [
@@ -527,19 +656,26 @@ class AgenticPlanner:
                 messages.extend(
                     _safe_tool_error(call.call_id, error) for call in calls
                 )
+                messages, _model_messages = await self._prepare_messages(
+                    messages, content_store
+                )
                 return {
-                    "messages": self._bounded_messages(messages),
+                    "messages": messages,
                     "pending_calls": [],
                 }
 
             note = ""
             inspected_guides = dict(state.get("inspected_guides", {}))
-            candidates = {
-                candidate_id: _candidate_from_value(value)
-                for candidate_id, value in state.get(
-                    "presearch_candidates", {}
-                ).items()
-            }
+            candidates: dict[str, _PresearchCandidate] = {}
+            for candidate_id, value in state.get(
+                "presearch_candidates", {}
+            ).items():
+                candidate = await _restore_candidate(value, content_store)
+                if candidate.candidate_id != candidate_id:
+                    raise PlannerRuntimeError(
+                        "checkpoint presearch candidate key changed"
+                    )
+                candidates[candidate_id] = candidate
             trace = list(state.get("presearch_trace", ()))
             for call in calls:
                 if call.name not in _ALLOWED_TOOLS:
@@ -554,7 +690,10 @@ class AgenticPlanner:
                     continue
                 try:
                     result = await self._execute(
-                        call, candidates=candidates, trace=trace
+                        call,
+                        candidates=candidates,
+                        trace=trace,
+                        content_store=content_store,
                     )
                 except Exception as error:  # redacted observation, not completion
                     messages.append(_safe_tool_error(call.call_id, error))
@@ -569,9 +708,18 @@ class AgenticPlanner:
                         inspected_guides[str(result["ref"])] = str(
                             result["planner_projection"]
                         )
-                    messages.append(_tool_message(call.call_id, {"ok": True, **result}))
+                    messages.append(
+                        _durable_observation_message(
+                            call.call_id,
+                            result,
+                            candidates=candidates,
+                        )
+                    )
+            messages, _model_messages = await self._prepare_messages(
+                messages, content_store
+            )
             update: PlannerSubgraphState = {
-                "messages": self._bounded_messages(messages),
+                "messages": messages,
                 "pending_calls": [],
                 "inspected_guides": inspected_guides,
                 "presearch_candidates": {
@@ -606,6 +754,7 @@ class AgenticPlanner:
         *,
         candidates: dict[str, _PresearchCandidate],
         trace: list[dict[str, Any]],
+        content_store: ContentStore,
     ) -> Mapping[str, Any] | str:
         if call.name == "inspect_guide":
             args = _arguments(call, required=frozenset({"ref"}))
@@ -659,8 +808,9 @@ class AgenticPlanner:
                         candidate.content_provider_ids
                     ),
                     "snippet": _clip(candidate.snippet, 1_024),
-                    **_page(
-                        candidate.content,
+                    **await _body_page(
+                        content_store,
+                        candidate.body_ref,
                         offset=_offset(args.get("offset", 0)),
                         limit=self._page_chars,
                     ),
@@ -699,10 +849,13 @@ class AgenticPlanner:
                 ),
             )
             for item in response.results:
+                body_ref = (
+                    await content_store.put(item.content) if item.content else None
+                )
                 candidate = _candidate(
                     title=item.title,
                     url=item.url,
-                    content=item.content,
+                    body_ref=body_ref,
                     origin="search",
                     provider_ids=item.provider_ids,
                     content_provider_ids=item.content_provider_ids,
@@ -710,7 +863,12 @@ class AgenticPlanner:
                 )
                 candidates[candidate.candidate_id] = candidate
                 candidate_ids.append(candidate.candidate_id)
-                page = _page(candidate.content, offset=0, limit=preview_chars)
+                page = await _body_page(
+                    content_store,
+                    candidate.body_ref,
+                    offset=0,
+                    limit=preview_chars,
+                )
                 results.append(
                     {
                         "candidate_id": candidate.candidate_id,
@@ -756,10 +914,11 @@ class AgenticPlanner:
             )
             result = await self._reader.read(_text(args["url"], "url"))
             offset = _offset(args.get("offset", 0))
+            body_ref = await content_store.put(result.content)
             candidate = _candidate(
                 title=result.title,
                 url=result.url,
-                content=result.content,
+                body_ref=body_ref,
                 origin="reader",
             )
             candidates[candidate.candidate_id] = candidate
@@ -770,8 +929,11 @@ class AgenticPlanner:
                     "candidate_id": candidate.candidate_id,
                 }
             )
-            page = _page(
-                candidate.content, offset=offset, limit=self._page_chars
+            page = await _body_page(
+                content_store,
+                candidate.body_ref,
+                offset=offset,
+                limit=self._page_chars,
             )
             return {
                 "candidate_id": candidate.candidate_id,

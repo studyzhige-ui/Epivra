@@ -25,10 +25,29 @@ from deep_research_agent.roles import (
     WriterContext,
 )
 from deep_research_agent.state import (
+    BodyRef,
     BranchHandoff,
+    HydratedSource,
     ResearchContract,
     SourceDocument,
 )
+
+
+def hydrated_source(*, title: str, url: str, content: str) -> HydratedSource:
+    source = SourceDocument.create(
+        title=title,
+        url=url,
+        body_ref=BodyRef.from_content(content),
+    )
+    return HydratedSource(
+        source_id=source.source_id,
+        title=source.title,
+        url=source.url,
+        content=content,
+        content_hash=source.content_hash,
+        fetched_at=source.fetched_at,
+        metadata=dict(source.metadata),
+    )
 
 
 class ScriptedModel:
@@ -59,7 +78,7 @@ class ScriptedModel:
 
 class ToollessLlmRolesTest(unittest.IsolatedAsyncioTestCase):
     async def test_seven_roles_have_narrow_toolless_protocols(self) -> None:
-        source = SourceDocument.create(
+        source = hydrated_source(
             title="Primary source",
             url="https://example.org/report",
             content="Opening. Exact primary evidence. Closing.",
@@ -206,7 +225,7 @@ class ToollessLlmRolesTest(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ModelProtocolError):
             await PlannerExecutor(extra)(PlannerContext(question="问题"))
 
-        source = SourceDocument.create(
+        source = hydrated_source(
             title="Source",
             url="https://example.org/source",
             content="Saved exact source text.",

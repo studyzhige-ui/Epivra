@@ -3,21 +3,33 @@ from __future__ import annotations
 import json
 import unittest
 from collections.abc import Mapping, Sequence
+from dataclasses import asdict, is_dataclass
 from typing import Any
 
+import deep_research_agent.researcher as researcher_runtime
+from deep_research_agent.checkpoint import memory_checkpointer
+from deep_research_agent.content_store import ContentIntegrityError, InMemoryContentStore
 from deep_research_agent.model import (
+    DurableBodyPage,
     MessageCapacityError,
     ModelReply,
     ModelToolCall,
     ToolSpec,
     compact_tool_loop_messages,
+    durable_tool_observation,
+    prepare_durable_tool_loop_messages,
     serialized_model_request_chars,
     serialized_messages_chars,
 )
 from deep_research_agent.planner import AgenticPlanner, PlannerRuntimeError
-from deep_research_agent.researcher import ControlledResearcher
+from deep_research_agent.researcher import (
+    ControlledResearcher,
+    researcher_output_from_subgraph,
+    researcher_subgraph_input,
+)
 from deep_research_agent.roles import PlannerContext, ResearcherContext
 from deep_research_agent.state import (
+    BodyRef,
     JournalEntry,
     ResearchContract,
     ResearchTask,
@@ -453,6 +465,40 @@ def researcher_context(
 
 
 class ToolLoopCapacityTest(unittest.IsolatedAsyncioTestCase):
+    async def test_missing_durable_body_page_fails_before_model_render(self) -> None:
+        body = "body that is deliberately absent"
+        ref = BodyRef.from_content(body)
+        durable = durable_tool_observation(
+            "inspect",
+            {"candidate": {"content": body, "offset": 0}},
+            (DurableBodyPage(("candidate", "content"), ref, 0),),
+        )
+
+        with self.assertRaisesRegex(ContentIntegrityError, "is missing"):
+            await prepare_durable_tool_loop_messages(
+                [
+                    {"role": "system", "content": "system"},
+                    {"role": "user", "content": "task"},
+                    {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [
+                            {
+                                "id": "inspect",
+                                "type": "function",
+                                "function": {
+                                    "name": "inspect_candidate",
+                                    "arguments": "{}",
+                                },
+                            }
+                        ],
+                    },
+                    durable,
+                ],
+                InMemoryContentStore(),
+                inspect_hint="inspect_candidate",
+            )
+
     def test_compaction_drops_only_old_complete_interactions(self) -> None:
         messages = [
             {"role": "system", "content": "system"},
@@ -512,6 +558,7 @@ class ToolLoopCapacityTest(unittest.IsolatedAsyncioTestCase):
             model,
             TransparentSearchBroker([HugeSearchProvider()]),
             HugeReader("reader" * 20_000),
+            content_store=InMemoryContentStore(),
             max_payload_chars=limit,
         )
 
@@ -548,6 +595,7 @@ class ToolLoopCapacityTest(unittest.IsolatedAsyncioTestCase):
             model,
             TransparentSearchBroker([provider]),
             HugeReader("unused"),
+            content_store=InMemoryContentStore(),
             max_payload_chars=limit,
         )(PlannerContext(question="Plan with current facts."))
 
@@ -566,20 +614,76 @@ class ToolLoopCapacityTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_researcher_pages_huge_candidate_but_saves_full_content(self) -> None:
         limit = 12_000
-        content = "0123456789" * 500_000
+        sentinel = "FULL_BODY_ONLY_SENTINEL"
+        content = "0123456789" * 5_000 + sentinel
         model = CandidatePagingModel(limit)
+        content_store = InMemoryContentStore()
         researcher = ControlledResearcher(
             model,
             TransparentSearchBroker([]),
             HugeReader(content),
+            content_store=content_store,
             max_payload_chars=limit,
         )
 
-        output = await researcher(researcher_context())
+        graph = researcher.as_subgraph(
+            content_store=content_store,
+            checkpointer=memory_checkpointer(),
+        )
+        state = await graph.ainvoke(
+            researcher_subgraph_input(researcher_context()),
+            {"configurable": {"thread_id": "content-ref-capacity"}},
+        )
+        output = researcher_output_from_subgraph(state)
 
         source = next(iter(output.sources.values()))
-        self.assertEqual(len(content), len(source.content))
-        self.assertEqual(content, source.content)
+        stored_content = await content_store.get(source.body_ref)
+        self.assertEqual(len(content), len(stored_content))
+        self.assertEqual(content, stored_content)
+        serialized_state = json.dumps(
+            state,
+            ensure_ascii=False,
+            default=lambda value: (
+                asdict(value)
+                if is_dataclass(value)
+                else (_ for _ in ()).throw(TypeError(type(value).__name__))
+            ),
+        )
+        self.assertNotIn(sentinel, serialized_state)
+        checkpoint_candidate = next(iter(state["candidates"].values()))
+        self.assertNotIn("content", checkpoint_candidate)
+
+        candidate = researcher_runtime._candidate_from_value(
+            checkpoint_candidate
+        )
+        chunks: list[str] = []
+        offset = 0
+        while True:
+            result = await researcher._execute(
+                ModelToolCall(
+                    "page",
+                    "inspect_candidate",
+                    json.dumps(
+                        {
+                            "candidate_id": candidate.candidate_id,
+                            "offset": offset,
+                        }
+                    ),
+                ),
+                context=researcher_context(),
+                candidates={candidate.candidate_id: candidate},
+                saved=dict(output.sources),
+                journal=[],
+                search_trace=[],
+                content_store=content_store,
+            )
+            page = result["candidate"]
+            chunks.append(page["content"])
+            if page["next_offset"] is None:
+                break
+            offset = page["next_offset"]
+        self.assertGreater(len(chunks), 1)
+        self.assertEqual(content, "".join(chunks))
         self.assertTrue(
             any(
                 "Earlier complete tool interactions were omitted"
@@ -596,24 +700,27 @@ class ToolLoopCapacityTest(unittest.IsolatedAsyncioTestCase):
         limit = 14_000
         provider = RecallProvider()
         model = StatelessResearcherRecallModel(limit, provider)
+        content_store = InMemoryContentStore()
 
         output = await ControlledResearcher(
             model,
             TransparentSearchBroker([provider]),
             HugeReader("unused"),
+            content_store=content_store,
             max_payload_chars=limit,
         )(researcher_context())
 
         source = next(iter(output.sources.values()))
-        self.assertIn("EARLY_SENTINEL", source.content)
+        self.assertIn("EARLY_SENTINEL", await content_store.get(source.body_ref))
         self.assertTrue(model.search_was_compacted)
 
     async def test_source_history_and_trace_inspection_are_bounded(self) -> None:
         limit = 12_000
+        content_store = InMemoryContentStore()
         source = SourceDocument.create(
             title="Existing source",
             url="https://example.test/existing",
-            content="source" * 20_000,
+            body_ref=await content_store.put("source" * 20_000),
         )
         journal = tuple(
             JournalEntry(
@@ -632,6 +739,7 @@ class ToolLoopCapacityTest(unittest.IsolatedAsyncioTestCase):
             model,
             TransparentSearchBroker([]),
             HugeReader("unused"),
+            content_store=content_store,
             max_payload_chars=limit,
         )(
             researcher_context(
@@ -674,6 +782,7 @@ class ToolLoopCapacityTest(unittest.IsolatedAsyncioTestCase):
             model,
             TransparentSearchBroker([]),
             HugeReader("short source"),
+            content_store=InMemoryContentStore(),
         )(researcher_context())
 
         self.assertFalse(model.error["ok"])
@@ -685,6 +794,7 @@ class ToolLoopCapacityTest(unittest.IsolatedAsyncioTestCase):
             model,
             TransparentSearchBroker([]),
             HugeReader("unused"),
+            content_store=InMemoryContentStore(),
             max_payload_chars=1_000,
         )
 
@@ -705,6 +815,7 @@ class ToolLoopCapacityTest(unittest.IsolatedAsyncioTestCase):
             model,
             TransparentSearchBroker([]),
             HugeReader("unused"),
+            content_store=InMemoryContentStore(),
             max_payload_chars=4_000,
         )
 

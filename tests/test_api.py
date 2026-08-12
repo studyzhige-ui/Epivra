@@ -21,7 +21,9 @@ from tests.test_workflow import OfflineRoles
 class ResearchAgentApiTest(unittest.IsolatedAsyncioTestCase):
     async def test_start_status_and_approval_use_one_thread(self) -> None:
         roles = OfflineRoles()
-        agent = create_memory_agent(roles.executors())
+        agent = create_memory_agent(
+            roles.executors(), content_store=roles.content_store
+        )
 
         started = await agent.start("测试问题", task_id="api-thread")
         inspected = await agent.status("api-thread")
@@ -35,7 +37,9 @@ class ResearchAgentApiTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_revision_regenerates_a_complete_approval_card(self) -> None:
         roles = OfflineRoles()
-        agent = create_memory_agent(roles.executors())
+        agent = create_memory_agent(
+            roles.executors(), content_store=roles.content_store
+        )
         await agent.start("测试问题", task_id="revision")
 
         revised = await agent.resume(
@@ -48,7 +52,9 @@ class ResearchAgentApiTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_start_refuses_to_reuse_an_existing_thread(self) -> None:
         roles = OfflineRoles()
-        agent = create_memory_agent(roles.executors())
+        agent = create_memory_agent(
+            roles.executors(), content_store=roles.content_store
+        )
         await agent.start("first question", task_id="same-thread")
 
         with self.assertRaises(TaskAlreadyExistsError):
@@ -67,7 +73,9 @@ class ResearchAgentApiTest(unittest.IsolatedAsyncioTestCase):
                 return await super().planner(context)
 
         roles = BlockingRoles()
-        agent = create_memory_agent(roles.executors())
+        agent = create_memory_agent(
+            roles.executors(), content_store=roles.content_store
+        )
         first = asyncio.create_task(agent.start("first", task_id="one-writer"))
         await roles.entered.wait()
         second = asyncio.create_task(
@@ -84,7 +92,9 @@ class ResearchAgentApiTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_concurrent_resume_consumes_one_interrupt_only_once(self) -> None:
         roles = OfflineRoles()
-        agent = create_memory_agent(roles.executors())
+        agent = create_memory_agent(
+            roles.executors(), content_store=roles.content_store
+        )
         await agent.start("测试问题", task_id="one-approval")
 
         first, second = await asyncio.gather(
@@ -120,7 +130,10 @@ class ResearchAgentApiTest(unittest.IsolatedAsyncioTestCase):
                         self.fail("a second writer must never open")
 
     async def test_unknown_task_is_consistent_for_status_and_resume(self) -> None:
-        agent = create_memory_agent(OfflineRoles().executors())
+        roles = OfflineRoles()
+        agent = create_memory_agent(
+            roles.executors(), content_store=roles.content_store
+        )
 
         with self.assertRaises(KeyError):
             await agent.status("missing")
@@ -174,7 +187,9 @@ class ResearchAgentApiTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_continue_rejects_an_actual_interrupt(self) -> None:
         roles = OfflineRoles()
-        agent = create_memory_agent(roles.executors())
+        agent = create_memory_agent(
+            roles.executors(), content_store=roles.content_store
+        )
         await agent.start("测试问题", task_id="needs-human")
 
         with self.assertRaisesRegex(ValueError, "use resume"):
@@ -267,7 +282,9 @@ class ResearchAgentApiTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_fundamental_clarification_precedes_plan_approval(self) -> None:
         roles = OfflineRoles(clarify_first=True)
-        agent = create_memory_agent(roles.executors())
+        agent = create_memory_agent(
+            roles.executors(), content_store=roles.content_store
+        )
 
         question = await agent.start("ambiguous", task_id="clarification")
         plan = await agent.resume(

@@ -17,18 +17,22 @@ from typing import Any, Literal, TypedDict
 
 from langgraph.graph import END, START, StateGraph
 
+from .content_store import ContentStore, hydrate_source
 from .model import (
     DEFAULT_MAX_PAYLOAD_CHARS,
     ChatModel,
+    DurableBodyPage,
     MessageCapacityError,
     ModelProtocolError,
     ModelToolCall,
     ToolSpec,
-    compact_tool_loop_messages,
+    durable_tool_observation,
+    prepare_durable_tool_loop_messages,
 )
 from .prompts import RESEARCHER_PROMPT
 from .roles import ResearcherContext, ResearcherOutput
 from .state import (
+    BodyRef,
     BranchHandoff,
     JournalEntry,
     ResearchContract,
@@ -60,7 +64,7 @@ class _Candidate:
     candidate_id: str
     title: str
     url: str
-    content: str
+    body_ref: BodyRef | None
     origin: Literal["search", "reader"]
     provider_ids: tuple[str, ...] = ()
     content_provider_ids: tuple[str, ...] = ()
@@ -257,6 +261,31 @@ def _text_page(text: str, *, offset: int, limit: int) -> dict[str, Any]:
     }
 
 
+async def _body_page(
+    content_store: ContentStore,
+    body_ref: BodyRef | None,
+    *,
+    offset: int,
+    limit: int,
+) -> dict[str, Any]:
+    total_chars = body_ref.char_count if body_ref is not None else 0
+    if offset > total_chars:
+        raise ToolArgumentError("offset is beyond the available text")
+    end = min(total_chars, offset + limit)
+    content = (
+        await content_store.page(body_ref, offset=offset, limit=limit)
+        if body_ref is not None
+        else ""
+    )
+    return {
+        "content": content,
+        "offset": offset,
+        "next_offset": end if end < total_chars else None,
+        "total_chars": total_chars,
+        "content_truncated": end < total_chars,
+    }
+
+
 def _model_text_page(text: str, *, offset: int, limit: int) -> dict[str, Any]:
     """Page text by its JSON-encoded size, while offsets remain exact text offsets."""
 
@@ -308,7 +337,7 @@ def _candidate(
     *,
     title: str,
     url: str,
-    content: str,
+    body_ref: BodyRef | None,
     origin: Literal["search", "reader"],
     provider_ids: Sequence[str] = (),
     content_provider_ids: Sequence[str] = (),
@@ -317,8 +346,8 @@ def _candidate(
     normalized_url = _text(url, "candidate url")
     normalized_title = title.strip() if isinstance(title, str) else ""
     normalized_title = normalized_title or normalized_url
-    if not isinstance(content, str):
-        raise ToolArgumentError("candidate content must be text")
+    if body_ref is not None and not isinstance(body_ref, BodyRef):
+        raise ToolArgumentError("candidate body_ref must be a BodyRef")
     normalized_providers = tuple(
         _text(provider_id, "candidate provider_id") for provider_id in provider_ids
     )
@@ -328,11 +357,12 @@ def _candidate(
     )
     if not isinstance(snippet, str):
         raise ToolArgumentError("candidate snippet must be text")
+    normalized_snippet = _clip(snippet, 4_096)
     payload = json.dumps(
         {
             "title": normalized_title,
             "url": normalized_url,
-            "content": content,
+            "body_ref": asdict(body_ref) if body_ref is not None else None,
             "origin": origin,
             "provider_ids": list(normalized_providers),
             "content_provider_ids": list(normalized_content_providers),
@@ -346,12 +376,78 @@ def _candidate(
         candidate_id=candidate_id,
         title=normalized_title,
         url=normalized_url,
-        content=content,
+        body_ref=body_ref,
         origin=origin,
         provider_ids=normalized_providers,
         content_provider_ids=normalized_content_providers,
-        snippet=snippet,
+        snippet=normalized_snippet,
     )
+
+
+def _durable_observation_message(
+    call_id: str,
+    value: Mapping[str, Any],
+    *,
+    candidates: Mapping[str, _Candidate],
+    sources: Mapping[str, SourceDocument],
+) -> dict[str, Any]:
+    """Replace only immutable source-body pages with checkpoint-safe refs."""
+
+    pages: list[DurableBodyPage] = []
+    source_page = value.get("source")
+    if isinstance(source_page, Mapping):
+        source_id = source_page.get("source_id")
+        source = sources.get(source_id) if isinstance(source_id, str) else None
+        if source is not None:
+            pages.append(
+                DurableBodyPage(
+                    ("source", "content"),
+                    source.body_ref,
+                    source_page.get("offset", 0),
+                )
+            )
+    candidate_page = value.get("candidate")
+    if isinstance(candidate_page, Mapping):
+        candidate_id = candidate_page.get("candidate_id")
+        candidate = candidates.get(candidate_id) if isinstance(candidate_id, str) else None
+        if candidate is not None and candidate.body_ref is not None:
+            pages.append(
+                DurableBodyPage(
+                    ("candidate", "content"),
+                    candidate.body_ref,
+                    candidate_page.get("offset", 0),
+                )
+            )
+    results = value.get("results")
+    if isinstance(results, list):
+        for index, result in enumerate(results):
+            if not isinstance(result, Mapping):
+                continue
+            candidate_id = result.get("candidate_id")
+            candidate = (
+                candidates.get(candidate_id) if isinstance(candidate_id, str) else None
+            )
+            if candidate is not None and candidate.body_ref is not None:
+                pages.append(
+                    DurableBodyPage(
+                        ("results", index, "content"),
+                        candidate.body_ref,
+                        result.get("offset", 0),
+                    )
+                )
+    candidate_id = value.get("candidate_id")
+    candidate = candidates.get(candidate_id) if isinstance(candidate_id, str) else None
+    if (
+        candidate is not None
+        and candidate.body_ref is not None
+        and "content" in value
+    ):
+        pages.append(
+            DurableBodyPage(
+                ("content",), candidate.body_ref, value.get("offset", 0)
+            )
+        )
+    return durable_tool_observation(call_id, value, pages)
 
 
 def _tool_message(call_id: str, value: Mapping[str, Any]) -> dict[str, Any]:
@@ -439,7 +535,9 @@ def _candidate_value(candidate: _Candidate) -> dict[str, Any]:
         "candidate_id": candidate.candidate_id,
         "title": candidate.title,
         "url": candidate.url,
-        "content": candidate.content,
+        "body_ref": (
+            asdict(candidate.body_ref) if candidate.body_ref is not None else None
+        ),
         "origin": candidate.origin,
         "provider_ids": list(candidate.provider_ids),
         "content_provider_ids": list(candidate.content_provider_ids),
@@ -448,14 +546,46 @@ def _candidate_value(candidate: _Candidate) -> dict[str, Any]:
 
 
 def _candidate_from_value(value: Mapping[str, Any]) -> _Candidate:
+    expected_fields = {
+        "candidate_id",
+        "title",
+        "url",
+        "body_ref",
+        "origin",
+        "provider_ids",
+        "content_provider_ids",
+        "snippet",
+    }
+    if set(value) != expected_fields:
+        raise ResearcherRuntimeError("checkpoint contains invalid candidate fields")
     origin = value["origin"]
     if origin not in {"search", "reader"}:
         raise ResearcherRuntimeError("checkpoint contains an invalid candidate origin")
+    raw_ref = value["body_ref"]
+    if raw_ref is None:
+        body_ref = None
+    elif isinstance(raw_ref, Mapping) and set(raw_ref) == {
+        "content_hash",
+        "char_count",
+    }:
+        try:
+            body_ref = BodyRef(
+                content_hash=str(raw_ref["content_hash"]),
+                char_count=raw_ref["char_count"],
+            )
+        except (TypeError, ValueError) as exc:
+            raise ResearcherRuntimeError(
+                "checkpoint contains an invalid candidate body_ref"
+            ) from exc
+    else:
+        raise ResearcherRuntimeError(
+            "checkpoint contains an invalid candidate body_ref"
+        )
     declared_id = _text(value["candidate_id"], "candidate_id")
     candidate = _candidate(
         title=_text(value["title"], "candidate title"),
         url=_text(value["url"], "candidate url"),
-        content=str(value["content"]),
+        body_ref=body_ref,
         origin=origin,
         provider_ids=tuple(value.get("provider_ids", ())),
         content_provider_ids=tuple(value.get("content_provider_ids", ())),
@@ -463,6 +593,15 @@ def _candidate_from_value(value: Mapping[str, Any]) -> _Candidate:
     )
     if candidate.candidate_id != declared_id:
         raise ResearcherRuntimeError("checkpoint candidate identity is inconsistent")
+    return candidate
+
+
+async def _restore_candidate(
+    value: Mapping[str, Any], content_store: ContentStore
+) -> _Candidate:
+    candidate = _candidate_from_value(value)
+    if candidate.body_ref is not None:
+        await content_store.get(candidate.body_ref)
     return candidate
 
 
@@ -475,6 +614,7 @@ class ControlledResearcher:
         broker: TransparentSearchBroker,
         reader: SourceReader,
         *,
+        content_store: ContentStore | None = None,
         runtime_turn_limit: int | None = None,
         max_payload_chars: int = DEFAULT_MAX_PAYLOAD_CHARS,
     ) -> None:
@@ -489,6 +629,7 @@ class ControlledResearcher:
         self._model = model
         self._broker = broker
         self._reader = reader
+        self._content_store = content_store
         self._runtime_turn_limit = runtime_turn_limit
         self._max_payload_chars = max_payload_chars
         self._page_chars = max(256, min(8_000, max_payload_chars // 6))
@@ -501,12 +642,15 @@ class ControlledResearcher:
     def max_payload_chars(self) -> int:
         return self._max_payload_chars
 
-    def _bounded_messages(
-        self, messages: Sequence[Mapping[str, Any]]
-    ) -> list[dict[str, Any]]:
+    async def _prepare_messages(
+        self,
+        messages: Sequence[Mapping[str, Any]],
+        content_store: ContentStore,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         try:
-            return compact_tool_loop_messages(
+            return await prepare_durable_tool_loop_messages(
                 messages,
+                content_store,
                 max_payload_chars=self._max_payload_chars,
                 inspect_hint=(
                     "inspect_candidates, inspect_candidate, inspect_source, "
@@ -519,7 +663,11 @@ class ControlledResearcher:
             raise ResearcherRuntimeError(str(exc)) from exc
 
     async def __call__(self, context: ResearcherContext) -> ResearcherOutput:
-        graph = self.as_subgraph()
+        if self._content_store is None:
+            raise ResearcherRuntimeError(
+                "Researcher requires an explicit ContentStore"
+            )
+        graph = self.as_subgraph(content_store=self._content_store)
         state = await graph.ainvoke(_subgraph_input(context))
         return ResearcherOutput(
             sources=dict(state.get("sources", {})),
@@ -527,7 +675,9 @@ class ControlledResearcher:
             handoff=state["handoff"],
         )
 
-    def as_subgraph(self, *, checkpointer: Any = None) -> Any:
+    def as_subgraph(
+        self, *, content_store: ContentStore, checkpointer: Any = None
+    ) -> Any:
         """Compile the private loop so a parent graph can mount it as a subgraph.
 
         Leave ``checkpointer`` unset when mounting into a checkpointed parent;
@@ -564,9 +714,11 @@ class ControlledResearcher:
                     "Researcher runtime safety limit reached without finish_turn; "
                     "research completion was not inferred."
                 )
-            messages = self._bounded_messages(state.get("messages", ()))
+            messages, model_messages = await self._prepare_messages(
+                state.get("messages", ()), content_store
+            )
             reply = await self._model.complete(
-                messages,
+                model_messages,
                 tools=RESEARCHER_TOOL_SPECS,
                 tool_choice="auto",
             )
@@ -581,7 +733,9 @@ class ControlledResearcher:
                         ),
                     }
                 )
-                messages = self._bounded_messages(messages)
+                messages, _model_messages = await self._prepare_messages(
+                    messages, content_store
+                )
             return {
                 "messages": messages,
                 "pending_calls": [
@@ -606,15 +760,22 @@ class ControlledResearcher:
                     "finish_turn must be the only call in its model turn"
                 )
                 messages.extend(_error_message(call.call_id, error) for call in calls)
+                messages, _model_messages = await self._prepare_messages(
+                    messages, content_store
+                )
                 return {
-                    "messages": self._bounded_messages(messages),
+                    "messages": messages,
                     "pending_calls": [],
                 }
 
-            candidates = {
-                candidate_id: _candidate_from_value(value)
-                for candidate_id, value in state.get("candidates", {}).items()
-            }
+            candidates: dict[str, _Candidate] = {}
+            for candidate_id, value in state.get("candidates", {}).items():
+                candidate = await _restore_candidate(value, content_store)
+                if candidate.candidate_id != candidate_id:
+                    raise ResearcherRuntimeError(
+                        "checkpoint candidate key is inconsistent"
+                    )
+                candidates[candidate_id] = candidate
             saved = dict(state.get("sources", {}))
             journal = list(state.get("journal", ()))
             search_trace = list(state.get("search_trace", ()))
@@ -637,6 +798,7 @@ class ControlledResearcher:
                         saved=saved,
                         journal=journal,
                         search_trace=search_trace,
+                        content_store=content_store,
                     )
                 except Exception as error:  # redacted tool observation
                     messages.append(_error_message(call.call_id, error))
@@ -647,11 +809,21 @@ class ControlledResearcher:
                         _tool_message(call.call_id, {"ok": True, "finished": True})
                     )
                 else:
+                    available_sources = dict(context.relevant_sources)
+                    available_sources.update(saved)
                     messages.append(
-                        _tool_message(call.call_id, {"ok": True, **result})
+                        _durable_observation_message(
+                            call.call_id,
+                            result,
+                            candidates=candidates,
+                            sources=available_sources,
+                        )
                     )
+            messages, _model_messages = await self._prepare_messages(
+                messages, content_store
+            )
             update: ResearcherSubgraphState = {
-                "messages": self._bounded_messages(messages),
+                "messages": messages,
                 "pending_calls": [],
                 "candidates": {
                     candidate_id: _candidate_value(candidate)
@@ -690,6 +862,7 @@ class ControlledResearcher:
         saved: dict[str, SourceDocument],
         journal: list[JournalEntry],
         search_trace: list[str],
+        content_store: ContentStore,
     ) -> Mapping[str, Any] | BranchHandoff:
         if call.name == "inspect_providers":
             _arguments(call)
@@ -717,8 +890,12 @@ class ControlledResearcher:
                         "content_provider_ids": _bounded_strings(
                             candidate.content_provider_ids
                         ),
-                        "content_available": bool(candidate.content),
-                        "content_chars": len(candidate.content),
+                        "content_available": candidate.body_ref is not None,
+                        "content_chars": (
+                            candidate.body_ref.char_count
+                            if candidate.body_ref is not None
+                            else 0
+                        ),
                         "snippet": _clip(candidate.snippet, 512),
                     }
                     for candidate in values[offset:end]
@@ -746,8 +923,9 @@ class ControlledResearcher:
                     "fetched_at": _clip(source.fetched_at, 128),
                     "metadata": _bounded_mapping(source.metadata),
                     "metadata_truncated": len(source.metadata) > 16,
-                    **_text_page(
-                        source.content,
+                    **await _body_page(
+                        content_store,
+                        source.body_ref,
                         offset=_offset(args.get("offset", 0)),
                         limit=self._page_chars,
                     ),
@@ -775,9 +953,10 @@ class ControlledResearcher:
                     "content_provider_ids_truncated": (
                         len(candidate.content_provider_ids) > 16
                     ),
-                    "can_save": bool(candidate.content),
-                    **_text_page(
-                        candidate.content,
+                    "can_save": candidate.body_ref is not None,
+                    **await _body_page(
+                        content_store,
+                        candidate.body_ref,
                         offset=_offset(args.get("offset", 0)),
                         limit=self._page_chars,
                     ),
@@ -877,13 +1056,17 @@ class ControlledResearcher:
                 "total_entries": len(context.branch_journal),
             }
         if call.name == "search":
-            return await self._search(call, candidates, search_trace)
+            return await self._search(
+                call, candidates, search_trace, content_store
+            )
         if call.name == "read_source":
-            return await self._read(call, candidates)
+            return await self._read(call, candidates, content_store)
         if call.name == "save_source":
             return self._save(call, candidates, saved)
         if call.name == "journal":
-            return self._journal(call, context, saved, journal)
+            return await self._journal(
+                call, context, saved, journal, content_store
+            )
         if call.name == "finish_turn":
             return self._finish(call, context)
         raise AssertionError("tool allowlist and dispatcher diverged")
@@ -893,6 +1076,7 @@ class ControlledResearcher:
         call: ModelToolCall,
         candidates: dict[str, _Candidate],
         search_trace: list[str],
+        content_store: ContentStore,
     ) -> Mapping[str, Any]:
         args = _arguments(
             call,
@@ -936,9 +1120,17 @@ class ControlledResearcher:
             ),
         )
         for item in response.results:
-            candidate = _candidate_from_search(item)
+            body_ref = (
+                await content_store.put(item.content) if item.content else None
+            )
+            candidate = _candidate_from_search(item, body_ref)
             candidates[candidate.candidate_id] = candidate
-            page = _text_page(candidate.content, offset=0, limit=preview_chars)
+            page = await _body_page(
+                content_store,
+                candidate.body_ref,
+                offset=0,
+                limit=preview_chars,
+            )
             values.append(
                 {
                     "candidate_id": candidate.candidate_id,
@@ -954,7 +1146,7 @@ class ControlledResearcher:
                     "content_provider_ids_truncated": (
                         len(candidate.content_provider_ids) > 16
                     ),
-                    "can_save": bool(candidate.content),
+                    "can_save": candidate.body_ref is not None,
                     "recheck": {
                         "tool": "inspect_candidate",
                         "candidate_id": candidate.candidate_id,
@@ -968,19 +1160,28 @@ class ControlledResearcher:
         }
 
     async def _read(
-        self, call: ModelToolCall, candidates: dict[str, _Candidate]
+        self,
+        call: ModelToolCall,
+        candidates: dict[str, _Candidate],
+        content_store: ContentStore,
     ) -> Mapping[str, Any]:
         args = _arguments(call, required=frozenset({"url"}))
         result = await self._reader.read(_text(args["url"], "url"))
-        candidate = _candidate_from_read(result)
+        body_ref = await content_store.put(result.content)
+        candidate = _candidate_from_read(result, body_ref)
         candidates[candidate.candidate_id] = candidate
-        page = _text_page(candidate.content, offset=0, limit=self._page_chars)
+        page = await _body_page(
+            content_store,
+            candidate.body_ref,
+            offset=0,
+            limit=self._page_chars,
+        )
         return {
             "candidate_id": candidate.candidate_id,
             "title": _clip(candidate.title, 512),
             "url": _clip(candidate.url, 2_048),
             **page,
-            "can_save": bool(candidate.content),
+            "can_save": candidate.body_ref is not None,
             "recheck": {
                 "tool": "inspect_candidate",
                 "candidate_id": candidate.candidate_id,
@@ -997,7 +1198,7 @@ class ControlledResearcher:
         args = _arguments(call, required=frozenset({"candidate_id"}))
         candidate_id = _text(args["candidate_id"], "candidate_id")
         candidate = candidates[candidate_id]
-        if not candidate.content:
+        if candidate.body_ref is None:
             raise ToolArgumentError(
                 "candidate has no full content; read_source before save_source"
             )
@@ -1009,7 +1210,7 @@ class ControlledResearcher:
         source = SourceDocument.create(
             title=candidate.title,
             url=candidate.url,
-            content=candidate.content,
+            body_ref=candidate.body_ref,
             fetched_at=datetime.now(UTC).isoformat(),
             metadata=metadata,
         )
@@ -1021,11 +1222,12 @@ class ControlledResearcher:
         }
 
     @staticmethod
-    def _journal(
+    async def _journal(
         call: ModelToolCall,
         context: ResearcherContext,
         saved: Mapping[str, SourceDocument],
         journal: list[JournalEntry],
+        content_store: ContentStore,
     ) -> Mapping[str, Any]:
         args = _arguments(
             call,
@@ -1050,6 +1252,7 @@ class ControlledResearcher:
                 raise ToolArgumentError(f"anchors[{index}] has invalid fields")
             source_id = _text(raw["source_id"], f"anchors[{index}].source_id")
             source = available[source_id]
+            hydrated_source = await hydrate_source(source, content_store)
             occurrence = raw.get("occurrence", 1)
             if isinstance(occurrence, bool) or not isinstance(occurrence, int):
                 raise ToolArgumentError(
@@ -1057,7 +1260,7 @@ class ControlledResearcher:
                 )
             anchors.append(
                 locate_quote(
-                    source,
+                    hydrated_source,
                     _text(raw["exact_quote"], f"anchors[{index}].exact_quote"),
                     occurrence=occurrence,
                 )
@@ -1090,11 +1293,13 @@ class ControlledResearcher:
         )
 
 
-def _candidate_from_search(result: SearchResult) -> _Candidate:
+def _candidate_from_search(
+    result: SearchResult, body_ref: BodyRef | None
+) -> _Candidate:
     return _candidate(
         title=result.title,
         url=result.url,
-        content=result.content,
+        body_ref=body_ref,
         origin="search",
         provider_ids=result.provider_ids,
         content_provider_ids=result.content_provider_ids,
@@ -1102,11 +1307,11 @@ def _candidate_from_search(result: SearchResult) -> _Candidate:
     )
 
 
-def _candidate_from_read(result: ReadResult) -> _Candidate:
+def _candidate_from_read(result: ReadResult, body_ref: BodyRef) -> _Candidate:
     return _candidate(
         title=result.title,
         url=result.url,
-        content=result.content,
+        body_ref=body_ref,
         origin="reader",
     )
 
@@ -1116,6 +1321,7 @@ def build_researcher_subgraph(
     broker: TransparentSearchBroker,
     reader: SourceReader,
     *,
+    content_store: ContentStore,
     runtime_turn_limit: int | None = None,
     max_payload_chars: int = DEFAULT_MAX_PAYLOAD_CHARS,
     checkpointer: Any = None,
@@ -1126,9 +1332,10 @@ def build_researcher_subgraph(
         model,
         broker,
         reader,
+        content_store=content_store,
         runtime_turn_limit=runtime_turn_limit,
         max_payload_chars=max_payload_chars,
-    ).as_subgraph(checkpointer=checkpointer)
+    ).as_subgraph(content_store=content_store, checkpointer=checkpointer)
 
 
 def researcher_subgraph_input(context: ResearcherContext) -> ResearcherSubgraphState:

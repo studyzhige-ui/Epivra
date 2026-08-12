@@ -8,6 +8,7 @@ from types import MappingProxyType
 from typing import Any
 
 from deep_research_agent.checkpoint import memory_checkpointer
+from deep_research_agent.content_store import InMemoryContentStore
 from deep_research_agent.guides import GUIDE_SECTIONS, Guide, GuideCatalog
 from deep_research_agent.model import ModelReply, ModelToolCall, ToolSpec
 from deep_research_agent.planner import (
@@ -187,7 +188,10 @@ class AgenticPlannerTest(unittest.IsolatedAsyncioTestCase):
         provider = PlannerProvider()
         model = PlannerModel()
         planner = AgenticPlanner(
-            model, TransparentSearchBroker([provider]), PlannerReader()
+            model,
+            TransparentSearchBroker([provider]),
+            PlannerReader(),
+            content_store=InMemoryContentStore(),
         )
 
         output = await planner(
@@ -231,12 +235,17 @@ class AgenticPlannerTest(unittest.IsolatedAsyncioTestCase):
         self,
     ) -> None:
         model = PlannerModel()
+        content_store = InMemoryContentStore()
         planner = AgenticPlanner(
             model,
             TransparentSearchBroker([PlannerProvider()]),
             PlannerReader(),
+            content_store=content_store,
         )
-        graph = planner.as_subgraph(checkpointer=memory_checkpointer())
+        graph = planner.as_subgraph(
+            content_store=content_store,
+            checkpointer=memory_checkpointer(),
+        )
         config = {"configurable": {"thread_id": "planner-provenance"}}
 
         await planner.run_with_subgraph(
@@ -249,12 +258,20 @@ class AgenticPlannerTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             ["planner-search"], candidate["content_provider_ids"]
         )
+        self.assertNotIn("content", candidate)
+        self.assertEqual(
+            len("The official page identifies the current version as 2026.1."),
+            candidate["body_ref"]["char_count"],
+        )
 
     async def test_invalid_presearch_arguments_never_reach_provider(self) -> None:
         provider = PlannerProvider()
         model = PlannerModel(invalid_first=True)
         planner = AgenticPlanner(
-            model, TransparentSearchBroker([provider]), PlannerReader()
+            model,
+            TransparentSearchBroker([provider]),
+            PlannerReader(),
+            content_store=InMemoryContentStore(),
         )
 
         output = await planner(PlannerContext(question="研究当前版本"))
@@ -267,13 +284,18 @@ class AgenticPlannerTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_inspected_guide_is_checkpointed_and_passed_to_finalizer(self) -> None:
         model = GuidePlannerModel()
+        content_store = InMemoryContentStore()
         planner = AgenticPlanner(
             model,
             TransparentSearchBroker([]),
             PlannerReader(),
             guide_catalog=planner_guide_catalog(),
+            content_store=content_store,
         )
-        graph = planner.as_subgraph(checkpointer=memory_checkpointer())
+        graph = planner.as_subgraph(
+            content_store=content_store,
+            checkpointer=memory_checkpointer(),
+        )
         config = {"configurable": {"thread_id": "planner-guide"}}
 
         output = await planner.run_with_subgraph(
@@ -337,6 +359,7 @@ class AgenticPlannerTest(unittest.IsolatedAsyncioTestCase):
             TransparentSearchBroker([]),
             PlannerReader(),
             guide_catalog=planner_guide_catalog(),
+            content_store=InMemoryContentStore(),
         )
 
         with self.assertRaises(PlannerRuntimeError):
@@ -358,6 +381,7 @@ class AgenticPlannerTest(unittest.IsolatedAsyncioTestCase):
             LoopingModel(),
             TransparentSearchBroker([]),
             PlannerReader(),
+            content_store=InMemoryContentStore(),
             runtime_turn_limit=2,
         )
 

@@ -16,6 +16,7 @@ from .state import (
     Amendment,
     BranchHandoff,
     CuratedMaterial,
+    HydratedSource,
     JournalEntry,
     PublicationGateStatus,
     ResearchContract,
@@ -103,7 +104,7 @@ class CuratorContext:
     guide_text: str
     branch_handoffs: tuple[BranchHandoff, ...]
     candidate_journal: tuple[JournalEntry, ...]
-    source_corpus: Mapping[str, SourceDocument]
+    source_corpus: Mapping[str, HydratedSource]
     existing_materials: Mapping[str, CuratedMaterial]
 
 
@@ -127,7 +128,7 @@ class ValidatorContext:
     scope: str
     contract: ResearchContract
     guide_text: str
-    source_corpus: Mapping[str, SourceDocument]
+    source_corpus: Mapping[str, HydratedSource]
     materials: Mapping[str, CuratedMaterial]
     synthesis: ResearchSynthesis | None
     report: str = ""
@@ -314,8 +315,7 @@ def _source_context_copy(source: SourceDocument) -> SourceDocument:
         source_id=source.source_id,
         title=source.title,
         url=source.url,
-        content=source.content,
-        content_hash=source.content_hash,
+        body_ref=source.body_ref,
         fetched_at=source.fetched_at,
         metadata=dict(source.metadata),
     )
@@ -421,7 +421,12 @@ def project_researcher(
     )
 
 
-def project_curator(state: ResearchState, *, guide_text: str = "") -> CuratorContext:
+def project_curator(
+    state: ResearchState,
+    *,
+    source_corpus: Mapping[str, HydratedSource],
+    guide_text: str = "",
+) -> CuratorContext:
     contract = state.get("research_contract")
     if contract is None:
         raise RoleContractError("Curator requires a Research Contract")
@@ -430,12 +435,7 @@ def project_curator(state: ResearchState, *, guide_text: str = "") -> CuratorCon
         guide_text=guide_text,
         branch_handoffs=tuple(state.get("branch_handoffs", ())),
         candidate_journal=tuple(state.get("research_journal", ())),
-        source_corpus=MappingProxyType(
-            {
-                source_id: _source_context_copy(source)
-                for source_id, source in state.get("source_corpus", {}).items()
-            }
-        ),
+        source_corpus=MappingProxyType(dict(source_corpus)),
         existing_materials=MappingProxyType(
             dict(state.get("curated_material_library", {}))
         ),
@@ -469,7 +469,11 @@ def project_writer(state: ResearchState, *, guide_text: str = "") -> WriterConte
 
 
 def project_validator(
-    state: ResearchState, *, scope: str, guide_text: str = ""
+    state: ResearchState,
+    *,
+    scope: str,
+    source_corpus: Mapping[str, HydratedSource],
+    guide_text: str = "",
 ) -> ValidatorContext:
     contract = state.get("research_contract")
     if contract is None:
@@ -485,12 +489,7 @@ def project_validator(
         scope=scope,
         contract=contract,
         guide_text=guide_text,
-        source_corpus=MappingProxyType(
-            {
-                source_id: _source_context_copy(source)
-                for source_id, source in state.get("source_corpus", {}).items()
-            }
-        ),
+        source_corpus=MappingProxyType(dict(source_corpus)),
         materials=MappingProxyType(dict(state.get("curated_material_library", {}))),
         synthesis=state.get("research_synthesis"),
         report=report,
@@ -565,12 +564,10 @@ def validate_supervisor_decision(decision: SupervisorDecision) -> None:
 def validate_researcher_output(
     output: ResearcherOutput,
     task: ResearchTask,
-    existing_sources: Mapping[str, SourceDocument] | None = None,
+    source_corpus: Mapping[str, HydratedSource],
 ) -> None:
     if output.handoff.branch_id != task.branch_id:
         raise RoleContractError("Researcher handoff branch differs from assigned branch")
-    available_sources = dict(existing_sources or {})
-    available_sources.update(output.sources)
     for entry in output.journal:
         if entry.branch_id != task.branch_id:
             raise RoleContractError("Researcher Journal entry escaped its branch")
@@ -578,11 +575,11 @@ def validate_researcher_output(
             raise RoleContractError(
                 "Researcher findings and conflicts require at least one SourceAnchor"
             )
-        validate_anchors(entry.anchors, available_sources)
+        validate_anchors(entry.anchors, source_corpus)
 
 
 def validate_curator_output(
-    output: CuratorOutput, source_corpus: Mapping[str, SourceDocument]
+    output: CuratorOutput, source_corpus: Mapping[str, HydratedSource]
 ) -> None:
     if not output.summary.strip():
         raise RoleContractError("Curator summary must not be empty")

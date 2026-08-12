@@ -8,6 +8,7 @@ from langgraph.types import Command
 
 from deep_research_agent.checkpoint import memory_checkpointer
 from deep_research_agent.citations import CitationClosureError
+from deep_research_agent.content_store import InMemoryContentStore, hydrate_source
 from deep_research_agent.roles import (
     CuratorContext,
     CuratorOutput,
@@ -34,8 +35,10 @@ from deep_research_agent.roles import (
 )
 from deep_research_agent.state import (
     Amendment,
+    BodyRef,
     BranchHandoff,
     CuratedMaterial,
+    HydratedSource,
     JournalEntry,
     ResearchContract,
     ResearchSynthesis,
@@ -72,6 +75,7 @@ class OfflineRoles:
         self.writer_contexts: list[WriterContext] = []
         self.validator_contexts: list[ValidatorContext] = []
         self.editor_contexts: list[EditorContext] = []
+        self.content_store = InMemoryContentStore()
 
     def executors(self) -> RoleExecutors:
         owner = self
@@ -146,12 +150,15 @@ class OfflineRoles:
         self.researcher_contexts.append(context)
         branch = context.task.branch_id
         content = f"{branch} 的权威来源正文：可核验事实。"
+        body_ref = await self.content_store.put(content)
         source = SourceDocument.create(
             title=f"{branch} source",
             url=f"https://example.test/{branch}",
-            content=content,
+            body_ref=body_ref,
         )
-        anchor = locate_quote(source, "可核验事实")
+        anchor = locate_quote(
+            await hydrate_source(source, self.content_store), "可核验事实"
+        )
         return ResearcherOutput(
             sources={source.source_id: source},
             journal=(
@@ -233,7 +240,11 @@ class OfflineRoles:
 
 
 async def run_approved(roles: OfflineRoles, thread_id: str) -> dict:
-    graph = build_research_graph(roles.executors(), checkpointer=memory_checkpointer())
+    graph = build_research_graph(
+        roles.executors(),
+        content_store=roles.content_store,
+        checkpointer=memory_checkpointer(),
+    )
     config = {"configurable": {"thread_id": thread_id}}
     interrupted = await graph.ainvoke(
         {"task_id": thread_id, "question": "测试问题"}, config
@@ -245,10 +256,11 @@ async def run_approved(roles: OfflineRoles, thread_id: str) -> dict:
 
 class WorkflowTests(unittest.IsolatedAsyncioTestCase):
     def test_source_provenance_is_detached_at_read_only_role_boundary(self) -> None:
+        content = "Exact source content."
         source = SourceDocument.create(
             title="Source",
             url="https://example.com/source",
-            content="Exact source content.",
+            body_ref=BodyRef.from_content(content),
             metadata={"content_from": "provider-a"},
         )
         state = {
@@ -256,7 +268,18 @@ class WorkflowTests(unittest.IsolatedAsyncioTestCase):
             "source_corpus": {source.source_id: source},
         }
 
-        curator_context = project_curator(state)
+        hydrated = HydratedSource(
+            source_id=source.source_id,
+            title=source.title,
+            url=source.url,
+            content=content,
+            content_hash=source.content_hash,
+            fetched_at=source.fetched_at,
+            metadata=dict(source.metadata),
+        )
+        curator_context = project_curator(
+            state, source_corpus={source.source_id: hydrated}
+        )
         projected = curator_context.source_corpus[source.source_id]
         projected.metadata["content_from"] = "tampered"  # type: ignore[index]
 
@@ -281,6 +304,7 @@ class WorkflowTests(unittest.IsolatedAsyncioTestCase):
         executors = replace(roles.executors(), planner=planner)
         graph = build_research_graph(
             executors,
+            content_store=roles.content_store,
             checkpointer=memory_checkpointer(),
             guide_context=guide_context,
         )
@@ -486,6 +510,7 @@ class WorkflowTests(unittest.IsolatedAsyncioTestCase):
 
         graph = build_research_graph(
             replace(roles.executors(), editor=editor),
+            content_store=roles.content_store,
             checkpointer=memory_checkpointer(),
         )
         config = {"configurable": {"thread_id": "editor-user-clarification"}}
@@ -516,7 +541,9 @@ class WorkflowTests(unittest.IsolatedAsyncioTestCase):
     async def test_human_approval_precedes_research_and_resumes_same_thread(self) -> None:
         roles = OfflineRoles()
         graph = build_research_graph(
-            roles.executors(), checkpointer=memory_checkpointer()
+            roles.executors(),
+            content_store=roles.content_store,
+            checkpointer=memory_checkpointer(),
         )
         config = {"configurable": {"thread_id": "approval"}}
 
@@ -556,7 +583,8 @@ class WorkflowTests(unittest.IsolatedAsyncioTestCase):
             all("boundaries:" in item for item in supervisor.material_index)
         )
         for source in final["source_corpus"].values():
-            self.assertNotIn(source.content, "\n".join(supervisor.source_index))
+            body = await roles.content_store.get(source.body_ref)
+            self.assertNotIn(body, "\n".join(supervisor.source_index))
 
     async def test_writer_and_editor_never_receive_source_corpus_or_journal(self) -> None:
         roles = OfflineRoles()
@@ -648,7 +676,9 @@ class WorkflowTests(unittest.IsolatedAsyncioTestCase):
                     validator_factory=GuardValidator,
                 )
                 graph = build_research_graph(
-                    executors, checkpointer=memory_checkpointer()
+                    executors,
+                    content_store=roles.content_store,
+                    checkpointer=memory_checkpointer(),
                 )
                 thread_id = f"citation-{mode}"
                 config = {"configurable": {"thread_id": thread_id}}
@@ -687,6 +717,7 @@ class WorkflowTests(unittest.IsolatedAsyncioTestCase):
 
         graph = build_research_graph(
             replace(roles.executors(), editor=editor),
+            content_store=roles.content_store,
             checkpointer=memory_checkpointer(),
         )
         config = {"configurable": {"thread_id": "zero-citations"}}
@@ -870,7 +901,9 @@ class WorkflowTests(unittest.IsolatedAsyncioTestCase):
 
         roles = OfflineRoles(supervisor)
         graph = build_research_graph(
-            roles.executors(), checkpointer=memory_checkpointer()
+            roles.executors(),
+            content_store=roles.content_store,
+            checkpointer=memory_checkpointer(),
         )
         config = {"configurable": {"thread_id": "l2"}}
         first = await graph.ainvoke(

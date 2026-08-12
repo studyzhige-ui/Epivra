@@ -23,7 +23,9 @@ from deep_research_agent.roles import (
     WriterContext,
 )
 from deep_research_agent.state import (
+    BodyRef,
     CuratedMaterial,
+    HydratedSource,
     ResearchContract,
     ResearchSynthesis,
     SourceDocument,
@@ -71,12 +73,22 @@ def _seen(context: Mapping[str, Any], sentinels: Sequence[str]) -> list[str]:
 
 def _source_and_materials(
     sentinels: Sequence[str], *, filler: int = 2_800
-) -> tuple[SourceDocument, dict[str, CuratedMaterial]]:
+) -> tuple[HydratedSource, dict[str, CuratedMaterial]]:
     quote = "stable exact quote"
-    source = SourceDocument.create(
+    body = quote + "\n" + ("x" * filler).join(sentinels)
+    document = SourceDocument.create(
         title="Capacity source",
         url="https://example.org/capacity",
-        content=quote + "\n" + ("x" * filler).join(sentinels),
+        body_ref=BodyRef.from_content(body),
+    )
+    source = HydratedSource(
+        source_id=document.source_id,
+        title=document.title,
+        url=document.url,
+        content=body,
+        content_hash=document.content_hash,
+        fetched_at=document.fetched_at,
+        metadata=dict(document.metadata),
     )
     anchor = locate_quote(source, quote)
     materials = {

@@ -97,10 +97,45 @@ def content_digest(content: str) -> str:
     return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
 
-def make_source_id(url: str, content: str) -> str:
+def _require_content_hash(value: str) -> str:
+    if (
+        not isinstance(value, str)
+        or len(value) != 64
+        or any(character not in "0123456789abcdef" for character in value)
+    ):
+        raise ArtifactValidationError(
+            "body content_hash must be a lowercase SHA-256 digest"
+        )
+    return value
+
+
+@dataclass(frozen=True, slots=True)
+class BodyRef:
+    """A durable reference to one exact immutable UTF-8 source body."""
+
+    content_hash: str
+    char_count: int
+
+    def __post_init__(self) -> None:
+        _require_content_hash(self.content_hash)
+        if (
+            isinstance(self.char_count, bool)
+            or not isinstance(self.char_count, int)
+            or self.char_count < 1
+        ):
+            raise ArtifactValidationError("body char_count must be a positive integer")
+
+    @classmethod
+    def from_content(cls, content: str) -> BodyRef:
+        """Build the canonical reference for exact source text."""
+
+        return cls(content_hash=content_digest(content), char_count=len(content))
+
+
+def make_source_id(url: str, content_hash: str) -> str:
     """Create a stable ID for one URL/content version."""
 
-    identity = f"{_canonical_url(url)}\n{content_digest(content)}"
+    identity = f"{_canonical_url(url)}\n{_require_content_hash(content_hash)}"
     return "src_" + hashlib.sha256(identity.encode("utf-8")).hexdigest()[:20]
 
 
@@ -148,6 +183,64 @@ class SourceDocument:
     source_id: str
     title: str
     url: str
+    body_ref: BodyRef
+    fetched_at: str = ""
+    metadata: Mapping[str, str] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        _require_text(self.title, "source title")
+        canonical_url = _canonical_url(self.url)
+        if not isinstance(self.body_ref, BodyRef):
+            raise ArtifactValidationError("source body_ref must be a BodyRef")
+        expected_id = make_source_id(canonical_url, self.body_ref.content_hash)
+        if self.source_id != expected_id:
+            raise ArtifactValidationError(
+                "source_id does not match URL and body content_hash"
+            )
+        if not isinstance(self.fetched_at, str):
+            raise ArtifactValidationError("fetched_at must be a string")
+        if not isinstance(self.metadata, Mapping) or any(
+            not isinstance(key, str) or not isinstance(value, str)
+            for key, value in self.metadata.items()
+        ):
+            raise ArtifactValidationError("source metadata must map strings to strings")
+
+    @property
+    def content_hash(self) -> str:
+        """Expose the referenced digest without duplicating it in durable state."""
+
+        return self.body_ref.content_hash
+
+    @classmethod
+    def create(
+        cls,
+        *,
+        title: str,
+        url: str,
+        body_ref: BodyRef,
+        fetched_at: str = "",
+        metadata: Mapping[str, str] | None = None,
+    ) -> SourceDocument:
+        canonical_url = _canonical_url(url)
+        if not isinstance(body_ref, BodyRef):
+            raise ArtifactValidationError("source body_ref must be a BodyRef")
+        return cls(
+            source_id=make_source_id(canonical_url, body_ref.content_hash),
+            title=_require_text(title, "source title"),
+            url=canonical_url,
+            body_ref=body_ref,
+            fetched_at=fetched_at,
+            metadata=dict(metadata or {}),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class HydratedSource:
+    """Runtime-only source view carrying verified exact text for semantic work."""
+
+    source_id: str
+    title: str
+    url: str
     content: str
     content_hash: str
     fetched_at: str = ""
@@ -157,11 +250,14 @@ class SourceDocument:
         _require_text(self.title, "source title")
         canonical_url = _canonical_url(self.url)
         expected_hash = content_digest(self.content)
-        expected_id = make_source_id(canonical_url, self.content)
         if self.content_hash != expected_hash:
-            raise ArtifactValidationError("source content_hash does not match content")
-        if self.source_id != expected_id:
-            raise ArtifactValidationError("source_id does not match URL and content")
+            raise ArtifactValidationError(
+                "hydrated source content_hash does not match content"
+            )
+        if self.source_id != make_source_id(canonical_url, expected_hash):
+            raise ArtifactValidationError(
+                "hydrated source_id does not match URL and content"
+            )
         if not isinstance(self.fetched_at, str):
             raise ArtifactValidationError("fetched_at must be a string")
         if not isinstance(self.metadata, Mapping) or any(
@@ -170,31 +266,9 @@ class SourceDocument:
         ):
             raise ArtifactValidationError("source metadata must map strings to strings")
 
-    @classmethod
-    def create(
-        cls,
-        *,
-        title: str,
-        url: str,
-        content: str,
-        fetched_at: str = "",
-        metadata: Mapping[str, str] | None = None,
-    ) -> SourceDocument:
-        canonical_url = _canonical_url(url)
-        digest = content_digest(content)
-        return cls(
-            source_id=make_source_id(canonical_url, content),
-            title=_require_text(title, "source title"),
-            url=canonical_url,
-            content=content,
-            content_hash=digest,
-            fetched_at=fetched_at,
-            metadata=dict(metadata or {}),
-        )
-
 
 def locate_quote(
-    source: SourceDocument, exact_quote: str, *, occurrence: int = 1
+    source: HydratedSource, exact_quote: str, *, occurrence: int = 1
 ) -> SourceAnchor:
     """Locate a one-based occurrence of an exact quote in a saved source."""
 
@@ -219,7 +293,7 @@ def locate_quote(
     )
 
 
-def validate_anchor(anchor: SourceAnchor, source: SourceDocument) -> None:
+def validate_anchor(anchor: SourceAnchor, source: HydratedSource) -> None:
     """Require an anchor to select its exact quote from its declared source."""
 
     if anchor.source_id != source.source_id:
@@ -236,7 +310,7 @@ def validate_anchor(anchor: SourceAnchor, source: SourceDocument) -> None:
 
 
 def validate_anchors(
-    anchors: Sequence[SourceAnchor], source_corpus: Mapping[str, SourceDocument]
+    anchors: Sequence[SourceAnchor], source_corpus: Mapping[str, HydratedSource]
 ) -> None:
     """Validate every anchor and close its source reference."""
 
@@ -500,8 +574,7 @@ def merge_source_corpus(
             continue
         if (
             existing.url != source.url
-            or existing.content != source.content
-            or existing.content_hash != source.content_hash
+            or existing.body_ref != source.body_ref
         ):
             raise ArtifactConflictError(
                 f"parallel branches produced conflicting source {source_id}"
@@ -528,8 +601,7 @@ def merge_source_corpus(
             source_id=source_id,
             title=title,
             url=existing.url,
-            content=existing.content,
-            content_hash=existing.content_hash,
+            body_ref=existing.body_ref,
             fetched_at=min(fetched_values) if fetched_values else "",
             metadata=metadata,
         )
@@ -612,7 +684,9 @@ __all__ = [
     "ArtifactConflictError",
     "ArtifactValidationError",
     "BranchHandoff",
+    "BodyRef",
     "CuratedMaterial",
+    "HydratedSource",
     "JournalEntry",
     "JournalKind",
     "PublicationGateStatus",

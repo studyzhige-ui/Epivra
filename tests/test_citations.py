@@ -8,8 +8,10 @@ from deep_research_agent.citations import (
 )
 from deep_research_agent.state import (
     ArtifactValidationError,
+    BodyRef,
     BranchHandoff,
     CuratedMaterial,
+    HydratedSource,
     SourceAnchor,
     SourceDocument,
     TextLocator,
@@ -24,11 +26,26 @@ from deep_research_agent.state import (
 
 
 def make_source(name: str, content: str | None = None) -> SourceDocument:
+    body = content or f"Exact evidence from {name}."
     return SourceDocument.create(
         title=f"Source {name}",
         url=f"https://example.test/{name}",
-        content=content or f"Exact evidence from {name}.",
+        body_ref=BodyRef.from_content(body),
         metadata={"provider": "fixture"},
+    )
+
+
+def make_hydrated_source(name: str, content: str | None = None) -> HydratedSource:
+    body = content or f"Exact evidence from {name}."
+    source = make_source(name, body)
+    return HydratedSource(
+        source_id=source.source_id,
+        title=source.title,
+        url=source.url,
+        content=body,
+        content_hash=source.content_hash,
+        fetched_at=source.fetched_at,
+        metadata=dict(source.metadata),
     )
 
 
@@ -118,19 +135,21 @@ class ArtifactTrustBoundaryTest(unittest.TestCase):
         )
         for url in unsafe:
             with self.subTest(url=url), self.assertRaises(ArtifactValidationError):
-                SourceDocument.create(title="unsafe", url=url, content="body")
+                SourceDocument.create(
+                    title="unsafe", url=url, body_ref=BodyRef.from_content("body")
+                )
 
     def test_source_ids_are_deterministic_for_an_exact_source_version(self) -> None:
         content = "An exact source body."
         first = SourceDocument.create(
             title="First title",
             url="HTTPS://EXAMPLE.TEST/report#section-one",
-            content=content,
+            body_ref=BodyRef.from_content(content),
         )
         second = SourceDocument.create(
             title="A changed display title",
             url="https://example.test/report#section-two",
-            content=content,
+            body_ref=BodyRef.from_content(content),
             metadata={"provider": "another"},
         )
 
@@ -138,15 +157,22 @@ class ArtifactTrustBoundaryTest(unittest.TestCase):
         self.assertEqual(first.url, "https://example.test/report")
         self.assertEqual(
             first.source_id,
-            make_source_id("https://example.test/report", content),
+            make_source_id(
+                "https://example.test/report", BodyRef.from_content(content).content_hash
+            ),
         )
         self.assertNotEqual(
             first.source_id,
-            make_source_id("https://example.test/report", content + " Updated"),
+            make_source_id(
+                "https://example.test/report",
+                BodyRef.from_content(content + " Updated").content_hash,
+            ),
         )
 
     def test_quote_locator_must_select_exact_saved_text(self) -> None:
-        source = make_source("quotes", "Repeated evidence. Repeated evidence.")
+        source = make_hydrated_source(
+            "quotes", "Repeated evidence. Repeated evidence."
+        )
         anchor = locate_quote(source, "Repeated evidence.", occurrence=2)
 
         validate_anchor(anchor, source)
@@ -161,15 +187,15 @@ class ArtifactTrustBoundaryTest(unittest.TestCase):
             validate_anchor(invalid, source)
 
     def test_anchor_collection_rejects_unknown_sources(self) -> None:
-        source = make_source("known")
+        source = make_hydrated_source("known")
         anchor = locate_quote(source, "Exact evidence")
 
         with self.assertRaisesRegex(ArtifactValidationError, "unknown source"):
             validate_anchors((anchor,), {})
 
     def test_material_id_is_stable_regardless_of_anchor_input_order(self) -> None:
-        source_a = make_source("material-a")
-        source_b = make_source("material-b")
+        source_a = make_hydrated_source("material-a")
+        source_b = make_hydrated_source("material-b")
         anchor_a = locate_quote(source_a, "Exact evidence")
         anchor_b = locate_quote(source_b, "Exact evidence")
 
@@ -196,8 +222,7 @@ class ArtifactTrustBoundaryTest(unittest.TestCase):
             source_id=source.source_id,
             title="A richer display title",
             url=source.url,
-            content=source.content,
-            content_hash=source.content_hash,
+            body_ref=source.body_ref,
             fetched_at="2026-08-11T12:00:00Z",
             metadata={"provider": "another", "language": "en"},
         )
@@ -224,8 +249,7 @@ class ArtifactTrustBoundaryTest(unittest.TestCase):
             source_id=source.source_id,
             title="Third display title",
             url=source.url,
-            content=source.content,
-            content_hash=source.content_hash,
+            body_ref=source.body_ref,
             fetched_at="2026-08-11T13:00:00Z",
             metadata={"provider": "third"},
         )

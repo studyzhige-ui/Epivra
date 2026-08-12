@@ -45,7 +45,7 @@ from .state import (
     ResearchContract,
     ResearchSynthesis,
     SourceAnchor,
-    SourceDocument,
+    HydratedSource,
     ValidationFinding,
     locate_quote,
 )
@@ -251,7 +251,7 @@ def _records_fit(
 
 
 def _source_records(
-    source: SourceDocument,
+    source: HydratedSource,
     *,
     record_fits: Callable[[Mapping[str, Any]], bool],
 ) -> tuple[Mapping[str, Any], ...]:
@@ -439,7 +439,7 @@ def _anchor_value(anchor: SourceAnchor) -> dict[str, Any]:
     }
 
 
-def _source_value(source: SourceDocument, *, include_content: bool) -> dict[str, Any]:
+def _source_value(source: HydratedSource, *, include_content: bool) -> dict[str, Any]:
     value: dict[str, Any] = {
         "source_id": source.source_id,
         "title": source.title,

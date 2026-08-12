@@ -10,8 +10,12 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, START, StateGraph
 
 import deep_research_agent.researcher as researcher_runtime
-from deep_research_agent.model import ModelReply, ModelToolCall, ToolSpec
 from deep_research_agent.checkpoint import memory_checkpointer
+from deep_research_agent.content_store import (
+    InMemoryContentStore,
+    hydrate_source,
+)
+from deep_research_agent.model import ModelReply, ModelToolCall, ToolSpec
 from deep_research_agent.researcher import (
     RESEARCHER_TOOL_SPECS,
     ControlledResearcher,
@@ -27,6 +31,7 @@ from deep_research_agent.roles import (
     validate_researcher_output,
 )
 from deep_research_agent.state import (
+    BodyRef,
     BranchHandoff,
     JournalEntry,
     ResearchContract,
@@ -201,7 +206,8 @@ class ControlledResearcherTest(unittest.IsolatedAsyncioTestCase):
                 content="complete body",
                 provider_ids=("discoverer",),
                 content_provider_ids=("content-provider",),
-            )
+            ),
+            BodyRef.from_content("complete body"),
         )
         checkpoint_value = researcher_runtime._candidate_value(candidate)
         checkpoint_value["content_provider_ids"] = ["tampered-provider"]
@@ -224,20 +230,27 @@ class ControlledResearcherTest(unittest.IsolatedAsyncioTestCase):
         )
 
         with self.assertRaisesRegex(RoleContractError, "SourceAnchor"):
-            validate_researcher_output(output, task)
+            validate_researcher_output(output, task, {})
 
     async def test_search_content_can_be_saved_journaled_and_handed_off(self) -> None:
         provider = FakeProvider()
         model = StatefulModel("full")
+        content_store = InMemoryContentStore()
         researcher = ControlledResearcher(
-            model, TransparentSearchBroker([provider]), FakeReader()
+            model,
+            TransparentSearchBroker([provider]),
+            FakeReader(),
+            content_store=content_store,
         )
 
         output = await researcher(context())
 
         self.assertEqual(1, len(output.sources))
         source = next(iter(output.sources.values()))
-        self.assertEqual("The measured value was 42 in 2026.", source.content)
+        self.assertEqual(
+            "The measured value was 42 in 2026.",
+            await content_store.get(source.body_ref),
+        )
         self.assertEqual("search", source.metadata["acquired_via"])
         self.assertEqual("mock-search", source.metadata["discovered_by"])
         self.assertEqual("mock-search", source.metadata["content_from"])
@@ -277,8 +290,12 @@ class ControlledResearcherTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_reader_result_enters_same_private_candidate_registry(self) -> None:
         reader = FakeReader()
+        content_store = InMemoryContentStore()
         output = await ControlledResearcher(
-            StatefulModel("read"), TransparentSearchBroker([]), reader
+            StatefulModel("read"),
+            TransparentSearchBroker([]),
+            reader,
+            content_store=content_store,
         )(context())
 
         self.assertEqual(["https://reader.example/paper"], reader.urls)
@@ -296,10 +313,16 @@ class ControlledResearcherTest(unittest.IsolatedAsyncioTestCase):
         beta = FakeProvider()
         beta.provider_id = "beta"
         first = await ControlledResearcher(
-            StatefulModel("full"), TransparentSearchBroker([alpha]), FakeReader()
+            StatefulModel("full"),
+            TransparentSearchBroker([alpha]),
+            FakeReader(),
+            content_store=InMemoryContentStore(),
         )(context())
         second = await ControlledResearcher(
-            StatefulModel("full"), TransparentSearchBroker([beta]), FakeReader()
+            StatefulModel("full"),
+            TransparentSearchBroker([beta]),
+            FakeReader(),
+            content_store=InMemoryContentStore(),
         )(context())
 
         merged = merge_source_corpus(first.sources, second.sources)
@@ -313,7 +336,10 @@ class ControlledResearcherTest(unittest.IsolatedAsyncioTestCase):
     async def test_model_cannot_save_a_candidate_it_did_not_acquire(self) -> None:
         model = StatefulModel("untrusted")
         output = await ControlledResearcher(
-            model, TransparentSearchBroker([]), FakeReader()
+            model,
+            TransparentSearchBroker([]),
+            FakeReader(),
+            content_store=InMemoryContentStore(),
         )(context())
 
         self.assertEqual({}, output.sources)
@@ -327,7 +353,10 @@ class ControlledResearcherTest(unittest.IsolatedAsyncioTestCase):
         provider = FakeProvider()
         model = StatefulModel("extra")
         output = await ControlledResearcher(
-            model, TransparentSearchBroker([provider]), FakeReader()
+            model,
+            TransparentSearchBroker([provider]),
+            FakeReader(),
+            content_store=InMemoryContentStore(),
         )(context())
 
         self.assertEqual("Rejected.", output.handoff.summary)
@@ -339,7 +368,10 @@ class ControlledResearcherTest(unittest.IsolatedAsyncioTestCase):
         model = StatefulModel("unanchored")
 
         output = await ControlledResearcher(
-            model, TransparentSearchBroker([]), FakeReader()
+            model,
+            TransparentSearchBroker([]),
+            FakeReader(),
+            content_store=InMemoryContentStore(),
         )(context())
 
         self.assertEqual((), output.journal)
@@ -347,15 +379,18 @@ class ControlledResearcherTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("invalid_arguments", tool_error["error"]["type"])
 
     async def test_task_relevant_source_is_available_on_demand(self) -> None:
+        content_store = InMemoryContentStore()
+        body = "Private surrounding text. Exact prior evidence."
         source = SourceDocument.create(
             title="Existing source",
             url="https://existing.example/source",
-            content="Private surrounding text. Exact prior evidence.",
+            body_ref=await content_store.put(body),
         )
+        hydrated = await hydrate_source(source, content_store)
         entry = JournalEntry(
             "finding",
             "Prior branch finding.",
-            anchors=(locate_quote(source, "Exact prior evidence."),),
+            anchors=(locate_quote(hydrated, "Exact prior evidence."),),
             branch_id="branch-a",
         )
 
@@ -398,14 +433,17 @@ class ControlledResearcherTest(unittest.IsolatedAsyncioTestCase):
         )
 
         output = await ControlledResearcher(
-            model, TransparentSearchBroker([]), FakeReader()
+            model,
+            TransparentSearchBroker([]),
+            FakeReader(),
+            content_store=content_store,
         )(focused_context)
 
         initial_context = str(model.messages[0][-1]["content"])
         inspected = json.loads(str(model.messages[1][-1]["content"]))
         history = json.loads(str(model.messages[2][-1]["content"]))
         self.assertNotIn("Private surrounding text", initial_context)
-        self.assertEqual(source.content, inspected["source"]["content"])
+        self.assertEqual(body, inspected["source"]["content"])
         self.assertEqual(
             "Prior branch finding.", history["research_history"][0]["preview"]
         )
@@ -415,15 +453,19 @@ class ControlledResearcherTest(unittest.IsolatedAsyncioTestCase):
         self,
     ) -> None:
         exact_quote = "ANCHOR_START|" + "q" * 9_000 + "|ANCHOR_END"
+        content_store = InMemoryContentStore()
         source = SourceDocument.create(
             title="Long anchored source",
             url="https://example.test/long-anchor",
-            content="prefix\n" + exact_quote + "\nsuffix",
+            body_ref=await content_store.put(
+                "prefix\n" + exact_quote + "\nsuffix"
+            ),
         )
+        hydrated = await hydrate_source(source, content_store)
         early_entry = JournalEntry(
             "finding",
             "EARLY_CONTENT|" + "j" * 25_000 + "|CONTENT_END",
-            anchors=(locate_quote(source, exact_quote),),
+            anchors=(locate_quote(hydrated, exact_quote),),
             branch_id="branch-a",
         )
         focused_context = ResearcherContext(
@@ -444,6 +486,7 @@ class ControlledResearcherTest(unittest.IsolatedAsyncioTestCase):
             StatefulModel("untrusted"),
             TransparentSearchBroker([]),
             FakeReader(),
+            content_store=content_store,
             max_payload_chars=12_000,
         )
 
@@ -459,6 +502,7 @@ class ControlledResearcherTest(unittest.IsolatedAsyncioTestCase):
                 saved={},
                 journal=[],
                 search_trace=list(focused_context.search_trace),
+                content_store=content_store,
             )
             self.assertIsInstance(result, Mapping)
             return result  # type: ignore[return-value]
@@ -524,10 +568,12 @@ class ControlledResearcherTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(asdict(early_entry.anchors[0].locator), recovered_entry["anchors"][0]["locator"])
 
     async def test_compiled_subgraph_checkpoints_model_and_tool_turns(self) -> None:
+        content_store = InMemoryContentStore()
         graph = build_researcher_subgraph(
             StatefulModel("full"),
             TransparentSearchBroker([FakeProvider()]),
             FakeReader(),
+            content_store=content_store,
             checkpointer=memory_checkpointer(),
         )
         config = {"configurable": {"thread_id": "researcher-checkpoints"}}
@@ -542,6 +588,11 @@ class ControlledResearcherTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             ["mock-search"], checkpoint_candidate["content_provider_ids"]
         )
+        self.assertNotIn("content", checkpoint_candidate)
+        self.assertEqual(
+            len("The measured value was 42 in 2026."),
+            checkpoint_candidate["body_ref"]["char_count"],
+        )
         self.assertGreaterEqual(len(snapshots), 8)
         observed_nodes = {
             task.name for snapshot in snapshots for task in snapshot.tasks
@@ -554,10 +605,12 @@ class ControlledResearcherTest(unittest.IsolatedAsyncioTestCase):
             summary: str
 
         saver = memory_checkpointer()
+        content_store = InMemoryContentStore()
         child = build_researcher_subgraph(
             StatefulModel("full"),
             TransparentSearchBroker([FakeProvider()]),
             FakeReader(),
+            content_store=content_store,
         )
 
         async def researcher_node(
@@ -602,6 +655,7 @@ class ControlledResearcherTest(unittest.IsolatedAsyncioTestCase):
             LoopingModel(),
             TransparentSearchBroker([]),
             FakeReader(),
+            content_store=InMemoryContentStore(),
             runtime_turn_limit=2,
         )
 

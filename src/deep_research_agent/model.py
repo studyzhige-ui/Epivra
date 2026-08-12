@@ -15,12 +15,261 @@ from typing import Any, Literal, Protocol
 
 import httpx
 
+from .content_store import ContentReader
+from .state import BodyRef
+
 
 # DeepSeek V4 currently exposes a 1M-token context.  Characters are only a
 # conservative transport proxy, so this leaves ample room for the configured
 # 65K-token output while avoiding needless role-internal batching.  Alternate
 # model runtimes can lower the explicit composition setting.
 DEFAULT_MAX_PAYLOAD_CHARS = 400_000
+
+_DURABLE_OBSERVATION_MARKER = "deep_research.content_pages.v1"
+_BODY_PAGE_PLACEHOLDER = "deep_research.body_page"
+
+
+@dataclass(frozen=True, slots=True)
+class DurableBodyPage:
+    """One transient model-visible body page inside a durable tool observation."""
+
+    path: tuple[str | int, ...]
+    body_ref: BodyRef
+    offset: int
+
+
+def durable_tool_observation(
+    call_id: str,
+    value: Mapping[str, Any],
+    pages: Sequence[DurableBodyPage],
+) -> dict[str, Any]:
+    """Build a checkpoint-safe tool message whose source text is only referenced."""
+
+    observation = json.loads(json.dumps(dict(value), ensure_ascii=False))
+    page_values: list[dict[str, Any]] = []
+    for page in pages:
+        target: Any = observation
+        if not page.path:
+            raise ValueError("durable body page path must not be empty")
+        for component in page.path[:-1]:
+            if isinstance(component, bool) or not isinstance(component, (str, int)):
+                raise ValueError("durable body page path is invalid")
+            target = target[component]
+        leaf = page.path[-1]
+        content = target[leaf]
+        if not isinstance(content, str):
+            raise ValueError("durable body page must replace text")
+        if not content:
+            continue
+        if (
+            isinstance(page.offset, bool)
+            or not isinstance(page.offset, int)
+            or page.offset < 0
+        ):
+            raise ValueError("durable body page offset must be non-negative")
+        end = page.offset + len(content)
+        if end > page.body_ref.char_count:
+            raise ValueError("durable body page exceeds its referenced content")
+        target[leaf] = {_BODY_PAGE_PLACEHOLDER: len(page_values)}
+        page_values.append(
+            {
+                "path": list(page.path),
+                "body_ref": {
+                    "content_hash": page.body_ref.content_hash,
+                    "char_count": page.body_ref.char_count,
+                },
+                "offset": page.offset,
+                "limit": len(content),
+                "end": end,
+            }
+        )
+    if not page_values:
+        return {
+            "role": "tool",
+            "tool_call_id": call_id,
+            "content": json.dumps(value, ensure_ascii=False, sort_keys=True),
+        }
+    return {
+        "role": "tool",
+        "tool_call_id": call_id,
+        "content": {
+            "marker": _DURABLE_OBSERVATION_MARKER,
+            "observation": observation,
+            "pages": page_values,
+        },
+    }
+
+
+async def hydrate_durable_tool_messages(
+    messages: Sequence[Mapping[str, Any]], reader: ContentReader
+) -> list[dict[str, Any]]:
+    """Render checkpoint-only body references into normal model tool messages."""
+
+    rendered: list[dict[str, Any]] = []
+    for message in messages:
+        value = dict(message)
+        content = value.get("content")
+        if not (
+            isinstance(content, Mapping)
+            and content.get("marker") == _DURABLE_OBSERVATION_MARKER
+        ):
+            rendered.append(value)
+            continue
+        if set(content) != {"marker", "observation", "pages"}:
+            raise ValueError("durable tool observation has invalid fields")
+        observation = json.loads(
+            json.dumps(content["observation"], ensure_ascii=False)
+        )
+        raw_pages = content["pages"]
+        if not isinstance(raw_pages, list) or not raw_pages:
+            raise ValueError("durable tool observation has no body pages")
+        for index, raw_page in enumerate(raw_pages):
+            if not isinstance(raw_page, Mapping) or set(raw_page) != {
+                "path",
+                "body_ref",
+                "offset",
+                "limit",
+                "end",
+            }:
+                raise ValueError("durable body page has invalid fields")
+            raw_ref = raw_page["body_ref"]
+            if not isinstance(raw_ref, Mapping) or set(raw_ref) != {
+                "content_hash",
+                "char_count",
+            }:
+                raise ValueError("durable body page has an invalid body_ref")
+            ref = BodyRef(
+                content_hash=str(raw_ref["content_hash"]),
+                char_count=raw_ref["char_count"],
+            )
+            offset = raw_page["offset"]
+            limit = raw_page["limit"]
+            end = raw_page["end"]
+            if (
+                isinstance(offset, bool)
+                or not isinstance(offset, int)
+                or offset < 0
+                or isinstance(limit, bool)
+                or not isinstance(limit, int)
+                or limit < 1
+                or isinstance(end, bool)
+                or not isinstance(end, int)
+                or end != offset + limit
+                or end > ref.char_count
+            ):
+                raise ValueError("durable body page has invalid bounds")
+            path = raw_page["path"]
+            if not isinstance(path, list) or not path:
+                raise ValueError("durable body page has an invalid path")
+            target: Any = observation
+            for component in path[:-1]:
+                if isinstance(component, bool) or not isinstance(
+                    component, (str, int)
+                ):
+                    raise ValueError("durable body page has an invalid path")
+                target = target[component]
+            leaf = path[-1]
+            if target[leaf] != {_BODY_PAGE_PLACEHOLDER: index}:
+                raise ValueError("durable body page placeholder is inconsistent")
+            page = await reader.page(ref, offset=offset, limit=limit)
+            if len(page) != limit:
+                raise ValueError("durable body page could not be fully hydrated")
+            target[leaf] = page
+        value["content"] = json.dumps(
+            observation, ensure_ascii=False, sort_keys=True
+        )
+        rendered.append(value)
+    return rendered
+
+
+async def prepare_durable_tool_loop_messages(
+    messages: Sequence[Mapping[str, Any]],
+    reader: ContentReader,
+    *,
+    max_payload_chars: int = DEFAULT_MAX_PAYLOAD_CHARS,
+    inspect_hint: str,
+    tools: Sequence[ToolSpec] = (),
+    tool_choice: Literal["auto", "none", "required"] | None = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Compact by the hydrated request size but return checkpoint-safe messages.
+
+    Each interaction block is kept or removed as one paired durable/model-visible
+    unit.  Hydrated text therefore exists only in the second, ephemeral return
+    value and can never be selected accidentally for durable state.
+    """
+
+    if (
+        isinstance(max_payload_chars, bool)
+        or not isinstance(max_payload_chars, int)
+        or max_payload_chars < 1
+    ):
+        raise ValueError("max_payload_chars must be a positive integer")
+    durable = [dict(message) for message in messages]
+    visible = await hydrate_durable_tool_messages(durable, reader)
+    if len(durable) < 2:
+        raise MessageCapacityError(
+            "tool-loop context must contain a system message and initial user message"
+        )
+
+    def request_chars(value: Sequence[Mapping[str, Any]]) -> int:
+        return serialized_model_request_chars(
+            value, tools=tools, tool_choice=tool_choice
+        )
+
+    fixed_durable = durable[:2]
+    fixed_visible = visible[:2]
+    if request_chars(fixed_visible) > max_payload_chars:
+        raise MessageCapacityError(
+            "fixed tool-loop context exceeds max_payload_chars; refusing to omit it"
+        )
+    if request_chars(visible) <= max_payload_chars:
+        return durable, visible
+
+    paired_blocks: list[tuple[list[dict[str, Any]], list[dict[str, Any]]]] = []
+    durable_block: list[dict[str, Any]] = []
+    visible_block: list[dict[str, Any]] = []
+    for durable_message, visible_message in zip(durable[2:], visible[2:], strict=True):
+        if durable_message.get("role") == "assistant" and durable_block:
+            paired_blocks.append((durable_block, visible_block))
+            durable_block, visible_block = [], []
+        durable_block.append(durable_message)
+        visible_block.append(visible_message)
+    if durable_block:
+        paired_blocks.append((durable_block, visible_block))
+    if not paired_blocks:
+        raise MessageCapacityError(
+            "tool-loop context exceeds max_payload_chars without removable history"
+        )
+
+    notice = {
+        "role": "user",
+        "content": (
+            "Earlier complete tool interactions were omitted only for context "
+            "capacity. Do not infer that their evidence disappeared; use "
+            f"{inspect_hint} to retrieve the needed saved state."
+        ),
+    }
+    retained = list(paired_blocks)
+    while True:
+        candidate_visible = [
+            *fixed_visible,
+            notice,
+            *[message for _durable, block in retained for message in block],
+        ]
+        if request_chars(candidate_visible) <= max_payload_chars:
+            candidate_durable = [
+                *fixed_durable,
+                notice,
+                *[message for block, _visible in retained for message in block],
+            ]
+            return candidate_durable, candidate_visible
+        if len(retained) == 1:
+            break
+        retained.pop(0)
+    raise MessageCapacityError(
+        "fixed tool-loop context plus its most recent complete interaction exceeds "
+        "max_payload_chars; refusing unsafe truncation"
+    )
 
 
 class MessageCapacityError(RuntimeError):

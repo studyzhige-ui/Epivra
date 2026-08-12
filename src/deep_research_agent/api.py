@@ -16,10 +16,11 @@ from langgraph.types import Command
 from .checkpoint import (
     memory_checkpointer,
     readonly_sqlite_checkpointer,
-    sqlite_checkpointer,
+    sqlite_runtime_storage,
     sqlite_writer_lock,
 )
 from .citations import CitationRenderer
+from .content_store import ContentStore, InMemoryContentStore
 from .roles import RoleExecutors
 from .workflow import GuideContextProvider, build_research_graph, empty_guide_context
 
@@ -319,6 +320,7 @@ async def inspect_sqlite_task(
             return _retryable_result(task_id)
         graph = build_research_graph(
             _inspection_roles(),
+            content_store=InMemoryContentStore(),
             checkpointer=saver,
         )
         snapshot = await graph.aget_state(config)
@@ -346,6 +348,7 @@ def _inspection_roles() -> RoleExecutors:
 def create_memory_agent(
     roles: RoleExecutors,
     *,
+    content_store: ContentStore | None = None,
     guide_context: GuideContextProvider = empty_guide_context,
     guide_catalog: Sequence[str] = (),
     presearch: Sequence[str] = (),
@@ -355,8 +358,12 @@ def create_memory_agent(
 ) -> ResearchAgent:
     """Create a non-durable agent for tests and embedded experimentation."""
 
+    resolved_content_store = (
+        content_store if content_store is not None else InMemoryContentStore()
+    )
     graph = build_research_graph(
         roles,
+        content_store=resolved_content_store,
         checkpointer=memory_checkpointer(),
         guide_context=guide_context,
         guide_catalog=guide_catalog,
@@ -382,10 +389,11 @@ async def open_sqlite_agent(
     """Open the production-local API with durable SQLite checkpoints."""
 
     with sqlite_writer_lock(database_path):
-        async with sqlite_checkpointer(database_path) as saver:
+        async with sqlite_runtime_storage(database_path) as storage:
             graph = build_research_graph(
                 roles,
-                checkpointer=saver,
+                content_store=storage.content_store,
+                checkpointer=storage.checkpointer,
                 guide_context=guide_context,
                 guide_catalog=guide_catalog,
                 presearch=presearch,

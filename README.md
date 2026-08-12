@@ -73,12 +73,16 @@ deep-research-agent continue <thread-id>
 
 本地 SQLite 运行时强制单写者：同一数据库同一时刻只允许一个会修改任务的 CLI/Python 进程，第二个写入进程会在运行任何 Agent 前明确失败；图内部的并行 Researcher 不受影响。`status` 使用只读连接和同一父图拓扑重建 LangGraph 的公开 `next` 状态，不加载用户角色插件，也不执行任何角色。数据库记录运行时 schema 版本，不兼容版本会明确拒绝恢复，而不会猜测性反序列化旧任务。
 
-v0.1 面向单机、中等规模研究。SQLite 会保存每个 LangGraph 步骤的历史，而 Planner/Researcher 的候选与来源全文当前仍在 Checkpoint state 中，因此数据库大小会随累计全文体量和工具回合数增长；本版不自动压缩或清理历史。大型任务应使用独立的 `--database`、预留并监控磁盘空间，并只在没有活动 writer 时整体归档或轮换数据库。后续高容量版本将把不可变正文移入内容寻址存储，Checkpoint 只保留 ID、有界预览和来源溯源。
+不可变来源正文不进入 LangGraph state：运行时先按精确 UTF-8 正文的 SHA-256 写入内容寻址 `ContentStore`，候选和 `SourceDocument` 只持久化 `BodyRef(content_hash, char_count)` 与必要元数据；需要原文时才构造经过摘要和长度校验的临时 `HydratedSource`。相同正文被多个供应商、URL 或 Researcher 使用时只保存一份，因此 Checkpoint 历史增长与正文大小解耦。当前 schema v2 有意拒绝旧版活动 Checkpoint；正文内联状态不能被静默猜测迁移，应使用旧版本完成或归档旧任务，或者为新版本使用新数据库。
+
+v0.1 仍面向单机研究，并把 Checkpoint 与 `content_blobs` 放在同一个 SQLite 文件中以保持部署简单。当前不提供正文 GC：历史 Checkpoint 也可能持有有效 `BodyRef`，崩溃还可能留下安全但暂时无人引用的正文，因此不能只依据最新状态删除 blob。归档或轮换必须在没有活动 writer 时复制或移动整个数据库；以后扩展到文件系统或对象存储时只需替换 `ContentStore` 边界。
 
 自定义 Guide 可通过 `--guides <目录>` 加载；`--roles module:attribute` 只用于用户明确信任的本地 `RoleExecutors` 实现，因为该模块会以当前进程权限执行。
 
 ## 当前实现边界
 
-已完成 LangGraph 父图与可持久化 Planner/Researcher 子图、默认人工审批、并行研究分支、八角色窄上下文与角色内有界分批、L0/L1/L2 治理、追加式独立验证审计、带版本和显式重试的 SQLite Checkpoint、透明 Search Broker、公开 HTTP/PDF 阅读、轻量 Domain/Capability Guides、稳定来源锚点和 Citation Renderer。
+已完成 LangGraph 父图与可持久化 Planner/Researcher 子图、默认人工审批、并行研究分支、八角色窄上下文与角色内有界分批、L0/L1/L2 治理、追加式独立验证审计、带版本和显式重试的 SQLite Checkpoint、内容寻址不可变正文存储、透明 Search Broker、公开 HTTP/PDF 阅读、轻量 Domain/Capability Guides、稳定来源锚点和 Citation Renderer。
 
-尚未完成的验证是：经用户明确允许后的真实 API 冒烟测试、多领域真实任务质量评测，以及闭环稳定后的薄 MCP 适配层。当前没有 GUI、多租户、向量 Context Engine，也不会迁移旧项目的确定性研究核心。
+2026-08-12 已完成一次经用户授权的真实 DeepSeek + Tavily 冒烟：任务经过 Planner 预搜索和计划生成后准确停在默认人工审批中断，没有批准计划、启动 Researcher 或运行完整研究。该次运行同时验证了 schema v2、正文去重、审批恢复以及凭据不进入 Checkpoint。
+
+尚未完成的是需要再次取得用户许可的多领域完整任务质量评测，以及闭环稳定后的薄 MCP 适配层。当前没有 GUI、多租户、向量 Context Engine，也不会迁移旧项目的确定性研究核心。

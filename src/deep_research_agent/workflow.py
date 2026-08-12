@@ -7,6 +7,7 @@ Supervisor-only cross-stage amendments, and deterministic publication.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 from collections.abc import Callable, Mapping, Sequence
@@ -25,6 +26,7 @@ from .citations import (
     citation_marker_signature,
     extract_citation_ids,
 )
+from .content_store import ContentStore, hydrate_source
 from .planner import AgenticPlanner
 from .roles import (
     EditorOutput,
@@ -53,9 +55,11 @@ from .researcher import (
 )
 from .state import (
     AssuranceEvent,
+    HydratedSource,
     ResearchContract,
     ResearchState,
     ResearchTask,
+    SourceDocument,
     validate_anchors,
 )
 
@@ -379,12 +383,41 @@ def validate_supervisor_transition(
         raise RoleContractError("substantive edits require closure validation")
 
 
-def _assert_report_uses_formal_materials(
-    state: ResearchState, report: str, *, require_citation: bool = False
+async def _hydrate_sources(
+    source_corpus: Mapping[str, SourceDocument], content_store: ContentStore
+) -> dict[str, HydratedSource]:
+    """Hydrate exact source text for one runtime call without touching graph state."""
+
+    source_ids = sorted(source_corpus)
+    hydrated = await asyncio.gather(
+        *(hydrate_source(source_corpus[source_id], content_store) for source_id in source_ids)
+    )
+    return dict(zip(source_ids, hydrated, strict=True))
+
+
+async def _assert_report_uses_formal_materials(
+    state: ResearchState,
+    report: str,
+    *,
+    content_store: ContentStore,
+    require_citation: bool = False,
 ) -> None:
     source_corpus = state.get("source_corpus", {})
+    referenced_source_ids = {
+        anchor.source_id
+        for material in state.get("curated_material_library", {}).values()
+        for anchor in material.anchors
+    }
+    hydrated_sources = await _hydrate_sources(
+        {
+            source_id: source_corpus[source_id]
+            for source_id in referenced_source_ids
+            if source_id in source_corpus
+        },
+        content_store,
+    )
     for material in state.get("curated_material_library", {}).values():
-        validate_anchors(material.anchors, source_corpus)
+        validate_anchors(material.anchors, hydrated_sources)
     allowed_source_ids = {
         anchor.source_id
         for material in state.get("curated_material_library", {}).values()
@@ -407,6 +440,7 @@ def _assert_report_uses_formal_materials(
 def build_research_graph(
     roles: RoleExecutors,
     *,
+    content_store: ContentStore,
     checkpointer: Any = None,
     guide_context: GuideContextProvider = empty_guide_context,
     guide_catalog: Sequence[str] = (),
@@ -422,12 +456,12 @@ def build_research_graph(
 
     renderer = citation_renderer or CitationRenderer()
     researcher_subgraph = (
-        roles.researcher.as_subgraph()
+        roles.researcher.as_subgraph(content_store=content_store)
         if isinstance(roles.researcher, ControlledResearcher)
         else None
     )
     planner_subgraph = (
-        roles.planner.as_subgraph()
+        roles.planner.as_subgraph(content_store=content_store)
         if isinstance(roles.planner, AgenticPlanner)
         else None
     )
@@ -641,8 +675,21 @@ def build_research_graph(
                 researcher_subgraph_input(context), config
             )
             result = researcher_output_from_subgraph(child_state)
+        available_sources = dict(context.relevant_sources)
+        available_sources.update(result.sources)
+        anchored_source_ids = {
+            anchor.source_id for entry in result.journal for anchor in entry.anchors
+        }
+        hydrated_sources = await _hydrate_sources(
+            {
+                source_id: available_sources[source_id]
+                for source_id in anchored_source_ids
+                if source_id in available_sources
+            },
+            content_store,
+        )
         validate_researcher_output(
-            result, context.task, existing_sources=context.relevant_sources
+            result, context.task, hydrated_sources
         )
         return {
             "source_corpus": dict(result.sources),
@@ -651,12 +698,17 @@ def build_research_graph(
         }
 
     async def curator_node(state: ResearchState) -> ResearchState:
+        hydrated_sources = await _hydrate_sources(
+            state.get("source_corpus", {}), content_store
+        )
         result = await roles.curator(
             project_curator(
-                state, guide_text=_guide_text(guide_context, "curator", state)
+                state,
+                source_corpus=hydrated_sources,
+                guide_text=_guide_text(guide_context, "curator", state),
             )
         )
-        validate_curator_output(result, state.get("source_corpus", {}))
+        validate_curator_output(result, hydrated_sources)
         note = result.summary
         if result.blocking_issue:
             note += f"\n\nBlocking issue: {result.blocking_issue}"
@@ -686,7 +738,9 @@ def build_research_graph(
             )
         )
         draft = _require_text(result.draft, "Writer draft")
-        _assert_report_uses_formal_materials(state, draft)
+        await _assert_report_uses_formal_materials(
+            state, draft, content_store=content_store
+        )
         if result.material_blocked:
             return Command(
                 update={
@@ -727,10 +781,14 @@ def build_research_graph(
         else:
             scope = "assurance: " + state.get("stage_note", "specified artifact")
         validator = roles.validator_factory()
+        hydrated_sources = await _hydrate_sources(
+            state.get("source_corpus", {}), content_store
+        )
         result = await validator(
             project_validator(
                 state,
                 scope=scope,
+                source_corpus=hydrated_sources,
                 guide_text=_guide_text(guide_context, "validator", state),
             )
         )
@@ -807,7 +865,9 @@ def build_research_graph(
         if not isinstance(result, EditorOutput):
             raise RoleContractError("Editor must return EditorOutput")
         validate_editor_output(result)
-        _assert_report_uses_formal_materials(state, result.edited_report)
+        await _assert_report_uses_formal_materials(
+            state, result.edited_report, content_store=content_store
+        )
         report_changed = result.edited_report != prior_report
         citation_association_changed = citation_marker_signature(
             prior_report
@@ -900,8 +960,11 @@ def build_research_graph(
                 "Citation Renderer requires the persistent Publication Gate to be closed"
             )
         report = _require_text(state.get("edited_report", ""), "edited report")
-        _assert_report_uses_formal_materials(
-            state, report, require_citation=True
+        await _assert_report_uses_formal_materials(
+            state,
+            report,
+            content_store=content_store,
+            require_citation=True,
         )
         rendered = renderer.render(report, state.get("source_corpus", {}))
         return {
