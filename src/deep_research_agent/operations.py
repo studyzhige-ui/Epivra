@@ -42,7 +42,7 @@ from typing import Literal, Protocol
 import aiosqlite
 
 from .content_store import ContentStore
-from .state import ArtifactValidationError, BodyRef
+from .sources import ArtifactValidationError, BodyRef
 
 OperationStatus = Literal[
     "reserved",

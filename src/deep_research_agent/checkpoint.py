@@ -36,10 +36,9 @@ class SqliteRuntimeStorage:
 
 _STATE_TYPES = (
     "BodyRef",
-    "CuratedMaterial",
-    "ResearchContract",
+    "MaterialBody",
     "SourceAnchor",
-    "SourceDocument",
+    "SourceSnapshotBody",
     "TextLocator",
 )
 
@@ -52,7 +51,7 @@ def research_serializer() -> JsonPlusSerializer:
     preserving typed artifacts across an interrupt.
     """
 
-    allowed = [("deep_research_agent.state", name) for name in _STATE_TYPES]
+    allowed = [("deep_research_agent.sources", name) for name in _STATE_TYPES]
     return JsonPlusSerializer(
         pickle_fallback=False,
         allowed_msgpack_modules=allowed,

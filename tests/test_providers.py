@@ -7,16 +7,16 @@ from unittest.mock import patch
 import httpx
 
 from deep_research_agent.providers import (
-    BochaSearchProvider,
-    BraveSearchProvider,
-    ExaSearchProvider,
+    DuckDuckGoSearchProvider,
     ProviderAuthError,
+    ProviderUnavailableError,
     PublicHttpReader,
     PublicUrlPolicy,
     SourceReadError,
     TavilySearchProvider,
     UnsafeUrlError,
     _HttpResponse,
+    configured_search_providers,
 )
 
 
@@ -87,109 +87,93 @@ class TavilyProviderTest(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("secret", repr(provider))
 
 
-class AdditionalProviderTest(unittest.IsolatedAsyncioTestCase):
-    async def test_exa_uses_fixed_origin_and_returns_extracted_text(self) -> None:
+class DuckDuckGoProviderTest(unittest.IsolatedAsyncioTestCase):
+    RESULT_HTML = """
+    <div class="result results_links">
+      <a class="result__a" href="/l/?uddg=https%3A%2F%2Fexample.test%2Freport">
+        Official <b>report</b>
+      </a>
+      <a class="result__snippet">A discovery snippet, not source text.</a>
+    </div>
+    <div class="result results_links">
+      <a class="result__a" href="https://direct.test/page">Direct link</a>
+      <a class="result__snippet">Second snippet.</a>
+    </div>
+    """
+
+    async def search(self, html: str, **kwargs: object) -> tuple[object, ...]:
         async def handler(request: httpx.Request) -> httpx.Response:
-            self.assertEqual("https://api.exa.ai/search", str(request.url))
-            self.assertEqual("exa-secret", request.headers["x-api-key"])
-            payload = json.loads(request.content)
-            self.assertEqual(12_000, payload["contents"]["text"]["maxCharacters"])
-            self.assertEqual("news", payload["category"])
-            return httpx.Response(
-                200,
-                json={
-                    "results": [
-                        {
-                            "title": "Paper",
-                            "url": "https://example.test/paper",
-                            "text": "Full extracted paper text.",
-                            "highlights": ["Key passage."],
-                        }
-                    ]
-                },
-            )
+            self.assertEqual("https://html.duckduckgo.com/html/", str(request.url))
+            self.assertNotIn("authorization", {k.lower() for k in request.headers})
+            return httpx.Response(200, text=html)
 
         client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
         try:
-            provider = ExaSearchProvider("exa-secret", client=client)
-            results = await provider.search(
-                query="paper", intent="research", source_kind="news"
+            provider = DuckDuckGoSearchProvider(client=client, **kwargs)  # type: ignore[arg-type]
+            return tuple(
+                await provider.search(
+                    query="rsv prevention", intent="discovery", source_kind="web"
+                )
             )
         finally:
             await client.aclose()
 
-        self.assertEqual("Full extracted paper text.", results[0].content)
-        self.assertEqual("Key passage.", results[0].snippet)
-        self.assertNotIn("exa-secret", repr(provider))
+    async def test_redirect_wrapped_urls_are_unwrapped_to_their_target(self) -> None:
+        results = await self.search(self.RESULT_HTML)
 
-    async def test_brave_news_is_discovery_only_on_fixed_origin(self) -> None:
-        async def handler(request: httpx.Request) -> httpx.Response:
-            self.assertEqual(
-                "api.search.brave.com", request.url.host
-            )
-            self.assertEqual("/res/v1/news/search", request.url.path)
-            self.assertEqual("brave-secret", request.headers["X-Subscription-Token"])
-            return httpx.Response(
-                200,
-                json={
-                    "results": [
-                        {
-                            "title": "News item",
-                            "url": "https://news.example/item",
-                            "description": "A current news description.",
-                        }
-                    ]
-                },
-            )
+        self.assertEqual("https://example.test/report", results[0].url)
+        self.assertEqual("Official report", results[0].title)
+        self.assertEqual("https://direct.test/page", results[1].url)
 
-        client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
-        try:
-            provider = BraveSearchProvider("brave-secret", client=client)
-            results = await provider.search(
-                query="event", intent="general discovery", source_kind="news"
-            )
-        finally:
-            await client.aclose()
+    async def test_results_stay_discovery_snippets_and_never_claim_content(
+        self,
+    ) -> None:
+        results = await self.search(self.RESULT_HTML)
 
-        self.assertEqual("A current news description.", results[0].snippet)
-        self.assertEqual("", results[0].content)
-        self.assertNotIn("brave-secret", repr(provider))
+        self.assertEqual("A discovery snippet, not source text.", results[0].snippet)
+        for result in results:
+            self.assertEqual("", result.content)
 
-    async def test_bocha_summary_is_not_misrepresented_as_source_text(self) -> None:
-        async def handler(request: httpx.Request) -> httpx.Response:
-            self.assertEqual(
-                "https://api.bochaai.com/v1/web-search", str(request.url)
-            )
-            self.assertEqual("Bearer bocha-secret", request.headers["Authorization"])
-            return httpx.Response(
-                200,
-                json={
-                    "data": {
-                        "webPages": {
-                            "value": [
-                                {
-                                    "name": "Chinese source",
-                                    "url": "https://example.cn/report",
-                                    "summary": "Provider-generated discovery summary.",
-                                }
-                            ]
-                        }
-                    }
-                },
-            )
+    async def test_result_count_is_bounded(self) -> None:
+        results = await self.search(self.RESULT_HTML, max_results=1)
+        self.assertEqual(1, len(results))
+
+    async def test_needs_no_credential_and_reports_itself_as_fallback(self) -> None:
+        info = await DuckDuckGoSearchProvider().describe()
+
+        self.assertEqual("duckduckgo", info.provider_id)
+        self.assertIn("keyless", info.capabilities)
+
+    async def test_upstream_failure_is_a_transparent_provider_error(self) -> None:
+        async def handler(_request: httpx.Request) -> httpx.Response:
+            return httpx.Response(503)
 
         client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
         try:
-            provider = BochaSearchProvider("bocha-secret", client=client)
-            results = await provider.search(
-                query="查询", intent="中文资料", source_kind="web"
-            )
+            provider = DuckDuckGoSearchProvider(client=client)
+            with self.assertRaises(ProviderUnavailableError):
+                await provider.search(
+                    query="q", intent="discovery", source_kind="web"
+                )
         finally:
             await client.aclose()
 
-        self.assertEqual("Provider-generated discovery summary.", results[0].snippet)
-        self.assertEqual("", results[0].content)
-        self.assertNotIn("bocha-secret", repr(provider))
+
+class ProviderConfigurationTest(unittest.TestCase):
+    def test_the_keyless_fallback_is_always_available(self) -> None:
+        with patch.dict("os.environ", {"TAVILY_API_KEY": ""}, clear=False):
+            providers = configured_search_providers()
+
+        self.assertEqual(1, len(providers))
+        self.assertIsInstance(providers[0], DuckDuckGoSearchProvider)
+
+    def test_a_configured_key_is_preferred_over_the_fallback(self) -> None:
+        with patch.dict("os.environ", {"TAVILY_API_KEY": "tavily-secret"}, clear=False):
+            providers = configured_search_providers()
+
+        self.assertIsInstance(providers[0], TavilySearchProvider)
+        self.assertIsInstance(providers[1], DuckDuckGoSearchProvider)
+        self.assertNotIn("tavily-secret", repr(providers))
 
 
 class PublicHttpReaderTest(unittest.IsolatedAsyncioTestCase):

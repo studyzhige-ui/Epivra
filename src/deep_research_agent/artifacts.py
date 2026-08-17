@@ -19,7 +19,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Literal
 
-from .state import ArtifactValidationError, BodyRef
+from .sources import ArtifactValidationError, BodyRef
 
 ArtifactKind = Literal[
     "commission",

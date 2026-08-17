@@ -15,7 +15,7 @@ from deep_research_agent.artifacts import (
     require_artifact_id,
     require_evidence_set_id,
 )
-from deep_research_agent.state import ArtifactValidationError, BodyRef
+from deep_research_agent.sources import ArtifactValidationError, BodyRef
 
 
 def body(text: str) -> BodyRef:

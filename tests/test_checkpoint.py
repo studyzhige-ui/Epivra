@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import tempfile
 import unittest
-from dataclasses import replace
 from pathlib import Path
 from typing import TypedDict
 
@@ -17,31 +16,24 @@ from deep_research_agent.checkpoint import (
     sqlite_checkpointer,
     sqlite_runtime_storage,
 )
-from deep_research_agent.content_store import SqliteContentStore, hydrate_source
-from deep_research_agent.state import ResearchContract, SourceDocument
+from deep_research_agent.content_store import SqliteContentStore
+from deep_research_agent.sources import SourceSnapshotBody
 
 
 class ApprovalState(TypedDict, total=False):
     """Minimal durable state for exercising interrupt/resume round-trips."""
 
     task_id: str
-    question: str
-    stage: str
-    research_contract: ResearchContract
-    source_corpus: dict[str, SourceDocument]
+    approved: bool
+    sources: dict[str, SourceSnapshotBody]
 
 
 def approval_graph(checkpointer: object):
-    def approval(state: ApprovalState) -> ApprovalState:
+    def approval(_state: ApprovalState) -> ApprovalState:
         response = interrupt({"type": "approval"})
         if response != "approve":
             raise ValueError("unexpected response")
-        return {
-            "research_contract": replace(
-                state["research_contract"], approved=True
-            ),
-            "stage": "approved",
-        }
+        return {"approved": True}
 
     builder = StateGraph(ApprovalState)
     builder.add_node("approval", approval)
@@ -77,17 +69,15 @@ class SqliteCheckpointTest(unittest.IsolatedAsyncioTestCase):
                 body_ref = await content_store.put(
                     "Exact source text must live outside graph state."
                 )
-                source = SourceDocument.create(
+                source = SourceSnapshotBody(
                     title="Durable source",
                     url="https://example.com/source",
-                    body_ref=body_ref,
+                    text_ref=body_ref,
                 )
                 paused = await graph.ainvoke(
                     {
                         "task_id": "durable-thread",
-                        "question": "test",
-                        "research_contract": ResearchContract("contract"),
-                        "source_corpus": {source.source_id: source},
+                        "sources": {"src_a": source},
                     },
                     config,
                 )
@@ -97,15 +87,15 @@ class SqliteCheckpointTest(unittest.IsolatedAsyncioTestCase):
                 graph = approval_graph(saver)
                 resumed = await graph.ainvoke(Command(resume="approve"), config)
                 content_store = SqliteContentStore(saver.conn)
-                restored_source = resumed["source_corpus"][source.source_id]
-                hydrated = await hydrate_source(restored_source, content_store)
+                restored = resumed["sources"]["src_a"]
+                text = await content_store.get(restored.text_ref)
 
-            self.assertEqual("approved", resumed["stage"])
-            self.assertTrue(resumed["research_contract"].approved)
-            self.assertEqual(body_ref, restored_source.body_ref)
-            self.assertFalse(hasattr(restored_source, "content"))
+            self.assertTrue(resumed["approved"])
+            self.assertEqual(body_ref, restored.text_ref)
+            # Exact text never entered graph state; only its reference survived.
+            self.assertFalse(hasattr(restored, "content"))
             self.assertEqual(
-                "Exact source text must live outside graph state.", hydrated.content
+                "Exact source text must live outside graph state.", text
             )
 
     async def test_database_is_bound_to_runtime_schema_version(self) -> None:

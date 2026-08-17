@@ -10,9 +10,13 @@ from deep_research_agent.content_store import (
     ContentIntegrityError,
     InMemoryContentStore,
     SqliteContentStore,
-    hydrate_source,
 )
-from deep_research_agent.state import BodyRef, SourceDocument, locate_quote
+from deep_research_agent.sources import (
+    BodyRef,
+    SourceAnchor,
+    locate_quote,
+    validate_anchor,
+)
 
 
 class InMemoryContentStoreTest(unittest.IsolatedAsyncioTestCase):
@@ -38,22 +42,21 @@ class InMemoryContentStoreTest(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(ContentIntegrityError, "mismatch"):
             await store.get(ref)
 
-    async def test_source_hydration_is_runtime_only_and_anchorable(self) -> None:
+    async def test_stored_text_can_be_anchored_after_retrieval(self) -> None:
         store = InMemoryContentStore()
         ref = await store.put("Before exact evidence after.")
-        source = SourceDocument.create(
-            title="Evidence",
-            url="https://example.com/report#section",
-            body_ref=ref,
+
+        text = await store.get(ref)
+        locator = locate_quote(text, "exact evidence")
+        anchor = SourceAnchor(
+            source_ref="src_000000000000000000000001",
+            exact_quote="exact evidence",
+            locator=locator,
         )
+        validate_anchor(anchor, text)
 
-        hydrated = await hydrate_source(source, store)
-        anchor = locate_quote(hydrated, "exact evidence")
-
-        self.assertFalse(hasattr(source, "content"))
-        self.assertEqual(ref.content_hash, source.content_hash)
-        self.assertEqual("exact evidence", anchor.exact_quote)
-        self.assertEqual("https://example.com/report", hydrated.url)
+        self.assertEqual(7, locator.start)
+        self.assertEqual("exact evidence", text[locator.start : locator.end])
 
     async def test_page_arguments_are_validated(self) -> None:
         store = InMemoryContentStore()

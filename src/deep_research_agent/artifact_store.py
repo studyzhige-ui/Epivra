@@ -30,7 +30,7 @@ from .artifacts import (
     require_artifact_id,
 )
 from .content_store import ContentStore
-from .state import ArtifactValidationError, BodyRef
+from .sources import ArtifactValidationError, BodyRef
 
 
 class ArtifactStoreError(RuntimeError):

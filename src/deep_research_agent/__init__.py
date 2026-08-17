@@ -1,20 +1,27 @@
 """Agent-led deep research with deterministic trust boundaries.
 
 The legacy Supervisor control plane has been removed; the package currently
-exposes the trust-plane primitives that the new artifact-based runtime
-(docs/ARCHITECTURE.md) is being rebuilt on.
+exposes the domain model and trust-plane primitives that the artifact-based
+runtime (docs/ARCHITECTURE.md) is being rebuilt on.
 """
 
-from .citations import CitationRenderer, render_citations
+from .artifact_store import ArtifactStore, SqliteArtifactStore
+from .artifacts import (
+    ArtifactDisposition,
+    ArtifactEnvelope,
+    Provenance,
+    evidence_set_id,
+)
+from .citations import CitationHandle, build_handles, render_citations
 from .content_store import ContentStore, InMemoryContentStore, SqliteContentStore
-from .state import (
+from .contract import ResearchContract, build_contract
+from .operations import OperationRequest, SqliteOperationLedger, run_once
+from .sources import (
     ArtifactValidationError,
     BodyRef,
-    CuratedMaterial,
-    HydratedSource,
-    ResearchContract,
+    MaterialBody,
     SourceAnchor,
-    SourceDocument,
+    SourceSnapshotBody,
     TextLocator,
     locate_quote,
     validate_anchor,
@@ -23,19 +30,29 @@ from .state import (
 __version__ = "0.1.0"
 
 __all__ = [
+    "ArtifactDisposition",
+    "ArtifactEnvelope",
+    "ArtifactStore",
     "ArtifactValidationError",
     "BodyRef",
-    "CitationRenderer",
+    "CitationHandle",
     "ContentStore",
-    "CuratedMaterial",
-    "HydratedSource",
     "InMemoryContentStore",
+    "MaterialBody",
+    "OperationRequest",
+    "Provenance",
     "ResearchContract",
     "SourceAnchor",
-    "SourceDocument",
+    "SourceSnapshotBody",
+    "SqliteArtifactStore",
     "SqliteContentStore",
+    "SqliteOperationLedger",
     "TextLocator",
+    "build_contract",
+    "build_handles",
+    "evidence_set_id",
     "locate_quote",
     "render_citations",
+    "run_once",
     "validate_anchor",
 ]

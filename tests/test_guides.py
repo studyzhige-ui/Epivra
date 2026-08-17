@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from deep_research_agent.contract import build_contract
 from deep_research_agent.guides import (
     GUIDE_SECTIONS,
     GuideCatalog,
@@ -14,7 +15,6 @@ from deep_research_agent.guides import (
     parse_guide_ref,
     project_guide,
 )
-from deep_research_agent.state import ResearchContract
 
 
 def guide_text(
@@ -163,10 +163,9 @@ class GuideLoadingTest(unittest.TestCase):
     def test_contract_refs_are_exact_and_projected_without_routing(self) -> None:
         guide = load_guide(self.write_guide("technical", guide_text()))
         catalog = GuideCatalog([guide])
-        contract = ResearchContract(
-            "Compare the alternatives.",
+        contract = build_contract(
+            "Q1. Which alternative should we choose?\n",
             guide_refs=("capability.technical-comparison@1.0.0",),
-            approved=True,
         )
 
         context = guide_context_provider(catalog)("writer", contract)

@@ -13,7 +13,7 @@ from deep_research_agent.artifacts import (
     evidence_set_id,
 )
 from deep_research_agent.content_store import SqliteContentStore
-from deep_research_agent.state import ArtifactValidationError
+from deep_research_agent.sources import ArtifactValidationError
 
 
 class ArtifactStoreFixture(unittest.IsolatedAsyncioTestCase):

@@ -1,204 +1,202 @@
-"""Deterministic compilation of stable source markers into numbered citations."""
+"""Deterministic citation closure and reference rendering.
+
+The Author never writes a number.  It embeds opaque handles the runtime handed
+it -- ``[[cite:h3]]`` -- and this module resolves every handle, numbers them by
+first appearance, and renders the References section.  That split exists because
+numbering is mechanical while *choosing* what to cite is semantic, and mixing
+the two is how reports end up with citations that renumber themselves.
+
+The renderer fails closed.  An unknown handle, a hand-written ``[1]``, or a
+pre-existing References heading aborts publication rather than producing a
+plausible-looking document with an unverifiable claim in it.
+"""
 
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
-from .state import SourceDocument
+from .sources import MaterialBody, SourceAnchor, SourceSnapshotBody
+
+#: Handles are runtime-issued and deliberately opaque, so a model cannot derive
+#: one from a source it merely knows about.
+_HANDLE = r"h[0-9]+"
+_MARKER_RE = re.compile(rf"\[\[cite:\s*({_HANDLE})\s*\]\]")
+_MALFORMED_MARKER_RE = re.compile(r"\[\[\s*cite\s*:", re.IGNORECASE)
+#: A bare ``[1]`` or ``[2, 3]`` that is not a link or footnote definition.
+_MANUAL_NUMERIC_RE = re.compile(r"(?<![\w\]])\[(?:\d+\s*(?:,\s*\d+\s*)*)\](?!\s*[:(])")
+_REFERENCE_HEADING_RE = re.compile(
+    r"^\s{0,3}#{1,6}\s*(references|参考(?:文献|资料))\s*$",
+    re.IGNORECASE | re.MULTILINE,
+)
 
 
 class CitationClosureError(ValueError):
-    """A draft citation cannot be closed against the saved Source Corpus."""
-
-
-_SOURCE_ID = r"[A-Za-z0-9][A-Za-z0-9_.:-]*"
-_MARKER_TEXT = rf"\[\[cite:\s*{_SOURCE_ID}(?:\s*,\s*{_SOURCE_ID})*\s*\]\]"
-_MARKER_RE = re.compile(
-    rf"\[\[cite:\s*(?P<ids>{_SOURCE_ID}(?:\s*,\s*{_SOURCE_ID})*)\s*\]\]"
-)
-_MARKER_RUN_RE = re.compile(rf"{_MARKER_TEXT}(?:[ \t]*{_MARKER_TEXT})*")
-_CITATION_LIKE_RE = re.compile(r"(?<![\w\]])\[(?:\d+\s*(?:,\s*\d+\s*)*)\](?!\s*[:(])")
-_REFERENCE_HEADING_RE = re.compile(
-    r"^\s{0,3}#{1,6}\s+(?:references|参考文献|参考资料)\s*$",
-    re.IGNORECASE | re.MULTILINE,
-)
-_MALFORMED_MARKER_RE = re.compile(r"\[\[\s*cite\s*:", re.IGNORECASE)
-
-
-def _validate_uncompiled_report(markdown: str) -> None:
-    if _REFERENCE_HEADING_RE.search(markdown):
-        raise CitationClosureError(
-            "report must not contain a hand-written references section"
-        )
-    if _CITATION_LIKE_RE.search(_MARKER_RE.sub("", markdown)):
-        raise CitationClosureError(
-            "report contains hand-written numeric citations; use stable markers"
-        )
+    """A report cannot be published with its citations as written."""
 
 
 @dataclass(frozen=True, slots=True)
-class CitationRenderResult:
-    """A rendered report and its deterministic citation closure."""
+class CitationHandle:
+    """One citable position: a material, the anchor used, and its source."""
+
+    handle: str
+    material_ref: str
+    anchor: SourceAnchor
+    source: SourceSnapshotBody
+
+    def __post_init__(self) -> None:
+        if not re.fullmatch(_HANDLE, self.handle):
+            raise CitationClosureError(f"malformed citation handle {self.handle!r}")
+
+
+@dataclass(frozen=True, slots=True)
+class RenderedCitations:
+    """The publishable report plus the closure that justified publishing it."""
 
     markdown: str
-    cited_source_ids: tuple[str, ...]
-    numbering: Mapping[str, int]
+    references: tuple[str, ...]
+    used_material_refs: tuple[str, ...]
 
 
-def _reference_line(number: int, source: SourceDocument) -> str:
-    title = " ".join(source.title.split())
-    return f"[{number}] {title}. {source.url}"
+def build_handles(
+    materials: Mapping[str, MaterialBody],
+    sources: Mapping[str, SourceSnapshotBody],
+) -> tuple[CitationHandle, ...]:
+    """Issue one stable handle per (material, anchor) pair a role may cite.
 
-
-class CitationRenderer:
-    """Compile citation markers without making semantic evidence judgments.
-
-    A single marker may contain one or more comma-separated source IDs::
-
-        [[cite:src_a]]
-        [[cite:src_a, src_b]]
-
-    Adjacent markers are also collapsed into one ordered set. Number assignment
-    follows first appearance in the final body, and repeated sources reuse their
-    original number.
+    Ordering is by material ref then anchor identity, so the same evidence set
+    always yields the same handles regardless of dictionary iteration order.
     """
 
-    def __init__(self, *, references_heading: str = "## References") -> None:
-        if not isinstance(references_heading, str) or not references_heading.strip():
-            raise ValueError("references_heading must be a non-empty string")
-        self.references_heading = references_heading.strip()
-
-    def render(
-        self,
-        markdown: str,
-        source_corpus: Mapping[str, SourceDocument],
-    ) -> CitationRenderResult:
-        if not isinstance(markdown, str):
-            raise TypeError("markdown must be a string")
-        _validate_uncompiled_report(markdown)
-
-        numbering: dict[str, int] = {}
-        cited_source_ids: list[str] = []
-
-        def replace_run(match: re.Match[str]) -> str:
-            run_ids: list[str] = []
-            for marker in _MARKER_RE.finditer(match.group(0)):
-                for source_id in (
-                    item.strip() for item in marker.group("ids").split(",")
-                ):
-                    source = source_corpus.get(source_id)
-                    if source is None:
-                        raise CitationClosureError(
-                            f"citation references unknown source {source_id}"
-                        )
-                    if source.source_id != source_id:
-                        raise CitationClosureError(
-                            f"Source Corpus key {source_id} does not match the source artifact"
-                        )
-                    if source_id not in numbering:
-                        numbering[source_id] = len(numbering) + 1
-                        cited_source_ids.append(source_id)
-                    if source_id not in run_ids:
-                        run_ids.append(source_id)
-
-            numbers = sorted(numbering[source_id] for source_id in run_ids)
-            return "[" + ", ".join(str(number) for number in numbers) + "]"
-
-        rendered_body = _MARKER_RUN_RE.sub(replace_run, markdown)
-        if _MALFORMED_MARKER_RE.search(rendered_body):
-            raise CitationClosureError("report contains a malformed citation marker")
-
-        if not cited_source_ids:
-            return CitationRenderResult(
-                markdown=rendered_body,
-                cited_source_ids=(),
-                numbering={},
+    handles: list[CitationHandle] = []
+    for material_ref in sorted(materials):
+        body = materials[material_ref]
+        for anchor in body.anchors:
+            source = sources.get(anchor.source_ref)
+            if source is None:
+                raise CitationClosureError(
+                    f"material {material_ref} anchors unknown source "
+                    f"{anchor.source_ref}"
+                )
+            handles.append(
+                CitationHandle(
+                    handle=f"h{len(handles) + 1}",
+                    material_ref=material_ref,
+                    anchor=anchor,
+                    source=source,
+                )
             )
+    return tuple(handles)
 
-        references = [
-            _reference_line(numbering[source_id], source_corpus[source_id])
-            for source_id in cited_source_ids
-        ]
-        complete = (
-            rendered_body.rstrip()
-            + "\n\n"
-            + self.references_heading
-            + "\n\n"
-            + "\n".join(references)
-            + "\n"
+
+def extract_handles(markdown: str) -> tuple[str, ...]:
+    """Return cited handles in first-appearance order, without duplicates."""
+
+    seen: list[str] = []
+    for match in _MARKER_RE.finditer(markdown):
+        handle = match.group(1)
+        if handle not in seen:
+            seen.append(handle)
+    return tuple(seen)
+
+
+def _reject_hand_written_citations(markdown: str) -> None:
+    malformed = _MALFORMED_MARKER_RE.findall(markdown)
+    if len(malformed) != len(_MARKER_RE.findall(markdown)):
+        raise CitationClosureError(
+            "the report contains a malformed citation marker; every marker must "
+            "be exactly [[cite:<handle>]]"
         )
-        return CitationRenderResult(
-            markdown=complete,
-            cited_source_ids=tuple(cited_source_ids),
-            numbering=dict(numbering),
+    manual = _MANUAL_NUMERIC_RE.search(markdown)
+    if manual is not None:
+        raise CitationClosureError(
+            f"the report contains a hand-written numeric citation {manual.group(0)!r}; "
+            "numbering is assigned by the renderer"
         )
+    heading = _REFERENCE_HEADING_RE.search(markdown)
+    if heading is not None:
+        raise CitationClosureError(
+            "the report already contains a References section; it is generated "
+            "during publication"
+        )
+
+
+def _reference_line(number: int, source: SourceSnapshotBody) -> str:
+    published = f" ({source.fetched_at})" if source.fetched_at else ""
+    return f"{number}. {source.title}{published}. {source.url}"
 
 
 def render_citations(
-    markdown: str, source_corpus: Mapping[str, SourceDocument]
-) -> CitationRenderResult:
-    """Render with the default reference heading."""
-
-    return CitationRenderer().render(markdown, source_corpus)
-
-
-def extract_citation_ids(markdown: str) -> tuple[str, ...]:
-    """Return stable source IDs in first-appearance order.
-
-    This is also a syntax check used before publication to ensure a Writer did
-    not cite a Source Corpus item that never entered the formal material chain.
-    """
-
-    if not isinstance(markdown, str):
-        raise TypeError("markdown must be a string")
-    _validate_uncompiled_report(markdown)
-    source_ids: list[str] = []
-    for marker in _MARKER_RE.finditer(markdown):
-        for source_id in (item.strip() for item in marker.group("ids").split(",")):
-            if source_id not in source_ids:
-                source_ids.append(source_id)
-    without_valid_markers = _MARKER_RE.sub("", markdown)
-    if _MALFORMED_MARKER_RE.search(without_valid_markers):
-        raise CitationClosureError("report contains a malformed citation marker")
-    return tuple(source_ids)
-
-
-def citation_marker_signature(
     markdown: str,
-) -> tuple[tuple[int, tuple[str, ...]], ...]:
-    """Describe each marker and its position in the citation-free body.
+    handles: Sequence[CitationHandle],
+    *,
+    evidence_set: Sequence[str] | None = None,
+    heading: str = "## 参考资料",
+) -> RenderedCitations:
+    """Resolve every marker, number by first appearance, and append References.
 
-    The signature changes when a marker is added, removed, regrouped, reordered,
-    or moved to a different claim location.  It is a publication safety signal,
-    not a semantic judgment about whether the new association is correct.
+    ``evidence_set`` is the active material set the report was commissioned
+    against.  Passing it makes citing a withdrawn or superseded material a
+    publication failure rather than a silent inconsistency.
     """
 
-    if not isinstance(markdown, str):
-        raise TypeError("markdown must be a string")
-    _validate_uncompiled_report(markdown)
-    signature: list[tuple[int, tuple[str, ...]]] = []
-    plain_position = 0
-    previous_end = 0
-    for marker in _MARKER_RE.finditer(markdown):
-        plain_position += len(markdown[previous_end : marker.start()])
-        source_ids = tuple(
-            item.strip() for item in marker.group("ids").split(",")
+    _reject_hand_written_citations(markdown)
+
+    by_handle = {item.handle: item for item in handles}
+    if len(by_handle) != len(handles):
+        raise CitationClosureError("citation handles must be unique")
+    allowed = None if evidence_set is None else frozenset(evidence_set)
+
+    cited = extract_handles(markdown)
+    if not cited:
+        raise CitationClosureError(
+            "the report cites no evidence; every publishable report must ground "
+            "its verifiable claims"
         )
-        signature.append((plain_position, source_ids))
-        previous_end = marker.end()
-    without_valid_markers = _MARKER_RE.sub("", markdown)
-    if _MALFORMED_MARKER_RE.search(without_valid_markers):
-        raise CitationClosureError("report contains a malformed citation marker")
-    return tuple(signature)
+
+    numbering: dict[str, int] = {}
+    references: list[str] = []
+    used_materials: list[str] = []
+    for handle in cited:
+        entry = by_handle.get(handle)
+        if entry is None:
+            raise CitationClosureError(
+                f"citation handle {handle!r} does not exist in the current "
+                "evidence set"
+            )
+        if allowed is not None and entry.material_ref not in allowed:
+            raise CitationClosureError(
+                f"citation handle {handle!r} resolves to material "
+                f"{entry.material_ref}, which is not in the current evidence set"
+            )
+        # Handles pointing at the same canonical source share a display number so
+        # a reader sees one entry, while each handle keeps its own anchor for audit.
+        if entry.source.url not in numbering:
+            numbering[entry.source.url] = len(numbering) + 1
+            references.append(
+                _reference_line(numbering[entry.source.url], entry.source)
+            )
+        if entry.material_ref not in used_materials:
+            used_materials.append(entry.material_ref)
+
+    def substitute(match: re.Match[str]) -> str:
+        return f"[{numbering[by_handle[match.group(1)].source.url]}]"
+
+    body = _MARKER_RE.sub(substitute, markdown).rstrip()
+    rendered = f"{body}\n\n{heading}\n\n" + "\n".join(references) + "\n"
+    return RenderedCitations(
+        markdown=rendered,
+        references=tuple(references),
+        used_material_refs=tuple(sorted(used_materials)),
+    )
 
 
 __all__ = [
     "CitationClosureError",
-    "CitationRenderResult",
-    "CitationRenderer",
-    "citation_marker_signature",
-    "extract_citation_ids",
+    "CitationHandle",
+    "RenderedCitations",
+    "build_handles",
+    "extract_handles",
     "render_citations",
 ]

@@ -16,7 +16,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Callable, Iterable, Mapping
 
-from .state import ResearchContract
+from .contract import ResearchContract
 
 
 class GuideFormatError(ValueError):

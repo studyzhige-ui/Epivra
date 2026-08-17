@@ -11,7 +11,7 @@ from typing import Protocol
 
 import aiosqlite
 
-from .state import BodyRef, HydratedSource, SourceDocument, content_digest
+from .sources import BodyRef, content_digest
 
 
 class ContentIntegrityError(RuntimeError):
@@ -176,28 +176,10 @@ class SqliteContentStore:
         return count, content
 
 
-async def hydrate_source(
-    source: SourceDocument, reader: ContentReader
-) -> HydratedSource:
-    """Resolve one durable source into an exact runtime-only view."""
-
-    content = await reader.get(source.body_ref)
-    return HydratedSource(
-        source_id=source.source_id,
-        title=source.title,
-        url=source.url,
-        content=content,
-        content_hash=source.content_hash,
-        fetched_at=source.fetched_at,
-        metadata=dict(source.metadata),
-    )
-
-
 __all__ = [
     "ContentIntegrityError",
     "ContentReader",
     "ContentStore",
     "InMemoryContentStore",
     "SqliteContentStore",
-    "hydrate_source",
 ]

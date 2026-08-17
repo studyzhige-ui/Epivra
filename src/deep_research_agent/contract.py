@@ -25,7 +25,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Literal
 
-from .state import ArtifactValidationError
+from .sources import ArtifactValidationError
 
 #: The six semantic blocks a Contract must cover.  They are fixed because they
 #: are the questions a reader of a research protocol needs answered, not because

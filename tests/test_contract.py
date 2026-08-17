@@ -11,7 +11,7 @@ from deep_research_agent.contract import (
     require_question_label,
     section_title,
 )
-from deep_research_agent.state import ArtifactValidationError
+from deep_research_agent.sources import ArtifactValidationError
 
 CONTRACT_BODY = """\
 ## 目的与用途

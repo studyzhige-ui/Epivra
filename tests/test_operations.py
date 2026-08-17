@@ -17,7 +17,7 @@ from deep_research_agent.operations import (
     require_operation_id,
     run_once,
 )
-from deep_research_agent.state import ArtifactValidationError
+from deep_research_agent.sources import ArtifactValidationError
 
 
 def execution() -> ExecutionIdentity:

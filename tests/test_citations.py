@@ -1,290 +1,303 @@
+from __future__ import annotations
+
 import unittest
 
 from deep_research_agent.citations import (
     CitationClosureError,
-    CitationRenderer,
-    citation_marker_signature,
+    build_handles,
+    extract_handles,
     render_citations,
 )
-from deep_research_agent.state import (
+from deep_research_agent.sources import (
     ArtifactValidationError,
     BodyRef,
-    CuratedMaterial,
-    HydratedSource,
+    MaterialBody,
     SourceAnchor,
-    SourceDocument,
-    TextLocator,
+    SourceSnapshotBody,
+    canonical_url,
     locate_quote,
-    make_material_id,
-    make_source_id,
-    merge_source_corpus,
     validate_anchor,
-    validate_anchors,
 )
 
+SOURCE_A = "src_00000000000000000000000a"
+SOURCE_B = "src_00000000000000000000000b"
+MATERIAL_A = "mat_00000000000000000000000a"
+MATERIAL_B = "mat_00000000000000000000000b"
 
-def make_source(name: str, content: str | None = None) -> SourceDocument:
-    body = content or f"Exact evidence from {name}."
-    return SourceDocument.create(
-        title=f"Source {name}",
+
+def snapshot(name: str, text: str = "Exact evidence body.") -> SourceSnapshotBody:
+    return SourceSnapshotBody(
         url=f"https://example.test/{name}",
-        body_ref=BodyRef.from_content(body),
-        metadata={"provider": "fixture"},
+        title=f"Source {name}",
+        text_ref=BodyRef.from_content(text),
+        fetched_at="2026-08-17",
     )
 
 
-def make_hydrated_source(name: str, content: str | None = None) -> HydratedSource:
-    body = content or f"Exact evidence from {name}."
-    source = make_source(name, body)
-    return HydratedSource(
-        source_id=source.source_id,
-        title=source.title,
-        url=source.url,
-        content=body,
-        content_hash=source.content_hash,
-        fetched_at=source.fetched_at,
-        metadata=dict(source.metadata),
+def anchor(source_ref: str, text: str, quote: str) -> SourceAnchor:
+    return SourceAnchor(
+        source_ref=source_ref, exact_quote=quote, locator=locate_quote(text, quote)
     )
 
 
-class CitationRendererTest(unittest.TestCase):
-    def test_curated_material_cannot_exist_without_a_source_anchor(self) -> None:
+def material(source_ref: str, text: str, quote: str) -> MaterialBody:
+    return MaterialBody.create(
+        content=f"A curated statement supported by {quote!r}.",
+        boundaries="Applies only to the population the source studied.",
+        anchors=(anchor(source_ref, text, quote),),
+    )
+
+
+class AnchorTest(unittest.TestCase):
+    def test_a_quote_must_be_locatable_in_the_saved_text(self) -> None:
+        text = "Repeated evidence. Repeated evidence."
+
+        first = locate_quote(text, "Repeated evidence.")
+        second = locate_quote(text, "Repeated evidence.", occurrence=2)
+
+        self.assertEqual(0, first.start)
+        self.assertEqual(19, second.start)
+        with self.assertRaisesRegex(ArtifactValidationError, "not present"):
+            locate_quote(text, "Absent claim.")
+
+    def test_an_anchor_pointing_at_the_wrong_offset_is_rejected(self) -> None:
+        text = "Before exact evidence after."
+        valid = anchor(SOURCE_A, text, "exact evidence")
+        validate_anchor(valid, text)
+
+        drifted = SourceAnchor(
+            source_ref=SOURCE_A,
+            exact_quote="exact evidence",
+            locator=locate_quote(text, "Before"),
+        )
+        with self.assertRaisesRegex(ArtifactValidationError, "does not match"):
+            validate_anchor(drifted, text)
+
+    def test_an_anchor_beyond_the_saved_text_is_rejected(self) -> None:
+        stale = anchor(SOURCE_A, "A longer original body here.", "original body")
+        with self.assertRaisesRegex(ArtifactValidationError, "exceeds"):
+            validate_anchor(stale, "A shorter body.")
+
+
+class MaterialBodyTest(unittest.TestCase):
+    def test_material_cannot_exist_without_an_anchor(self) -> None:
         with self.assertRaisesRegex(ArtifactValidationError, "SourceAnchor"):
-            CuratedMaterial.create(
+            MaterialBody.create(
                 content="Unsupported formal material.",
                 boundaries="No source boundary exists.",
                 anchors=(),
             )
 
-    def test_numbers_by_first_appearance_reuses_and_collapses_multiple_sources(
-        self,
-    ) -> None:
-        source_a = make_source("a")
-        source_b = make_source("b")
-        source_c = make_source("c")
-        unused = make_source("unused")
-        corpus = {
-            source.source_id: source
-            for source in (source_a, source_b, source_c, unused)
-        }
-        draft = (
-            f"First [[cite:{source_b.source_id}]]. "
-            f"Reuse [[cite:{source_b.source_id}]]. "
-            f"Combined [[cite:{source_a.source_id}, {source_c.source_id}]]. "
-            f"Adjacent [[cite:{source_a.source_id}]] [[cite:{source_b.source_id}]]."
+    def test_boundaries_are_mandatory(self) -> None:
+        text = "Exact evidence body."
+        with self.assertRaisesRegex(ArtifactValidationError, "boundaries"):
+            MaterialBody.create(
+                content="A claim.",
+                boundaries="   ",
+                anchors=(anchor(SOURCE_A, text, "Exact evidence"),),
+            )
+
+    def test_anchor_order_does_not_change_the_canonical_body(self) -> None:
+        text = "First fact. Second fact."
+        forward = MaterialBody.create(
+            content="Two facts.",
+            boundaries="Both from one source.",
+            anchors=(
+                anchor(SOURCE_A, text, "First fact."),
+                anchor(SOURCE_A, text, "Second fact."),
+            ),
+        )
+        reversed_order = MaterialBody.create(
+            content="Two facts.",
+            boundaries="Both from one source.",
+            anchors=(
+                anchor(SOURCE_A, text, "Second fact."),
+                anchor(SOURCE_A, text, "First fact."),
+            ),
         )
 
-        result = render_citations(draft, corpus)
+        self.assertEqual(forward.encode(), reversed_order.encode())
 
-        self.assertIn("First [1].", result.markdown)
-        self.assertIn("Reuse [1].", result.markdown)
-        self.assertIn("Combined [2, 3].", result.markdown)
-        self.assertIn("Adjacent [1, 2].", result.markdown)
-        self.assertEqual(
-            result.cited_source_ids,
-            (source_b.source_id, source_a.source_id, source_c.source_id),
+    def test_parent_lineage_is_derived_from_the_anchors(self) -> None:
+        text = "Exact evidence body."
+        body = MaterialBody.create(
+            content="Supported by two sources.",
+            boundaries="Conflicting estimates retained.",
+            anchors=(
+                anchor(SOURCE_B, text, "Exact evidence"),
+                anchor(SOURCE_A, text, "evidence body"),
+            ),
         )
-        self.assertEqual(result.numbering[source_b.source_id], 1)
-        self.assertEqual(result.numbering[source_a.source_id], 2)
-        self.assertEqual(result.numbering[source_c.source_id], 3)
-        self.assertIn("[1] Source b.", result.markdown)
-        self.assertIn("[2] Source a.", result.markdown)
-        self.assertIn("[3] Source c.", result.markdown)
-        self.assertNotIn("Source unused", result.markdown)
-        self.assertNotIn("[[cite:", result.markdown)
 
-    def test_unknown_source_breaks_citation_closure(self) -> None:
-        with self.assertRaisesRegex(CitationClosureError, "unknown source"):
-            render_citations("Unsupported [[cite:src_missing]].", {})
+        self.assertEqual((SOURCE_A, SOURCE_B), body.source_refs)
 
-    def test_malformed_marker_is_rejected(self) -> None:
-        with self.assertRaisesRegex(CitationClosureError, "malformed"):
-            render_citations("Broken [[cite:]].", {})
-        with self.assertRaisesRegex(CitationClosureError, "malformed"):
-            render_citations("Broken [[ CITE:src_a]].", {})
+    def test_bodies_round_trip_through_their_canonical_encoding(self) -> None:
+        text = "Exact evidence body."
+        body = material(SOURCE_A, text, "Exact evidence")
 
-    def test_handwritten_numbers_and_reference_sections_are_rejected(self) -> None:
-        with self.assertRaisesRegex(CitationClosureError, "numeric citations"):
-            render_citations("A hand-written claim [1].", {})
-        with self.assertRaisesRegex(CitationClosureError, "references section"):
-            render_citations("Report\n\n## References\n\n[1] source", {})
-
-    def test_source_corpus_key_must_match_artifact(self) -> None:
-        source = make_source("actual")
-        with self.assertRaisesRegex(CitationClosureError, "does not match"):
-            render_citations("Mismatch [[cite:src_alias]].", {"src_alias": source})
-
-    def test_report_without_citations_does_not_gain_a_reference_section(self) -> None:
-        result = CitationRenderer().render("A report with no external facts.", {})
-
-        self.assertEqual(result.markdown, "A report with no external facts.")
-        self.assertEqual(result.cited_source_ids, ())
-        self.assertEqual(result.numbering, {})
+        self.assertEqual(body, MaterialBody.decode(body.encode()))
 
 
-class ArtifactTrustBoundaryTest(unittest.TestCase):
-    def test_source_rejects_non_web_private_credential_and_signed_urls(self) -> None:
-        unsafe = (
+class SourceSnapshotBodyTest(unittest.TestCase):
+    def test_url_identity_drops_fragments_and_lowercases_the_host(self) -> None:
+        body = SourceSnapshotBody(
+            url="HTTPS://EXAMPLE.TEST/report#section-two",
+            title="Report",
+            text_ref=BodyRef.from_content("body"),
+        )
+        self.assertEqual("https://example.test/report", body.url)
+
+    def test_unsafe_urls_are_refused(self) -> None:
+        for url in (
             "file:///etc/passwd",
             "http://127.0.0.1/private",
             "https://user:password@example.test/report",
             "https://example.test/report?access_token=secret",
             "https://example.test/report?X-Amz-Signature=signed",
-        )
-        for url in unsafe:
+        ):
             with self.subTest(url=url), self.assertRaises(ArtifactValidationError):
-                SourceDocument.create(
-                    title="unsafe", url=url, body_ref=BodyRef.from_content("body")
-                )
+                canonical_url(url)
 
-    def test_source_ids_are_deterministic_for_an_exact_source_version(self) -> None:
-        content = "An exact source body."
-        first = SourceDocument.create(
-            title="First title",
-            url="HTTPS://EXAMPLE.TEST/report#section-one",
-            body_ref=BodyRef.from_content(content),
-        )
-        second = SourceDocument.create(
-            title="A changed display title",
-            url="https://example.test/report#section-two",
-            body_ref=BodyRef.from_content(content),
-            metadata={"provider": "another"},
-        )
+    def test_bodies_round_trip_through_their_canonical_encoding(self) -> None:
+        body = snapshot("a")
+        self.assertEqual(body, SourceSnapshotBody.decode(body.encode()))
 
-        self.assertEqual(first.source_id, second.source_id)
-        self.assertEqual(first.url, "https://example.test/report")
-        self.assertEqual(
-            first.source_id,
-            make_source_id(
-                "https://example.test/report", BodyRef.from_content(content).content_hash
+
+class HandleIssuanceTest(unittest.TestCase):
+    def test_one_handle_is_issued_per_material_anchor_pair(self) -> None:
+        text = "First fact. Second fact."
+        materials = {
+            MATERIAL_A: MaterialBody.create(
+                content="Two facts.",
+                boundaries="Both from one source.",
+                anchors=(
+                    anchor(SOURCE_A, text, "First fact."),
+                    anchor(SOURCE_A, text, "Second fact."),
+                ),
             ),
+            MATERIAL_B: material(SOURCE_B, text, "Second fact."),
+        }
+        sources = {SOURCE_A: snapshot("a", text), SOURCE_B: snapshot("b", text)}
+
+        handles = build_handles(materials, sources)
+
+        self.assertEqual(("h1", "h2", "h3"), tuple(h.handle for h in handles))
+        self.assertEqual(MATERIAL_A, handles[0].material_ref)
+        self.assertEqual(MATERIAL_B, handles[2].material_ref)
+
+    def test_issuance_is_stable_regardless_of_mapping_order(self) -> None:
+        text = "Exact evidence body."
+        sources = {SOURCE_A: snapshot("a", text), SOURCE_B: snapshot("b", text)}
+        forward = build_handles(
+            {
+                MATERIAL_A: material(SOURCE_A, text, "Exact evidence"),
+                MATERIAL_B: material(SOURCE_B, text, "evidence body"),
+            },
+            sources,
         )
-        self.assertNotEqual(
-            first.source_id,
-            make_source_id(
-                "https://example.test/report",
-                BodyRef.from_content(content + " Updated").content_hash,
-            ),
-        )
-
-    def test_quote_locator_must_select_exact_saved_text(self) -> None:
-        source = make_hydrated_source(
-            "quotes", "Repeated evidence. Repeated evidence."
-        )
-        anchor = locate_quote(source, "Repeated evidence.", occurrence=2)
-
-        validate_anchor(anchor, source)
-        self.assertEqual(anchor.locator, TextLocator(start=19, end=37))
-
-        invalid = SourceAnchor(
-            source_id=source.source_id,
-            exact_quote=anchor.exact_quote,
-            locator=TextLocator(start=1, end=19),
-        )
-        with self.assertRaisesRegex(ArtifactValidationError, "does not match"):
-            validate_anchor(invalid, source)
-
-    def test_anchor_collection_rejects_unknown_sources(self) -> None:
-        source = make_hydrated_source("known")
-        anchor = locate_quote(source, "Exact evidence")
-
-        with self.assertRaisesRegex(ArtifactValidationError, "unknown source"):
-            validate_anchors((anchor,), {})
-
-    def test_material_id_is_stable_regardless_of_anchor_input_order(self) -> None:
-        source_a = make_hydrated_source("material-a")
-        source_b = make_hydrated_source("material-b")
-        anchor_a = locate_quote(source_a, "Exact evidence")
-        anchor_b = locate_quote(source_b, "Exact evidence")
-
-        first = CuratedMaterial.create(
-            content="Both sources report the same bounded observation.",
-            boundaries="Applies only to the fixture context.",
-            anchors=(anchor_b, anchor_a),
-        )
-        second = CuratedMaterial.create(
-            content=first.content,
-            boundaries=first.boundaries,
-            anchors=(anchor_a, anchor_b),
-        )
-
-        self.assertEqual(first, second)
-        self.assertEqual(
-            first.material_id,
-            make_material_id(first.content, first.boundaries, first.anchors),
-        )
-
-    def test_source_reducer_merges_parallel_metadata_for_one_exact_source(self) -> None:
-        source = make_source("merge")
-        duplicate = SourceDocument(
-            source_id=source.source_id,
-            title="A richer display title",
-            url=source.url,
-            body_ref=source.body_ref,
-            fetched_at="2026-08-11T12:00:00Z",
-            metadata={"provider": "another", "language": "en"},
+        reverse = build_handles(
+            {
+                MATERIAL_B: material(SOURCE_B, text, "evidence body"),
+                MATERIAL_A: material(SOURCE_A, text, "Exact evidence"),
+            },
+            sources,
         )
 
         self.assertEqual(
-            merge_source_corpus({}, {source.source_id: source}),
-            {source.source_id: source},
+            [(h.handle, h.material_ref) for h in forward],
+            [(h.handle, h.material_ref) for h in reverse],
         )
-        merged = merge_source_corpus(
-            {source.source_id: source},
-            {duplicate.source_id: duplicate},
-        )[source.source_id]
-        reversed_merge = merge_source_corpus(
-            {duplicate.source_id: duplicate},
-            {source.source_id: source},
-        )[source.source_id]
 
-        self.assertEqual(merged, reversed_merge)
-        self.assertEqual("A richer display title", merged.title)
-        self.assertEqual("another | fixture", merged.metadata["provider"])
-        self.assertEqual("en", merged.metadata["language"])
+    def test_a_material_anchoring_an_unknown_source_fails_closed(self) -> None:
+        text = "Exact evidence body."
+        with self.assertRaisesRegex(CitationClosureError, "unknown source"):
+            build_handles(
+                {MATERIAL_A: material(SOURCE_A, text, "Exact evidence")}, {}
+            )
 
-        third = SourceDocument(
-            source_id=source.source_id,
-            title="Third display title",
-            url=source.url,
-            body_ref=source.body_ref,
-            fetched_at="2026-08-11T13:00:00Z",
-            metadata={"provider": "third"},
+
+class RenderTest(unittest.TestCase):
+    def setUp(self) -> None:
+        text = "Exact evidence body."
+        self.materials = {
+            MATERIAL_A: material(SOURCE_A, text, "Exact evidence"),
+            MATERIAL_B: material(SOURCE_B, text, "evidence body"),
+        }
+        self.sources = {SOURCE_A: snapshot("a", text), SOURCE_B: snapshot("b", text)}
+        self.handles = build_handles(self.materials, self.sources)
+
+    def test_numbering_follows_first_appearance_and_reuses_repeats(self) -> None:
+        draft = (
+            "First claim [[cite:h2]].\n"
+            "Second claim [[cite:h1]].\n"
+            "Repeat of the first [[cite:h2]].\n"
         )
-        left = merge_source_corpus(
-            {source.source_id: merged},
-            {third.source_id: third},
-        )[source.source_id]
-        right_branch = merge_source_corpus(
-            {duplicate.source_id: duplicate},
-            {third.source_id: third},
+
+        result = render_citations(draft, self.handles)
+
+        self.assertIn("First claim [1].", result.markdown)
+        self.assertIn("Second claim [2].", result.markdown)
+        self.assertIn("Repeat of the first [1].", result.markdown)
+        self.assertEqual(
+            ("1. Source b (2026-08-17). https://example.test/b",
+             "2. Source a (2026-08-17). https://example.test/a"),
+            result.references,
         )
-        right = merge_source_corpus(
-            {source.source_id: source},
-            right_branch,
-        )[source.source_id]
-        replayed = merge_source_corpus(
-            {left.source_id: left},
-            {source.source_id: source},
-        )[source.source_id]
 
-        self.assertEqual(left, right)
-        self.assertEqual(left, replayed)
-        self.assertEqual("another | fixture | third", left.metadata["provider"])
+    def test_the_reference_section_is_generated_not_authored(self) -> None:
+        result = render_citations("A claim [[cite:h1]].", self.handles)
 
-    def test_citation_signature_detects_marker_removal_and_reassociation(self) -> None:
-        marker = "[[cite:src_fixture]]"
-        original = f"First claim.{marker}\n\nSecond claim."
-        removed = "First claim.\n\nSecond claim."
-        moved = f"First claim.\n\nSecond claim.{marker}"
+        self.assertIn("## 参考资料", result.markdown)
+        self.assertNotIn("[[cite:", result.markdown)
+        self.assertEqual((MATERIAL_A,), result.used_material_refs)
 
-        self.assertNotEqual(
-            citation_marker_signature(original),
-            citation_marker_signature(removed),
+    def test_uncited_evidence_is_not_listed_in_references(self) -> None:
+        result = render_citations("Only one source [[cite:h1]].", self.handles)
+
+        self.assertIn("https://example.test/a", result.markdown)
+        self.assertNotIn("https://example.test/b", result.markdown)
+
+    def test_extraction_preserves_first_appearance_order(self) -> None:
+        self.assertEqual(
+            ("h2", "h1"),
+            extract_handles("b [[cite:h2]] a [[cite:h1]] b again [[cite:h2]]"),
         )
-        self.assertNotEqual(
-            citation_marker_signature(original),
-            citation_marker_signature(moved),
+
+    def test_an_unknown_handle_fails_closed(self) -> None:
+        with self.assertRaisesRegex(CitationClosureError, "does not exist"):
+            render_citations("Unsupported [[cite:h99]].", self.handles)
+
+    def test_a_handle_outside_the_evidence_set_fails_closed(self) -> None:
+        with self.assertRaisesRegex(CitationClosureError, "not in the current"):
+            render_citations(
+                "Withdrawn evidence [[cite:h2]].",
+                self.handles,
+                evidence_set=(MATERIAL_A,),
+            )
+
+    def test_hand_written_numbers_and_reference_sections_are_rejected(self) -> None:
+        with self.assertRaisesRegex(CitationClosureError, "hand-written"):
+            render_citations("A claim [1]. [[cite:h1]]", self.handles)
+        with self.assertRaisesRegex(CitationClosureError, "References section"):
+            render_citations(
+                "A claim [[cite:h1]].\n\n## References\n\nsomething", self.handles
+            )
+
+    def test_a_malformed_marker_is_rejected(self) -> None:
+        with self.assertRaisesRegex(CitationClosureError, "malformed"):
+            render_citations("Broken [[cite:]]. [[cite:h1]]", self.handles)
+        with self.assertRaisesRegex(CitationClosureError, "malformed"):
+            render_citations("Broken [[ CITE:h1]]. [[cite:h1]]", self.handles)
+
+    def test_a_report_citing_nothing_cannot_be_published(self) -> None:
+        with self.assertRaisesRegex(CitationClosureError, "cites no evidence"):
+            render_citations("A report with no grounded facts.", self.handles)
+
+    def test_rendering_is_byte_stable_for_the_same_input(self) -> None:
+        draft = "First [[cite:h2]] then [[cite:h1]]."
+        self.assertEqual(
+            render_citations(draft, self.handles).markdown,
+            render_citations(draft, self.handles).markdown,
         )
 
 
