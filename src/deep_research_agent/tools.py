@@ -12,7 +12,6 @@ from dataclasses import dataclass, replace
 from typing import Literal, Protocol, Sequence
 from urllib.parse import urlsplit, urlunsplit
 
-
 ProviderHealth = Literal["healthy", "degraded", "unavailable"]
 RoutingMode = Literal["auto", "prefer", "only", "exclude"]
 SourceKind = Literal["web", "news"]

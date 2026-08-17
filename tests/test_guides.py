@@ -15,7 +15,6 @@ from deep_research_agent.guides import (
     project_guide,
 )
 from deep_research_agent.state import ResearchContract
-from deep_research_agent.prompts import ROLE_PROMPTS, get_role_prompt
 
 
 def guide_text(
@@ -59,35 +58,6 @@ def guide_text(
         "# Technical Comparison\n\n"
         f"{sections}\n"
     )
-
-
-class PromptRuntimeTest(unittest.TestCase):
-    def test_eight_prompts_are_complete_independent_constants(self) -> None:
-        self.assertEqual(
-            set(ROLE_PROMPTS),
-            {
-                "planner",
-                "supervisor",
-                "researcher",
-                "curator",
-                "synthesizer",
-                "writer",
-                "validator",
-                "editor",
-            },
-        )
-        self.assertEqual(len(set(ROLE_PROMPTS.values())), 8)
-        for role, prompt in ROLE_PROMPTS.items():
-            with self.subTest(role=role):
-                self.assertGreater(len(prompt), 300)
-                self.assertIn("只负责", prompt)
-
-    def test_validator_alias_resolves_without_prompt_composition(self) -> None:
-        self.assertIs(
-            get_role_prompt("Independent Validator"), ROLE_PROMPTS["validator"]
-        )
-        with self.assertRaises(ValueError):
-            get_role_prompt("citation_renderer")
 
 
 class GuideLoadingTest(unittest.TestCase):

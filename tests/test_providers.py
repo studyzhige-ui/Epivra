@@ -7,7 +7,6 @@ from unittest.mock import patch
 import httpx
 
 from deep_research_agent.providers import (
-    _HttpResponse,
     BochaSearchProvider,
     BraveSearchProvider,
     ExaSearchProvider,
@@ -17,6 +16,7 @@ from deep_research_agent.providers import (
     SourceReadError,
     TavilySearchProvider,
     UnsafeUrlError,
+    _HttpResponse,
 )
 
 

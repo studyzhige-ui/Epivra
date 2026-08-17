@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
+from typing import TypedDict
 
 import aiosqlite
 from langgraph.graph import END, START, StateGraph
@@ -17,11 +18,21 @@ from deep_research_agent.checkpoint import (
     sqlite_runtime_storage,
 )
 from deep_research_agent.content_store import SqliteContentStore, hydrate_source
-from deep_research_agent.state import ResearchContract, ResearchState, SourceDocument
+from deep_research_agent.state import ResearchContract, SourceDocument
+
+
+class ApprovalState(TypedDict, total=False):
+    """Minimal durable state for exercising interrupt/resume round-trips."""
+
+    task_id: str
+    question: str
+    stage: str
+    research_contract: ResearchContract
+    source_corpus: dict[str, SourceDocument]
 
 
 def approval_graph(checkpointer: object):
-    def approval(state: ResearchState) -> ResearchState:
+    def approval(state: ApprovalState) -> ApprovalState:
         response = interrupt({"type": "approval"})
         if response != "approve":
             raise ValueError("unexpected response")
@@ -32,7 +43,7 @@ def approval_graph(checkpointer: object):
             "stage": "approved",
         }
 
-    builder = StateGraph(ResearchState)
+    builder = StateGraph(ApprovalState)
     builder.add_node("approval", approval)
     builder.add_edge(START, "approval")
     builder.add_edge("approval", END)

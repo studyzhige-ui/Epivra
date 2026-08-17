@@ -18,7 +18,6 @@ import httpx
 from .content_store import ContentReader
 from .state import BodyRef
 
-
 # DeepSeek V4 currently exposes a 1M-token context.  Characters are only a
 # conservative transport proxy, so this leaves ample room for the configured
 # 65K-token output while avoiding needless role-internal batching.  Alternate

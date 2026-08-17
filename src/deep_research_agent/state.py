@@ -1,8 +1,9 @@
-"""Minimal research artifacts and LangGraph state reducers.
+"""Source, anchor, and material primitives with verifiable identities.
 
-The types in this module describe durable hand-offs between narrow agent roles.
-They intentionally avoid claim ledgers, coverage scores, research budgets, and
-other structures that would move semantic research decisions into the backend.
+These are the trust-plane data types that survive the control-plane rewrite:
+immutable source bodies, mechanically checkable quote anchors, and
+source-faithful curated material.  Runtime state and agent hand-offs are
+defined by the new artifact model (see docs/ARCHITECTURE.md §4), not here.
 """
 
 from __future__ import annotations
@@ -12,21 +13,7 @@ import ipaddress
 import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Annotated, Literal, TypedDict, TypeVar
 from urllib.parse import parse_qsl, urlsplit, urlunsplit
-
-
-JournalKind = Literal["finding", "conflict", "decision", "next_step"]
-AmendmentLevel = Literal["L0", "L1", "L2"]
-PublicationGateStatus = Literal[
-    "unready",
-    "material_blocked",
-    "full_validation_required",
-    "full_validation_passed",
-    "closure_validation_required",
-    "closed",
-]
-AssuranceActor = Literal["independent_validator", "editor"]
 
 
 class ArtifactValidationError(ValueError):
@@ -381,23 +368,6 @@ class ResearchContract:
 
 
 @dataclass(frozen=True, slots=True)
-class JournalEntry:
-    """Narrow process memory; it is never a Writer input."""
-
-    kind: JournalKind
-    content: str
-    anchors: tuple[SourceAnchor, ...] = ()
-    branch_id: str = ""
-
-    def __post_init__(self) -> None:
-        if self.kind not in {"finding", "conflict", "decision", "next_step"}:
-            raise ArtifactValidationError(f"unsupported journal kind {self.kind!r}")
-        _require_text(self.content, "journal content")
-        if not isinstance(self.branch_id, str):
-            raise ArtifactValidationError("branch_id must be a string")
-
-
-@dataclass(frozen=True, slots=True)
 class CuratedMaterial:
     """Source-faithful material admitted for synthesis and writing."""
 
@@ -428,134 +398,6 @@ class CuratedMaterial:
             boundaries=_require_text(boundaries, "material boundaries"),
             anchors=ordered,
         )
-
-
-@dataclass(frozen=True, slots=True)
-class ResearchSynthesis:
-    """Natural-language cross-source analysis, not a report outline."""
-
-    content: str
-
-    def __post_init__(self) -> None:
-        _require_text(self.content, "research synthesis")
-
-
-@dataclass(frozen=True, slots=True)
-class ValidationFinding:
-    """A precise, read-only independent assurance finding."""
-
-    issue: str
-    location: str
-    related_material_ids: tuple[str, ...] = ()
-    related_source_ids: tuple[str, ...] = ()
-    severity_reason: str = ""
-
-    def __post_init__(self) -> None:
-        _require_text(self.issue, "validation issue")
-        _require_text(self.location, "validation location")
-        if not isinstance(self.severity_reason, str):
-            raise ArtifactValidationError("severity_reason must be a string")
-
-
-@dataclass(frozen=True, slots=True)
-class AssuranceEvent:
-    """One append-only validation or response-to-validation audit event."""
-
-    event_id: str
-    actor: AssuranceActor
-    artifact_digest: str
-    scope: str
-    outcome: str
-    details: str
-    recorded_at: str
-
-    def __post_init__(self) -> None:
-        if not self.event_id.startswith("assr_") or len(self.event_id) < 10:
-            raise ArtifactValidationError("assurance event_id is invalid")
-        if self.actor not in {"independent_validator", "editor"}:
-            raise ArtifactValidationError("assurance actor is invalid")
-        if len(self.artifact_digest) != 64 or any(
-            character not in "0123456789abcdef"
-            for character in self.artifact_digest
-        ):
-            raise ArtifactValidationError("assurance artifact_digest is invalid")
-        _require_text(self.scope, "assurance scope")
-        _require_text(self.outcome, "assurance outcome")
-        if not isinstance(self.details, str):
-            raise ArtifactValidationError("assurance details must be a string")
-        _require_text(self.recorded_at, "assurance recorded_at")
-
-
-@dataclass(frozen=True, slots=True)
-class Amendment:
-    """A Supervisor-authorized, narrowly scoped cross-stage revision."""
-
-    level: AmendmentLevel
-    reason: str
-    scope: str
-    regenerate: tuple[str, ...]
-
-    def __post_init__(self) -> None:
-        if self.level not in {"L0", "L1", "L2"}:
-            raise ArtifactValidationError(f"unsupported amendment level {self.level!r}")
-        _require_text(self.reason, "amendment reason")
-        _require_text(self.scope, "amendment scope")
-        if not self.regenerate or any(
-            not isinstance(item, str) or not item.strip() for item in self.regenerate
-        ):
-            raise ArtifactValidationError(
-                "amendment regenerate must contain affected artifact names"
-            )
-
-
-@dataclass(frozen=True, slots=True)
-class ResearchTask:
-    """One focused unit that a Researcher Worker can execute in isolation."""
-
-    branch_id: str
-    instruction: str
-    relevant_source_ids: tuple[str, ...] = ()
-
-    def __post_init__(self) -> None:
-        _require_text(self.branch_id, "research task branch_id")
-        _require_text(self.instruction, "research task instruction")
-        if any(
-            not isinstance(source_id, str) or not source_id.strip()
-            for source_id in self.relevant_source_ids
-        ):
-            raise ArtifactValidationError(
-                "research task relevant_source_ids must contain non-empty strings"
-            )
-        if len(set(self.relevant_source_ids)) != len(self.relevant_source_ids):
-            raise ArtifactValidationError(
-                "research task relevant_source_ids must not contain duplicates"
-            )
-
-
-@dataclass(frozen=True, slots=True)
-class BranchHandoff:
-    """A filtered branch summary for the Supervisor and Curator."""
-
-    branch_id: str
-    summary: str
-    unresolved: tuple[str, ...] = ()
-
-    def __post_init__(self) -> None:
-        _require_text(self.branch_id, "branch handoff branch_id")
-        _require_text(self.summary, "branch handoff summary")
-
-
-ArtifactT = TypeVar("ArtifactT")
-
-
-def _append_distinct(
-    current: Sequence[ArtifactT] | None, updates: Sequence[ArtifactT] | None
-) -> list[ArtifactT]:
-    merged = list(current or ())
-    for item in updates or ():
-        if item not in merged:
-            merged.append(item)
-    return merged
 
 
 def merge_source_corpus(
@@ -608,102 +450,16 @@ def merge_source_corpus(
     return merged
 
 
-def append_journal(
-    current: Sequence[JournalEntry] | None,
-    updates: Sequence[JournalEntry] | None,
-) -> list[JournalEntry]:
-    return _append_distinct(current, updates)
-
-
-def append_handoffs(
-    current: Sequence[BranchHandoff] | None,
-    updates: Sequence[BranchHandoff] | None,
-) -> list[BranchHandoff]:
-    return _append_distinct(current, updates)
-
-
-def append_findings(
-    current: Sequence[ValidationFinding] | None,
-    updates: Sequence[ValidationFinding] | None,
-) -> list[ValidationFinding]:
-    return _append_distinct(current, updates)
-
-
-def append_assurance_events(
-    current: Sequence[AssuranceEvent] | None,
-    updates: Sequence[AssuranceEvent] | None,
-) -> list[AssuranceEvent]:
-    return _append_distinct(current, updates)
-
-
-def append_amendments(
-    current: Sequence[Amendment] | None,
-    updates: Sequence[Amendment] | None,
-) -> list[Amendment]:
-    return _append_distinct(current, updates)
-
-
-def append_errors(
-    current: Sequence[str] | None, updates: Sequence[str] | None
-) -> list[str]:
-    return _append_distinct(current, updates)
-
-
-class ResearchState(TypedDict, total=False):
-    """Authoritative parent-graph state; nodes receive narrower projections."""
-
-    task_id: str
-    question: str
-    stage: str
-    stage_note: str
-    publication_gate_status: PublicationGateStatus
-    closure_validation_scope: str
-    research_contract: ResearchContract
-    approval_card: str
-    research_tasks: list[ResearchTask]
-    active_research_task: ResearchTask
-    branch_handoffs: Annotated[list[BranchHandoff], append_handoffs]
-    source_corpus: Annotated[dict[str, SourceDocument], merge_source_corpus]
-    research_journal: Annotated[list[JournalEntry], append_journal]
-    curated_material_library: dict[str, CuratedMaterial]
-    research_synthesis: ResearchSynthesis
-    draft: str
-    validation_findings: list[ValidationFinding]
-    assurance_log: Annotated[list[AssuranceEvent], append_assurance_events]
-    edited_report: str
-    final_report: str
-    amendments: Annotated[list[Amendment], append_amendments]
-    tool_errors: Annotated[list[str], append_errors]
-
-
 __all__ = [
-    "Amendment",
-    "AmendmentLevel",
-    "AssuranceActor",
-    "AssuranceEvent",
     "ArtifactConflictError",
     "ArtifactValidationError",
-    "BranchHandoff",
     "BodyRef",
     "CuratedMaterial",
     "HydratedSource",
-    "JournalEntry",
-    "JournalKind",
-    "PublicationGateStatus",
     "ResearchContract",
-    "ResearchState",
-    "ResearchSynthesis",
-    "ResearchTask",
     "SourceAnchor",
     "SourceDocument",
     "TextLocator",
-    "ValidationFinding",
-    "append_amendments",
-    "append_assurance_events",
-    "append_errors",
-    "append_findings",
-    "append_handoffs",
-    "append_journal",
     "content_digest",
     "locate_quote",
     "make_material_id",

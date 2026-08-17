@@ -9,13 +9,11 @@ from deep_research_agent.citations import (
 from deep_research_agent.state import (
     ArtifactValidationError,
     BodyRef,
-    BranchHandoff,
     CuratedMaterial,
     HydratedSource,
     SourceAnchor,
     SourceDocument,
     TextLocator,
-    append_handoffs,
     locate_quote,
     make_material_id,
     make_source_id,
@@ -287,17 +285,6 @@ class ArtifactTrustBoundaryTest(unittest.TestCase):
         self.assertNotEqual(
             citation_marker_signature(original),
             citation_marker_signature(moved),
-        )
-
-    def test_handoff_reducer_preserves_order_without_duplicate_replay(self) -> None:
-        first = BranchHandoff("branch-a", "Found the primary source.")
-        second = BranchHandoff(
-            "branch-b", "Found a conflict.", unresolved=("Verify timing",)
-        )
-
-        self.assertEqual(
-            append_handoffs((first,), (first, second)),
-            [first, second],
         )
 
 

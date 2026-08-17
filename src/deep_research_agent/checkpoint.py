@@ -15,7 +15,6 @@ from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
 from .content_store import SqliteContentStore
 
-
 CHECKPOINT_SCHEMA_VERSION = 2
 
 
@@ -36,19 +35,12 @@ class SqliteRuntimeStorage:
 
 
 _STATE_TYPES = (
-    "Amendment",
-    "AssuranceEvent",
     "BodyRef",
-    "BranchHandoff",
     "CuratedMaterial",
-    "JournalEntry",
     "ResearchContract",
-    "ResearchSynthesis",
-    "ResearchTask",
     "SourceAnchor",
     "SourceDocument",
     "TextLocator",
-    "ValidationFinding",
 )
 
 

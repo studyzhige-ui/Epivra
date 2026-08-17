@@ -1,34 +1,41 @@
-"""Agent-first deep research with deterministic trust boundaries."""
+"""Agent-led deep research with deterministic trust boundaries.
 
-from .api import (
-    DEFAULT_WORKFLOW_RECURSION_LIMIT,
-    ResearchAgent,
-    RunResult,
-    TaskAlreadyExistsError,
-    create_memory_agent,
-    inspect_sqlite_task,
-    open_sqlite_agent,
+The legacy Supervisor control plane has been removed; the package currently
+exposes the trust-plane primitives that the new artifact-based runtime
+(docs/ARCHITECTURE.md) is being rebuilt on.
+"""
+
+from .citations import CitationRenderer, render_citations
+from .content_store import ContentStore, InMemoryContentStore, SqliteContentStore
+from .state import (
+    ArtifactValidationError,
+    BodyRef,
+    CuratedMaterial,
+    HydratedSource,
+    ResearchContract,
+    SourceAnchor,
+    SourceDocument,
+    TextLocator,
+    locate_quote,
+    validate_anchor,
 )
-from .citations import CitationRenderer
-from .roles import RoleExecutors
-from .runtime import AgentRuntime, build_environment_runtime, build_role_executors
-from .workflow import build_research_graph
 
 __version__ = "0.1.0"
 
 __all__ = [
-    "AgentRuntime",
+    "ArtifactValidationError",
+    "BodyRef",
     "CitationRenderer",
-    "DEFAULT_WORKFLOW_RECURSION_LIMIT",
-    "ResearchAgent",
-    "RoleExecutors",
-    "RunResult",
-    "TaskAlreadyExistsError",
-    "__version__",
-    "build_research_graph",
-    "build_environment_runtime",
-    "build_role_executors",
-    "create_memory_agent",
-    "inspect_sqlite_task",
-    "open_sqlite_agent",
+    "ContentStore",
+    "CuratedMaterial",
+    "HydratedSource",
+    "InMemoryContentStore",
+    "ResearchContract",
+    "SourceAnchor",
+    "SourceDocument",
+    "SqliteContentStore",
+    "TextLocator",
+    "locate_quote",
+    "render_citations",
+    "validate_anchor",
 ]
