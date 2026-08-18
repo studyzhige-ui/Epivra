@@ -95,6 +95,10 @@ async def run(args: argparse.Namespace) -> int:
         contract = await _propose_contract(
             store, ledger, runtimes, commission, commission_ref.artifact_id
         )
+        if contract is None:
+            print(f"\n--- 判定依据（先于本次运行写定）---\n{fixture.render()}")
+            print("\n本次终局：clarification_requested")
+            return 0
         print("\n" + approval_card(contract))
 
         if not args.approve:
@@ -151,8 +155,14 @@ async def _propose_contract(
     runtimes: dict[str, RoleRuntime],
     commission: CommissionBody,
     commission_ref: str,
-) -> ResearchContract:
-    """Turn the commission into a Contract candidate the user can approve."""
+) -> ResearchContract | None:
+    """Turn the commission into a Contract candidate, or return None.
+
+    ``None`` means the Architect asked a scope question instead, which is a
+    legitimate terminal state -- for a commission as vague as "研究一下 AI 芯片
+    市场" it is the *correct* one.  Treating it as a crash would have scored the
+    honest answer as a failure on the one fixture built to reward it.
+    """
 
     from deep_research_agent.context import RoleContext
 
@@ -177,8 +187,11 @@ async def _propose_contract(
         execution=runtimes["architect"].execution,
         validate=architect_agent.make_validator(None),
     )
-    if action.name != "propose_contract":
-        raise SystemExit(f"architect asked for input instead: {action.arguments}")
+    if action.name == "ask_scope_question":
+        print("\n[architect] 提出澄清问题，未提交合同：")
+        print(f"  问题：{action.arguments['question']}")
+        print(f"  为何会改变方案：{action.arguments['why_it_changes_the_plan']}")
+        return None
 
     from deep_research_agent.contract import build_contract
 
