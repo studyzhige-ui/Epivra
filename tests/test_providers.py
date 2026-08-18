@@ -14,6 +14,7 @@ from deep_research_agent.providers._http import (
     UnsafeUrlError,
 )
 from deep_research_agent.providers.reader import (
+    PathName,
     PublicHttpReader,
     PublicUrlPolicy,
     _HttpResponse,
@@ -280,12 +281,48 @@ class PublicHttpReaderTest(unittest.IsolatedAsyncioTestCase):
                 )
                 with patch(
                     "deep_research_agent.providers.reader._extract_pdf_in_subprocess",
-                    return_value="Extracted PDF evidence.",
+                    return_value=("", "Extracted PDF evidence."),
                 ) as extract:
                     result = await reader.read(url)
 
                 self.assertEqual("Extracted PDF evidence.", result.content)
                 extract.assert_called_once()
+
+    async def test_a_pdf_is_titled_by_what_it_declares_about_itself(self) -> None:
+        """A published reference must name the document, not its download path.
+
+        A live run produced eight references reading ``content``, ``pdf`` and
+        ``00081919.PDF`` -- entries a reader cannot identify without opening
+        every URL, which is the citation transparency the report is supposed
+        to provide.
+        """
+
+        reader = StubReader(
+            [_HttpResponse(200, {"content-type": "application/pdf"}, b"%PDF-1.7")],
+            policy=PublicUrlPolicy(resolver=public_resolver),
+        )
+        with patch(
+            "deep_research_agent.providers.reader._extract_pdf_in_subprocess",
+            return_value=("  WHO SAGE\n  methods\t2024 ", "body"),
+        ):
+            result = await reader.read("https://example.test/bitstreams/abc/content")
+
+        self.assertEqual("WHO SAGE methods 2024", result.title)
+
+    async def test_a_titleless_source_falls_back_to_an_identifying_segment(
+        self,
+    ) -> None:
+        reader = StubReader(
+            [_HttpResponse(200, {"content-type": "application/pdf"}, b"%PDF-1.7")],
+            policy=PublicUrlPolicy(resolver=public_resolver),
+        )
+        with patch(
+            "deep_research_agent.providers.reader._extract_pdf_in_subprocess",
+            return_value=("", "body"),
+        ):
+            result = await reader.read("https://example.test/bitstreams/abc/content")
+
+        self.assertEqual("abc", result.title)
 
     async def test_access_control_failure_is_transparent(self) -> None:
         reader = StubReader(
@@ -294,6 +331,31 @@ class PublicHttpReaderTest(unittest.IsolatedAsyncioTestCase):
         )
         with self.assertRaisesRegex(SourceReadError, "authorization"):
             await reader.read("https://example.test/protected")
+
+
+class PathNameTest(unittest.TestCase):
+    """Every URL here appeared as an unusable reference in a real report."""
+
+    def test_a_delivery_endpoint_never_becomes_the_reference_title(self) -> None:
+        cases = {
+            "https://iris.who.int/server/api/core/bitstreams/8d534089/content": (
+                "8d534089"
+            ),
+            "https://www.frontiersin.org/articles/10.3389/fpubh.2026.1851186/pdf": (
+                "fpubh.2026.1851186"
+            ),
+            "https://www.bmj.com/content/bmj/353/bmj.i2016.full.pdf": (
+                "bmj.i2016.full.pdf"
+            ),
+            "https://pdf.hres.ca/dpd_pm/00081919.PDF": "00081919.PDF",
+        }
+        for url, expected in cases.items():
+            with self.subTest(url=url):
+                self.assertEqual(expected, PathName.from_url(url))
+
+    def test_a_url_with_no_identifying_segment_names_its_host(self) -> None:
+        self.assertEqual("example.test", PathName.from_url("https://example.test/pdf"))
+        self.assertEqual("example.test", PathName.from_url("https://example.test/"))
 
 
 if __name__ == "__main__":

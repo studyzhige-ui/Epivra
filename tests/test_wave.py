@@ -23,6 +23,7 @@ from deep_research_agent.content_store import SqliteContentStore
 from deep_research_agent.contract import build_contract
 from deep_research_agent.model import ModelReply, ModelToolCall
 from deep_research_agent.operations import ExecutionIdentity, SqliteOperationLedger
+from deep_research_agent.providers._http import SourceReadError
 from deep_research_agent.reporting import RoleRuntime
 from deep_research_agent.tools import ReadResult, SearchResponse, SearchResult
 from deep_research_agent.wave import run_wave
@@ -513,6 +514,75 @@ class OutcomeRenderTest(WaveFixture):
         rendered = outcome.render()
         self.assertIn("运行限制（不是证据结论）", rendered)
         self.assertIn("未运行 Analyst", rendered)
+
+
+class LedgerClassificationTest(WaveFixture):
+    """A dead link is a known outcome, so it must never freeze the ledger.
+
+    ``needs_reconciliation`` means "we may have been billed and cannot tell",
+    and it is terminal until a human clears it.  A live run spent it on 52
+    unreadable URLs -- HTML served as PDF, hosts the policy refused -- every
+    one of which is a decided, unbilled outcome.  Had a genuine unknown
+    occurred in that run it would have been indistinguishable from the noise,
+    which is the whole value of the signal.
+    """
+
+    async def test_an_unreadable_source_records_a_retryable_failure(self) -> None:
+        class FailingReader:
+            reads: list[str] = []
+
+            async def read(self, url: str) -> ReadResult:
+                self.reads.append(url)
+                raise SourceReadError("invalid pdf header: b'<!DOC'")
+
+        runtimes = self.runtimes(
+            investigator=investigator_script(find=False)[:1]
+            + [
+                ModelReply(tool_calls=(call("read", url="https://cdc.example/acip"),)),
+                ModelReply(
+                    tool_calls=(
+                        call(
+                            "complete_investigation",
+                            summary="唯一候选来源无法读取。",
+                            attempted_paths=["ACIP 官方记录"],
+                            limitations=["该 URL 返回的内容无法解析为文本"],
+                        ),
+                    )
+                ),
+            ],
+            curator=[],
+            analyst=[],
+        )
+
+        outcome = await run_wave(
+            self.store,
+            self.ledger,
+            runtimes,
+            contract=CONTRACT,
+            wave_intent="确认候选来源是否可读。",
+            assignments=[
+                AssignmentDraft(
+                    question_labels=("Q1",),
+                    focus="ACIP 记录能否读取",
+                    why_it_matters="它是唯一的一手入口",
+                    evidence_sought="ACIP 官方记录",
+                )
+            ],
+            broker=self.broker,
+            reader=FailingReader(),
+        )
+
+        # The branch survives: an unreadable URL is something to report, not a
+        # reason to lose the assignment.
+        self.assertEqual("completed", outcome.branches[0].status)
+
+        rows = await self._connection.execute_fetchall(
+            "select status, attempts, max_attempts from operations where kind='fetch'"
+        )
+        self.assertEqual(1, len(rows))
+        status, attempts, max_attempts = rows[0]
+        self.assertEqual("failed", status)
+        self.assertLess(attempts, max_attempts, "the failure must stay retryable")
 
 
 if __name__ == "__main__":

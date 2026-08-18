@@ -14,8 +14,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import os
-import re
 import sys
 from pathlib import Path
 
@@ -23,65 +21,36 @@ import aiosqlite
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
+from deep_research_agent.application import (  # noqa: E402
+    build_runtimes,
+    load_environment,
+    render_role_models,
+)
 from deep_research_agent.artifact_store import SqliteArtifactStore  # noqa: E402
 from deep_research_agent.config import Role, load_config  # noqa: E402
 from deep_research_agent.content_store import SqliteContentStore  # noqa: E402
 from deep_research_agent.contract import build_contract  # noqa: E402
-from deep_research_agent.model import OpenAICompatibleClient  # noqa: E402
-from deep_research_agent.operations import (  # noqa: E402
-    ExecutionIdentity,
-    SqliteOperationLedger,
-)
-from deep_research_agent.reporting import RoleRuntime, run_reporting  # noqa: E402
+from deep_research_agent.operations import SqliteOperationLedger  # noqa: E402
+from deep_research_agent.reporting import run_reporting  # noqa: E402
 
+#: The reporting transaction touches only these three; building the others
+#: would demand credentials the segment never uses.
 REPORTING_ROLES: tuple[Role, ...] = ("analyst", "author", "reviewer")
 
 
-def load_env(path: Path) -> dict[str, str]:
-    """Read a .env file without adding a dependency for one small format."""
-
-    values = dict(os.environ)
-    if not path.is_file():
-        return values
-    for line in path.read_text(encoding="utf-8").splitlines():
-        match = re.match(r"^\s*([A-Z_][A-Z0-9_]*)\s*=\s*(.*)$", line)
-        if match:
-            values[match.group(1)] = match.group(2).strip()
-    return values
-
-
-def build_runtimes(environ: dict[str, str]) -> dict[str, RoleRuntime]:
-    """Bind each role to the model its tier resolves to."""
-
-    config = load_config(environ)
-    runtimes: dict[str, RoleRuntime] = {}
-    for role in REPORTING_ROLES:
-        chosen = config.model_for(role)
-        runtimes[role] = RoleRuntime(
-            model=OpenAICompatibleClient(
-                chosen.api_key(environ),
-                model=chosen.model_id,
-                api_base=chosen.api_base,
-            ),
-            execution=ExecutionIdentity(
-                provider=chosen.provider.name,
-                endpoint=chosen.api_base,
-                model_id=chosen.model_id,
-            ),
-        )
-        print(f"  {role:<9} {chosen.tier:<10} {chosen.model_id}")
-    return runtimes
-
-
 async def ensure_contract(store: SqliteArtifactStore, contract_path: Path) -> None:
-    """Commit the approved Contract if this task does not already have one."""
+    """Commit the approved Contract if this task does not already have one.
+
+    The Contract is stored in its own canonical encoding, not as raw markdown:
+    a body written one way and read another is what made the reporting segment
+    fail on a database that had a perfectly valid Contract in it.
+    """
 
     view = await store.active_view()
     if view.head("research_contract") is not None:
         return
-    body = contract_path.read_text(encoding="utf-8")
-    build_contract(body)  # reject a Contract without a usable question model
-    await store.put(kind="research_contract", body=body)
+    contract = build_contract(contract_path.read_text(encoding="utf-8"))
+    await store.put(kind="research_contract", body=contract.encode())
 
 
 async def drive(
@@ -110,7 +79,8 @@ async def drive(
         print(f"sources:      {len(view.active('source_snapshot'))}")
 
         print("\nroles:")
-        runtimes = build_runtimes(environ)
+        print(render_role_models(load_config(environ), REPORTING_ROLES))
+        runtimes = build_runtimes(environ, roles=REPORTING_ROLES)
 
         print("\nrunning reporting transaction...")
         outcome = await run_reporting(
@@ -169,7 +139,7 @@ def main(argv: list[str] | None = None) -> int:
             contract_path=args.contract,
             report_brief=args.brief,
             stop_rationale=args.stop_rationale,
-            environ=load_env(args.env),
+            environ=load_environment(args.env),
             output=args.output,
         )
     )

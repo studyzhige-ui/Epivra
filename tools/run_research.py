@@ -17,8 +17,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import os
-import re
 import sys
 from pathlib import Path
 
@@ -33,6 +31,11 @@ import fixtures as fixture_set  # noqa: E402
 from deep_research_agent.agents import architect as architect_agent  # noqa: E402
 from deep_research_agent.agents import invoke_agent  # noqa: E402
 from deep_research_agent.agents import lead as lead_agent  # noqa: E402
+from deep_research_agent.application import (  # noqa: E402
+    build_runtimes,
+    load_environment,
+    render_role_models,
+)
 from deep_research_agent.approval import (  # noqa: E402
     ApprovalBody,
     approval_card,
@@ -41,7 +44,7 @@ from deep_research_agent.approval import (  # noqa: E402
 )
 from deep_research_agent.artifact_store import SqliteArtifactStore  # noqa: E402
 from deep_research_agent.artifacts import Provenance  # noqa: E402
-from deep_research_agent.config import Role, load_config  # noqa: E402
+from deep_research_agent.config import load_config  # noqa: E402
 from deep_research_agent.content_store import SqliteContentStore  # noqa: E402
 from deep_research_agent.context import (  # noqa: E402
     latest_body,
@@ -49,69 +52,23 @@ from deep_research_agent.context import (  # noqa: E402
     load_evidence,
 )
 from deep_research_agent.contract import CommissionBody, ResearchContract  # noqa: E402
-from deep_research_agent.model import OpenAICompatibleClient  # noqa: E402
-from deep_research_agent.operations import (  # noqa: E402
-    ExecutionIdentity,
-    SqliteOperationLedger,
-)
+from deep_research_agent.operations import SqliteOperationLedger  # noqa: E402
 from deep_research_agent.providers import build_search_providers  # noqa: E402
 from deep_research_agent.providers.reader import PublicHttpReader  # noqa: E402
 from deep_research_agent.reporting import RoleRuntime, run_reporting  # noqa: E402
 from deep_research_agent.tools import TransparentSearchBroker  # noqa: E402
 from deep_research_agent.wave import run_wave  # noqa: E402
 
-ALL_ROLES: tuple[Role, ...] = (
-    "architect",
-    "lead",
-    "investigator",
-    "curator",
-    "analyst",
-    "author",
-    "reviewer",
-)
-
-
-def load_env(path: Path) -> dict[str, str]:
-    values = dict(os.environ)
-    if not path.is_file():
-        return values
-    for line in path.read_text(encoding="utf-8").splitlines():
-        match = re.match(r"^\s*([A-Z_][A-Z0-9_]*)\s*=\s*(.*)$", line)
-        if match:
-            values[match.group(1)] = match.group(2).strip()
-    return values
-
-
-def build_runtimes(environ: dict[str, str]) -> dict[str, RoleRuntime]:
-    config = load_config(environ)
-    runtimes: dict[str, RoleRuntime] = {}
-    print("角色 → 模型：")
-    for role in ALL_ROLES:
-        chosen = config.model_for(role)
-        runtimes[role] = RoleRuntime(
-            model=OpenAICompatibleClient(
-                chosen.api_key(environ),
-                model=chosen.model_id,
-                api_base=chosen.api_base,
-            ),
-            execution=ExecutionIdentity(
-                provider=chosen.provider.name,
-                endpoint=chosen.api_base,
-                model_id=chosen.model_id,
-            ),
-        )
-        print(f"  {role:<13} {chosen.tier:<10} {chosen.model_id}")
-    return runtimes
-
 
 async def run(args: argparse.Namespace) -> int:
     fixture = fixture_set.get(args.fixture)
-    environ = load_env(ROOT / ".env")
+    environ = load_environment(ROOT / ".env")
     config = load_config(environ)
 
     print(f"\n=== {fixture.fixture_id} ({fixture.domain} × {fixture.genre}) ===")
     print(f"压测：{fixture.stresses}\n")
-    runtimes = build_runtimes(environ)
+    print(render_role_models(config))
+    runtimes = build_runtimes(environ, config=config)
 
     database = Path(args.database)
     database.parent.mkdir(parents=True, exist_ok=True)
@@ -161,7 +118,7 @@ async def run(args: argparse.Namespace) -> int:
         reader = PublicHttpReader()
         print(f"[providers] {', '.join(p.provider_id for p in providers)}")
 
-        await _govern(
+        kind = await _govern(
             store,
             ledger,
             runtimes,
@@ -170,7 +127,19 @@ async def run(args: argparse.Namespace) -> int:
             reader=reader,
             max_waves=args.max_waves,
             source_access=fixture.source_access,
+            output=(
+                Path(args.output)
+                if args.output
+                else ROOT / ".deep-research-agent" / f"{fixture.fixture_id}.md"
+            ),
         )
+        # All three terminal states are legitimate ends to a stress run, so the
+        # exit code means "reached a terminal state", not "published".  Which
+        # state was *correct* is decided against the pre-registered assertions
+        # below -- printed after the run so the judgement is not reconstructed
+        # from the report that was just produced.
+        print(f"\n--- 判定依据（先于本次运行写定）---\n{fixture.render()}")
+        print(f"\n本次终局：{kind}")
         return 0
     finally:
         await connection.close()
@@ -241,8 +210,14 @@ async def _govern(
     reader,  # noqa: ANN001
     max_waves: int,
     source_access,  # noqa: ANN001
-) -> None:
-    """Let the Lead govern until it commissions a report or asks for a human."""
+    output: Path,
+) -> str:
+    """Let the Lead govern until it commissions a report or asks for a human.
+
+    Returns which terminal state the run reached -- ``published``, ``halted``, or
+    ``paused``.  All three are legitimate; deciding whether the *right* one was
+    reached is the fixture's job, not the runner's.
+    """
 
     latest_outcome = ""
     for round_index in range(1, max_waves + 2):
@@ -271,23 +246,17 @@ async def _govern(
         print(f"\n[lead #{round_index}] {action.name}")
 
         if action.name == "commission_report":
-            outcome = await run_reporting(
-                store,
-                ledger,
-                runtimes,
-                report_brief=str(action.arguments["report_brief"]),
-                stop_rationale=str(action.arguments["stop_rationale"]),
+            return await _report(
+                store, ledger, runtimes, arguments=action.arguments, output=output
             )
-            print(f"[published] {outcome.publication_ref}")
-            return
 
         if action.name != "commission_wave":
             print(f"暂停：{action.arguments}")
-            return
+            return "paused"
 
         if round_index > max_waves:
             print(f"已达 --max-waves={max_waves}，暂停等待人工判断。")
-            return
+            return "paused"
 
         drafts = lead_agent.parse_assignments(
             contract, action.arguments["assignments"]
@@ -312,6 +281,56 @@ async def _govern(
             f"  → 新增素材 {len(wave.new_material_refs)}，"
             f"Analyst {'运行' if wave.analyst_ran else '未运行'}"
         )
+    return "paused"
+
+
+async def _report(
+    store: SqliteArtifactStore,
+    ledger: SqliteOperationLedger,
+    runtimes: dict[str, RoleRuntime],
+    *,
+    arguments,  # noqa: ANN001
+    output: Path,
+) -> str:
+    """Run the reporting transaction and record what it actually produced.
+
+    Review rounds are printed because they are the observable that matters for
+    calibration: a first-pass approval and an approval after one bounded
+    revision are very different signals about the Author.
+    """
+
+    outcome = await run_reporting(
+        store,
+        ledger,
+        runtimes,
+        report_brief=str(arguments["report_brief"]),
+        stop_rationale=str(arguments["stop_rationale"]),
+    )
+
+    for index, review in enumerate(outcome.reviews, start=1):
+        verdict = "批准" if review.approved else "阻断"
+        print(f"  [review {index}] {verdict}（{len(review.findings)} 项阻断）")
+        for finding in review.findings:
+            print(f"    - {finding.splitlines()[0]}")
+
+    # A transaction that stopped is a legitimate result, but it is not a
+    # publication; reporting it as one would hide the exact failure this matrix
+    # exists to detect.
+    if not outcome.published:
+        print(f"\nOUTCOME: halted — {outcome.halted_reason}")
+        return "halted"
+
+    assert outcome.rendered is not None
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(outcome.rendered.markdown, encoding="utf-8")
+    print(
+        f"\nOUTCOME: published {outcome.publication_ref}\n"
+        f"  正文 {len(outcome.rendered.markdown):,} 字符，"
+        f"参考 {len(outcome.rendered.references)} 条，"
+        f"引用素材 {len(outcome.rendered.used_material_refs)} 份\n"
+        f"  写入 {output}"
+    )
+    return "published"
 
 
 async def _commit_memory(store: SqliteArtifactStore, arguments) -> None:  # noqa: ANN001
@@ -328,6 +347,11 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--fixture", default="")
     parser.add_argument("--database", default=".deep-research-agent/stress.sqlite3")
+    parser.add_argument(
+        "--output",
+        default="",
+        help="发布报告的写入路径（默认 .deep-research-agent/<fixture>.md）",
+    )
     parser.add_argument("--approve", action="store_true")
     parser.add_argument("--max-waves", type=int, default=2)
     parser.add_argument("--list", action="store_true")

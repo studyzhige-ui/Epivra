@@ -25,6 +25,16 @@ from pypdf import PdfReader
 from ..tools import ReadResult
 from ._http import SourceReadError, UnsafeUrlError
 
+#: A title is untrusted text that ends up in the published reference list, so
+#: it is normalised to a single bounded line before it is ever stored.
+_MAX_TITLE_CHARS = 300
+
+
+def clean_title(value: str | None) -> str:
+    """Normalise a title a document declares about itself, or return empty."""
+
+    return " ".join(str(value or "").split())[:_MAX_TITLE_CHARS]
+
 
 def _pdf_worker(
     body: bytes,
@@ -48,7 +58,15 @@ def _pdf_worker(
                 sender.send(("error", "PDF text exceeds the configured size"))
                 return
             parts.append(value)
-        sender.send(("ok", "\n\n".join(parts).strip()))
+        # A PDF's own /Title is the only title it declares; without it the
+        # reference list falls back to the URL, which for a delivery endpoint
+        # names nothing a reader can recognise.  It is normalised by the
+        # caller, alongside the HTML title, so both arrive bounded.
+        try:
+            declared = getattr(reader.metadata, "title", "") or ""
+        except Exception:
+            declared = ""
+        sender.send(("ok", (str(declared), "\n\n".join(parts).strip())))
     except Exception:
         sender.send(("error", "PDF could not be parsed"))
     finally:
@@ -61,7 +79,9 @@ def _extract_pdf_in_subprocess(
     max_pages: int,
     max_text_chars: int,
     timeout_seconds: float,
-) -> str:
+) -> tuple[str, str]:
+    """Return ``(declared_title, text)``; the title is empty if none is set."""
+
     context = multiprocessing.get_context("spawn")
     receiver, sender = context.Pipe(duplex=False)
     process = context.Process(
@@ -84,7 +104,8 @@ def _extract_pdf_in_subprocess(
         process.join(timeout=1.0)
     if status != "ok":
         raise SourceReadError(str(payload))
-    return str(payload)
+    declared, text = payload
+    return str(declared), str(text)
 
 
 Resolver = Callable[[str], Awaitable[Sequence[str]]]
@@ -277,19 +298,19 @@ class PublicHttpReader:
                     or urlsplit(current).path.casefold().endswith(".pdf")
                     or body.lstrip().startswith(b"%PDF-")
                 ):
-                    content = await asyncio.to_thread(
+                    declared, content = await asyncio.to_thread(
                         _extract_pdf_in_subprocess,
                         body,
                         max_pages=self.max_pdf_pages,
                         max_text_chars=self.max_text_chars,
                         timeout_seconds=self.pdf_timeout_seconds,
                     )
-                    title = PathName.from_url(current)
+                    title = clean_title(declared) or PathName.from_url(current)
                 elif "html" in content_type or body.lstrip().startswith(b"<"):
                     extractor = _TextExtractor()
                     extractor.feed(self._decode(body, response.charset))
                     content = extractor.text()
-                    title = extractor.title or PathName.from_url(current)
+                    title = clean_title(extractor.title) or PathName.from_url(current)
                 else:
                     content = self._decode(body, response.charset).strip()
                     title = PathName.from_url(current)
@@ -324,10 +345,39 @@ class PublicHttpReader:
             return body.decode("utf-8", errors="replace")
 
 class PathName:
+    """Name a source from its URL when the document declares no title.
+
+    The reference line already prints the URL beside the title, so repeating
+    the host here would add nothing; what is missing is a token a reader can
+    recognise.  A trailing ``/content`` or ``/pdf`` names how the document is
+    *served*, not which document it is, so the last **identifying** segment is
+    used rather than simply the last one -- otherwise three distinct WHO
+    documents all appear in the reference list as "content".
+    """
+
+    #: Segments that name a delivery endpoint rather than a document.
+    ENDPOINTS = frozenset(
+        {
+            "abstract",
+            "content",
+            "download",
+            "file",
+            "full",
+            "fulltext",
+            "index.htm",
+            "index.html",
+            "pdf",
+            "view",
+        }
+    )
+
     @staticmethod
     def from_url(url: str) -> str:
-        path = urlsplit(url).path.rstrip("/")
-        return path.rsplit("/", 1)[-1] or urlsplit(url).hostname or "Untitled source"
+        parts = urlsplit(url)
+        for segment in reversed(parts.path.rstrip("/").split("/")):
+            if segment and segment.casefold() not in PathName.ENDPOINTS:
+                return segment[:_MAX_TITLE_CHARS]
+        return parts.hostname or "Untitled source"
 
 
 @dataclass(frozen=True, slots=True)
