@@ -488,11 +488,16 @@ Sleep = Callable[[float], Awaitable[None]]
 
 
 @dataclass(slots=True)
-class DeepSeekChatClient:
-    """Current DeepSeek OpenAI-compatible Chat Completions transport."""
+class OpenAICompatibleClient:
+    """Chat Completions transport for any OpenAI-compatible vendor.
+
+    One transport serves every vendor in the registry because they all speak
+    this protocol; the vendor is data (``api_base``), not a subclass.
+    """
 
     api_key: str = field(repr=False)
     model: str = "deepseek-v4-pro"
+    api_base: str = "https://api.deepseek.com"
     max_output_tokens: int = 65_536
     timeout_seconds: float = 180.0
     transient_retries: int = 2
@@ -501,9 +506,11 @@ class DeepSeekChatClient:
 
     def __post_init__(self) -> None:
         if not self.api_key.strip():
-            raise ValueError("DeepSeek api_key must not be empty")
+            raise ValueError("api_key must not be empty")
         if not self.model.strip():
-            raise ValueError("DeepSeek model must not be empty")
+            raise ValueError("model must not be empty")
+        if not self.api_base.startswith("https://"):
+            raise ValueError("api_base must be an HTTPS origin")
         if self.max_output_tokens < 1:
             raise ValueError("max_output_tokens must be positive")
         if self.timeout_seconds <= 0:
@@ -518,7 +525,7 @@ class DeepSeekChatClient:
         env_var: str = "DEEPSEEK_API_KEY",
         model: str | None = None,
         **kwargs: Any,
-    ) -> "DeepSeekChatClient":
+    ) -> "OpenAICompatibleClient":
         key = os.environ.get(env_var, "").strip()
         if not key:
             raise ValueError(f"environment variable {env_var} is not configured")
@@ -554,7 +561,7 @@ class DeepSeekChatClient:
             for attempt in range(self.transient_retries + 1):
                 try:
                     response = await client.post(
-                        "https://api.deepseek.com/chat/completions",
+                        f"{self.api_base.rstrip('/')}/chat/completions",
                         json=payload,
                         headers={
                             "Authorization": f"Bearer {self.api_key}",
@@ -631,7 +638,7 @@ class DeepSeekChatClient:
 __all__ = [
     "ChatModel",
     "DEFAULT_MAX_PAYLOAD_CHARS",
-    "DeepSeekChatClient",
+    "OpenAICompatibleClient",
     "MessageCapacityError",
     "ModelAuthError",
     "ModelProtocolError",

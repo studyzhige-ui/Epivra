@@ -6,9 +6,9 @@ import unittest
 import httpx
 
 from deep_research_agent.model import (
-    DeepSeekChatClient,
     ModelAuthError,
     ModelProtocolError,
+    OpenAICompatibleClient,
     ToolSpec,
 )
 
@@ -50,7 +50,7 @@ class DeepSeekTransportTest(unittest.IsolatedAsyncioTestCase):
             )
 
         client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
-        model = DeepSeekChatClient("secret", client=client)
+        model = OpenAICompatibleClient("secret", client=client)
         try:
             reply = await model.complete(
                 [
@@ -91,7 +91,7 @@ class DeepSeekTransportTest(unittest.IsolatedAsyncioTestCase):
             )
 
         client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
-        model = DeepSeekChatClient(
+        model = OpenAICompatibleClient(
             "secret", client=client, transient_retries=1, sleep=no_sleep
         )
         try:
@@ -109,7 +109,7 @@ class DeepSeekTransportTest(unittest.IsolatedAsyncioTestCase):
             return httpx.Response(401, text="sensitive upstream body")
 
         client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
-        model = DeepSeekChatClient("secret-key", client=client)
+        model = OpenAICompatibleClient("secret-key", client=client)
         try:
             with self.assertRaises(ModelAuthError) as raised:
                 await model.complete([{"role": "user", "content": "hello"}])
@@ -135,7 +135,7 @@ class DeepSeekTransportTest(unittest.IsolatedAsyncioTestCase):
             )
 
         client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
-        model = DeepSeekChatClient("secret", client=client)
+        model = OpenAICompatibleClient("secret", client=client)
         try:
             with self.assertRaisesRegex(ModelProtocolError, "not accepted"):
                 await model.complete([{"role": "user", "content": "write"}])
