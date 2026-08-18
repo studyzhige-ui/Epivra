@@ -14,6 +14,8 @@ turned a research failure into ``supervisor-branch-mode-violations.v9``.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Protocol
@@ -119,6 +121,34 @@ class AgentSpec:
 
         return frozenset(tool.name for tool in self.tools) - self.terminal_tools
 
+    @property
+    def digest(self) -> str:
+        """Exact identity of the instructions this role was invoked with.
+
+        The ledger replays a completed call when *the same work* is requested
+        again, so the instructions have to be part of what "the same" means.
+        Without this, editing a role's prompt or a tool's schema replays the
+        previous wording's answer on any task already part-way through -- and
+        calibration does nothing but edit prompts and re-run, so the stale
+        reply would arrive looking exactly like a real result.
+
+        It covers what the provider actually receives, which is why the tool
+        list is hashed in declaration order rather than sorted: a reordering
+        is sent to the provider, so it counts.  Erring this way re-runs a call
+        that might have been reusable, which is the safe direction.
+        """
+
+        payload = json.dumps(
+            {
+                "system_prompt": self.system_prompt,
+                "tool_choice": self.tool_choice,
+                "tools": [tool.as_api_value() for tool in self.tools],
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
 
 class AgentToolBudgetExhausted(AgentProtocolError):
     """A role used its tool-turn ceiling without submitting a terminal action.
@@ -194,6 +224,9 @@ async def invoke_agent(
                 # same work. Without it a closure review would replay the
                 # baseline verdict on a report body it never read.
                 "context": context.digest,
+                # The instructions are basis too: an edited prompt is different
+                # work, and replaying the old answer would hide the edit.
+                "spec": spec.digest,
                 "turn": str(attempt),
             },
         )

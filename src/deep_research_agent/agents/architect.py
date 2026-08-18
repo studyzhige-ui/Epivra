@@ -12,6 +12,15 @@ of an eager user is a worse product than a clearly-stated assumption they can
 correct in one edit.  Only ambiguity that would produce two fundamentally
 different research tasks earns a question.
 
+Its second duty is to **reframe a commission whose premise does not hold**.  A
+user may ask for a proof of a conclusion they have already chosen, or a ranking
+the available evidence cannot support.  Q1 is what the whole report must answer
+and every later role works for it, so an unsound Q1 propagates through the entire
+run -- filing the objection under "known limitations" while leaving the original
+question as Q1 is not honesty, it is a footnote on a research plan that is
+already pointed the wrong way.  Two live runs failed exactly this way before the
+rule was written down.
+
 Pack selection is a semantic judgment recorded in the Contract.  Choosing
 nothing is a first-class answer: the system must reach a publishable report with
 no packs, so packs are an improvement rather than a prerequisite.
@@ -62,8 +71,16 @@ Research Lead 可以自行调整什么（查询、来源顺序、并行度），
 
 硬性要求：
 
+- **委托的前提可能不成立，这时你的职责是重写问题，不是继承它。** 委托可能预设了
+  结论（"请论证 X 能降低 Y"）、要求证据给不出的精确度（"给出一个明确的排名"）、
+  或把关联当成因果。遇到这种委托，Q1 要写成证据有可能回答的问题，并在「目的与用途」
+  中写明你改写了什么、为什么改。把异议记进「已知限制」却让原问题继续当 Q1，等于让
+  整份研究去服务一个你已经判断不成立的前提——报告最后必须回答 Q1，Q1 错了，后面每
+  个角色都在为它工作。
 - 只在**缺少答案会产生两个根本不同的研究任务**时才提问。其余不确定性写成默认假设。
-  用户面对一串低价值问题的体验，比面对一个可以一键修正的清晰假设更差。
+  用户面对一串低价值问题的体验，比面对一个可以一键修正的清晰假设更差。关于用户自身
+  情况的空白（行业、规模、现有系统、团队）几乎总是默认假设——用户在审批卡上一眼就
+  能改。提问也不能用来回避委托本身的问题：那要靠上一条改写，不是靠反问用户。
 - 不要写具体查询词、URL、固定来源数、固定 Wave 数、预期结论或最终文章目录。
 - 不要承诺已经找到结论。你还没有做任何研究。
 - 不要替用户批准。
