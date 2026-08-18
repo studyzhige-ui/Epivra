@@ -1,9 +1,11 @@
-"""LLM vendor registry and one OpenAI-compatible transport.
+"""LLM vendor registry: which vendors exist, and which protocol each speaks.
 
-Nearly every current vendor exposes an OpenAI-compatible Chat Completions
-endpoint, so this package carries **one** client rather than one class per
-vendor.  A vendor is then just data: a base URL, an environment variable, and a
-default tier pair.  Adding a vendor is a registry entry, not a code path.
+Most vendors expose an OpenAI-compatible Chat Completions endpoint, so most of
+them share one transport.  **Anthropic does not** -- its Messages API is a
+different wire format, and pointing an OpenAI client at it produces 404s and
+400s rather than a useful error.  The registry therefore records a ``protocol``
+per vendor and the runtime picks the matching transport; a vendor is data, but
+its protocol is not something to guess.
 
 The registry deliberately records no pricing.  Prices change faster than a
 repository does, and a stale number embedded in code is worse than none; the
@@ -25,10 +27,14 @@ ModelTier = Literal["reasoning", "fast"]
 
 MODEL_TIERS: tuple[ModelTier, ...] = ("reasoning", "fast")
 
+#: The wire format a vendor speaks.  Adding a protocol means adding a transport,
+#: not just a registry row -- which is exactly why it is recorded explicitly.
+LlmProtocol = Literal["openai_compatible", "anthropic"]
+
 
 @dataclass(frozen=True, slots=True)
 class LlmProviderSpec:
-    """One vendor reachable over the OpenAI-compatible protocol."""
+    """One vendor, its endpoint, its protocol, and its default tier pair."""
 
     name: str
     label: str
@@ -36,6 +42,7 @@ class LlmProviderSpec:
     key_env_var: str
     reasoning_model: str
     fast_model: str
+    protocol: LlmProtocol = "openai_compatible"
 
     def default_model(self, tier: ModelTier) -> str:
         return self.reasoning_model if tier == "reasoning" else self.fast_model
@@ -60,10 +67,13 @@ LLM_PROVIDERS: tuple[LlmProviderSpec, ...] = (
     LlmProviderSpec(
         name="anthropic",
         label="Anthropic Claude",
-        api_base="https://api.anthropic.com/v1",
+        # Native Messages API -- not OpenAI-compatible.  Model IDs carry no date
+        # suffix; appending one 404s.
+        api_base="https://api.anthropic.com",
         key_env_var="ANTHROPIC_API_KEY",
         reasoning_model="claude-opus-5",
-        fast_model="claude-haiku-4-5-20251001",
+        fast_model="claude-haiku-4-5",
+        protocol="anthropic",
     ),
     LlmProviderSpec(
         name="openai",
@@ -100,6 +110,8 @@ LLM_PROVIDERS: tuple[LlmProviderSpec, ...] = (
     LlmProviderSpec(
         name="openrouter",
         label="OpenRouter",
+        # A gateway: it re-exposes Claude and others behind the OpenAI protocol,
+        # which is the supported way to reach Claude without a native adapter.
         api_base="https://openrouter.ai/api/v1",
         key_env_var="OPENROUTER_API_KEY",
         reasoning_model="anthropic/claude-opus-5",

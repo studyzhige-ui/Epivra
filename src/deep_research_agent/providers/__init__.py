@@ -31,6 +31,7 @@ from .academic import (
     CrossrefSearchProvider,
     PubMedSearchProvider,
 )
+from .anthropic import AnthropicClient
 from .llm import (
     LLM_PROVIDERS,
     LlmProviderSpec,
@@ -46,6 +47,34 @@ from .web import (
     ExaSearchProvider,
     TavilySearchProvider,
 )
+
+
+def build_chat_model(
+    spec: LlmProviderSpec,
+    model_id: str,
+    *,
+    api_key: str,
+    client: httpx.AsyncClient | None = None,
+    **kwargs: object,
+) -> object:
+    """Build the transport that matches a vendor's declared protocol.
+
+    Selecting by protocol rather than by base URL is what stops an
+    OpenAI-shaped request from being sent to an API that speaks something else --
+    a mistake that surfaces as an opaque 404 rather than a useful error.
+    """
+
+    from ..model import OpenAICompatibleClient
+
+    if spec.protocol == "anthropic":
+        return AnthropicClient(
+            api_key, model=model_id, api_base=spec.api_base, client=client, **kwargs  # type: ignore[arg-type]
+        )
+    if spec.protocol == "openai_compatible":
+        return OpenAICompatibleClient(
+            api_key, model=model_id, api_base=spec.api_base, client=client, **kwargs  # type: ignore[arg-type]
+        )
+    raise ValueError(f"unsupported protocol {spec.protocol!r} for {spec.name}")
 
 #: Adapters that need a credential, and which environment variable supplies it.
 #: A selected provider with no credential is skipped rather than failing the
@@ -119,6 +148,8 @@ __all__ = [
     "SourceReadError",
     "TavilySearchProvider",
     "UnsafeUrlError",
+    "AnthropicClient",
+    "build_chat_model",
     "build_search_providers",
     "configured_llm_providers",
     "resolve_llm_provider",
