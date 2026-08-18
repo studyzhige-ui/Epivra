@@ -49,7 +49,7 @@ LAYERS: tuple[tuple[str, frozenset[str]], ...] = (
                 "citations",
                 "config",
                 "content_store",
-                "guides",
+                "packs",
                 "model",
                 "operations",
                 "providers",

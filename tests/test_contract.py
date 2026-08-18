@@ -187,9 +187,9 @@ class ContractResolutionTest(unittest.TestCase):
         with self.assertRaisesRegex(ArtifactValidationError, "at least one"):
             self.contract.resolve(())
 
-    def test_guide_refs_must_be_unique(self) -> None:
+    def test_pack_refs_must_be_unique(self) -> None:
         with self.assertRaisesRegex(ArtifactValidationError, "duplicates"):
-            build_contract(CONTRACT_BODY, guide_refs=("a@1", "a@1"))
+            build_contract(CONTRACT_BODY, pack_refs=("a@1", "a@1"))
 
     def test_section_titles_cover_the_six_blocks(self) -> None:
         self.assertEqual("问题模型", section_title("question_model"))

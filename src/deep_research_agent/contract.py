@@ -20,9 +20,10 @@ imports.
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal
 
 from .sources import ArtifactValidationError
@@ -56,6 +57,13 @@ _LABEL_RE = re.compile(r"^Q([1-9][0-9]?)$")
 _QUESTION_LINE_RE = re.compile(
     r"^\s{0,3}(?:#{1,6}\s*)?(?:[-*]\s*)?(Q[1-9][0-9]?)\s*[.:、．]\s*(.+?)\s*$"
 )
+_SECTION_HEADING_RE = re.compile(r"^\s{0,3}#{1,6}\s+(.+?)\s*#*\s*$")
+
+
+def _canonical_json(payload: object) -> str:
+    return json.dumps(
+        payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
 
 
 def require_question_label(value: str) -> str:
@@ -231,6 +239,79 @@ class QuestionModel:
         )
 
 
+#: Source families a Commission may authorise.  This is a *permission* the trust
+#: plane enforces, not advice: an Investigator cannot reach a family the user did
+#: not grant, regardless of what any prompt or pack suggests.
+SourceAccess = Literal["public_web", "user_files", "local_only"]
+
+SOURCE_ACCESS: tuple[SourceAccess, ...] = ("public_web", "user_files", "local_only")
+
+
+@dataclass(frozen=True, slots=True)
+class CommissionBody:
+    """The user's original request, preserved exactly as given.
+
+    The Commission is the one artifact no model may rewrite.  Every Contract is
+    derived from it and must remain answerable to it, which is what lets a
+    reviewer ask "does this report answer what was actually asked" rather than
+    "does it answer what the Architect decided it meant".
+    """
+
+    request: str
+    source_access: tuple[SourceAccess, ...]
+    language: str = "zh"
+    constraints: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        # Validated for emptiness but deliberately *not* normalised: the request
+        # is stored byte-for-byte as the user submitted it, so the artifact hash
+        # covers exactly what they wrote. Stripping would be a small rewrite, and
+        # this is the one artifact no rewrite may touch.
+        _require_text(self.request, "commission request")
+        if not self.source_access:
+            raise ArtifactValidationError(
+                "a commission must authorise at least one source family"
+            )
+        unknown = sorted(set(self.source_access) - set(SOURCE_ACCESS))
+        if unknown:
+            raise ArtifactValidationError(
+                f"unknown source access {unknown}; allowed: {list(SOURCE_ACCESS)}"
+            )
+        if len(set(self.source_access)) != len(self.source_access):
+            raise ArtifactValidationError("source_access must not repeat a family")
+        _require_text(self.language, "commission language")
+        for item in self.constraints:
+            _require_text(item, "commission constraint")
+
+    @property
+    def allows_external_search(self) -> bool:
+        """Whether any external search is permitted at all."""
+
+        return "public_web" in self.source_access
+
+    def encode(self) -> str:
+        """Canonical body text; the request is stored verbatim."""
+
+        return _canonical_json(
+            {
+                "request": self.request,
+                "source_access": sorted(self.source_access),
+                "language": self.language,
+                "constraints": list(self.constraints),
+            }
+        )
+
+    @classmethod
+    def decode(cls, body: str) -> CommissionBody:
+        value = json.loads(body)
+        return cls(
+            request=str(value["request"]),
+            source_access=tuple(value["source_access"]),
+            language=str(value.get("language", "zh")),
+            constraints=tuple(str(item) for item in value.get("constraints", ())),
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class ResearchContract:
     """The approved research agreement: prose the user read, plus its questions.
@@ -242,16 +323,17 @@ class ResearchContract:
 
     body_markdown: str
     question_model: QuestionModel
-    guide_refs: tuple[str, ...] = ()
+    pack_refs: tuple[str, ...] = ()
+    supports: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         _require_text(self.body_markdown, "contract body")
         if not isinstance(self.question_model, QuestionModel):
             raise ArtifactValidationError("question_model must be a QuestionModel")
-        for ref in self.guide_refs:
-            _require_text(ref, "guide ref")
-        if len(set(self.guide_refs)) != len(self.guide_refs):
-            raise ArtifactValidationError("guide_refs must not contain duplicates")
+        for ref in self.pack_refs:
+            _require_text(ref, "pack ref")
+        if len(set(self.pack_refs)) != len(self.pack_refs):
+            raise ArtifactValidationError("pack_refs must not contain duplicates")
 
     @property
     def labels(self) -> tuple[str, ...]:
@@ -263,6 +345,57 @@ class ResearchContract:
         """Resolve selected question labels against this exact Contract."""
 
         return self.question_model.resolve(labels)
+
+    def missing_sections(self) -> tuple[str, ...]:
+        """Which of the six required blocks have no heading in the prose.
+
+        The six blocks are the questions a reader of a research protocol needs
+        answered, so their absence is a mechanical defect the Architect can be
+        told about and correct -- unlike whether the prose in them is any good,
+        which is the Assurer's and the user's judgment.
+        """
+
+        headings = {
+            match.group(1).strip()
+            for line in self.body_markdown.splitlines()
+            if (match := _SECTION_HEADING_RE.match(line)) is not None
+        }
+        return tuple(
+            section
+            for section in CONTRACT_SECTIONS
+            if _SECTION_TITLES[section] not in headings
+        )
+
+    def encode(self) -> str:
+        """Canonical body text.
+
+        The support graph is stored because it is the one part of the question
+        model that prose cannot express, and the pack selection because it is a
+        decision the user approved rather than something re-derivable later.
+        """
+
+        return _canonical_json(
+            {
+                "markdown": self.body_markdown,
+                "supports": {
+                    label: list(targets)
+                    for label, targets in sorted(self.supports.items())
+                },
+                "packs": list(self.pack_refs),
+            }
+        )
+
+    @classmethod
+    def decode(cls, body: str) -> ResearchContract:
+        value = json.loads(body)
+        return build_contract(
+            str(value["markdown"]),
+            supports={
+                str(label): tuple(str(item) for item in targets)
+                for label, targets in dict(value.get("supports", {})).items()
+            },
+            pack_refs=tuple(str(item) for item in value.get("packs", ())),
+        )
 
 
 def parse_question_lines(body_markdown: str) -> tuple[tuple[str, str], ...]:
@@ -323,14 +456,17 @@ def build_contract(
     body_markdown: str,
     *,
     supports: Mapping[str, Sequence[str]] | None = None,
-    guide_refs: Iterable[str] = (),
+    pack_refs: Iterable[str] = (),
 ) -> ResearchContract:
     """Parse Contract prose into the approved agreement the runtime enforces."""
 
     return ResearchContract(
         body_markdown=body_markdown,
         question_model=build_question_model(body_markdown, supports),
-        guide_refs=tuple(guide_refs),
+        pack_refs=tuple(pack_refs),
+        supports={
+            label: tuple(targets) for label, targets in dict(supports or {}).items()
+        },
     )
 
 
@@ -344,6 +480,9 @@ def section_title(section: str) -> str:
 
 __all__ = [
     "CONTRACT_SECTIONS",
+    "SOURCE_ACCESS",
+    "CommissionBody",
+    "SourceAccess",
     "QuestionModel",
     "QuestionRole",
     "ResearchContract",
