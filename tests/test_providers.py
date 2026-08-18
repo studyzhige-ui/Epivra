@@ -6,17 +6,21 @@ from unittest.mock import patch
 
 import httpx
 
-from deep_research_agent.providers import (
-    DuckDuckGoSearchProvider,
+from deep_research_agent.providers import build_search_providers
+from deep_research_agent.providers._http import (
     ProviderAuthError,
     ProviderUnavailableError,
+    SourceReadError,
+    UnsafeUrlError,
+)
+from deep_research_agent.providers.reader import (
     PublicHttpReader,
     PublicUrlPolicy,
-    SourceReadError,
-    TavilySearchProvider,
-    UnsafeUrlError,
     _HttpResponse,
-    configured_search_providers,
+)
+from deep_research_agent.providers.web import (
+    DuckDuckGoSearchProvider,
+    TavilySearchProvider,
 )
 
 
@@ -159,21 +163,34 @@ class DuckDuckGoProviderTest(unittest.IsolatedAsyncioTestCase):
             await client.aclose()
 
 
-class ProviderConfigurationTest(unittest.TestCase):
-    def test_the_keyless_fallback_is_always_available(self) -> None:
-        with patch.dict("os.environ", {"TAVILY_API_KEY": ""}, clear=False):
-            providers = configured_search_providers()
+class ProviderAssemblyTest(unittest.TestCase):
+    def test_a_selected_provider_without_a_key_is_skipped_not_fatal(self) -> None:
+        providers = build_search_providers(("tavily", "duckduckgo"), environ={})
 
         self.assertEqual(1, len(providers))
         self.assertIsInstance(providers[0], DuckDuckGoSearchProvider)
 
-    def test_a_configured_key_is_preferred_over_the_fallback(self) -> None:
-        with patch.dict("os.environ", {"TAVILY_API_KEY": "tavily-secret"}, clear=False):
-            providers = configured_search_providers()
+    def test_a_configured_key_yields_its_adapter_in_declared_order(self) -> None:
+        providers = build_search_providers(
+            ("tavily", "duckduckgo"), environ={"TAVILY_API_KEY": "tavily-secret"}
+        )
 
         self.assertIsInstance(providers[0], TavilySearchProvider)
         self.assertIsInstance(providers[1], DuckDuckGoSearchProvider)
         self.assertNotIn("tavily-secret", repr(providers))
+
+    def test_keyless_academic_adapters_need_no_credential(self) -> None:
+        providers = build_search_providers(
+            (), ("arxiv", "crossref", "pubmed"), environ={}
+        )
+
+        self.assertEqual(
+            ["arxiv", "crossref", "pubmed"], [p.provider_id for p in providers]
+        )
+
+    def test_an_unknown_provider_name_is_refused(self) -> None:
+        with self.assertRaisesRegex(ValueError, "unknown search provider"):
+            build_search_providers(("google",), environ={})
 
 
 class PublicHttpReaderTest(unittest.IsolatedAsyncioTestCase):
@@ -262,7 +279,7 @@ class PublicHttpReaderTest(unittest.IsolatedAsyncioTestCase):
                     policy=PublicUrlPolicy(resolver=public_resolver),
                 )
                 with patch(
-                    "deep_research_agent.providers._extract_pdf_in_subprocess",
+                    "deep_research_agent.providers.reader._extract_pdf_in_subprocess",
                     return_value="Extracted PDF evidence.",
                 ) as extract:
                     result = await reader.read(url)
