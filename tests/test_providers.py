@@ -18,6 +18,7 @@ from deep_research_agent.providers.reader import (
     PublicHttpReader,
     PublicUrlPolicy,
     _HttpResponse,
+    _resolve_public_addresses,
 )
 from deep_research_agent.providers.web import (
     DuckDuckGoSearchProvider,
@@ -195,6 +196,21 @@ class ProviderAssemblyTest(unittest.TestCase):
 
 
 class PublicHttpReaderTest(unittest.IsolatedAsyncioTestCase):
+    async def test_a_dead_domain_is_a_read_error_not_an_unknown_outcome(self) -> None:
+        """The ledger freezes exceptions it does not recognise, and rightly so.
+
+        ``needs_reconciliation`` means "the provider may have run and we cannot
+        tell", which is terminal until a human clears it.  A hostname that does
+        not resolve is decided and unbilled -- nothing was sent -- so leaking
+        ``socket.gaierror`` spent a terminal state on a dead link.  A live run
+        froze three operations this way.
+        """
+
+        with self.assertRaisesRegex(SourceReadError, "does not resolve"):
+            await _resolve_public_addresses(
+                "no-such-host.invalid-tld-for-tests.example"
+            )
+
     async def test_rejects_private_and_credentialed_urls(self) -> None:
         async def private_resolver(_hostname: str) -> tuple[str, ...]:
             return ("127.0.0.1",)

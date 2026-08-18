@@ -112,11 +112,25 @@ Resolver = Callable[[str], Awaitable[Sequence[str]]]
 
 
 async def _resolve_public_addresses(hostname: str) -> Sequence[str]:
+    """Resolve a hostname, reporting failure in the reader's own vocabulary.
+
+    ``socket.gaierror`` escaping from here reaches the operation ledger as an
+    unrecognised exception, and the ledger's honest default for those is "the
+    provider may have run and we cannot tell" -- so a dead domain froze the
+    operation for human reconciliation.  A name that does not resolve is the
+    opposite of unknown: nothing was sent, nothing was billed, and no amount of
+    human inspection will change the answer.  Three frozen rows in one live run
+    came from exactly this.
+    """
+
     loop = asyncio.get_running_loop()
-    records = await loop.run_in_executor(
-        None,
-        lambda: socket.getaddrinfo(hostname, None, type=socket.SOCK_STREAM),
-    )
+    try:
+        records = await loop.run_in_executor(
+            None,
+            lambda: socket.getaddrinfo(hostname, None, type=socket.SOCK_STREAM),
+        )
+    except socket.gaierror as error:
+        raise SourceReadError(f"source host does not resolve: {hostname}") from error
     return tuple(dict.fromkeys(record[4][0] for record in records))
 
 
