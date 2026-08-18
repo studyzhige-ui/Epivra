@@ -5,6 +5,7 @@ import unittest
 from deep_research_agent.citations import (
     CitationClosureError,
     build_handles,
+    citation_syntax_problem,
     extract_handles,
     render_citations,
 )
@@ -276,17 +277,17 @@ class RenderTest(unittest.TestCase):
             )
 
     def test_hand_written_numbers_and_reference_sections_are_rejected(self) -> None:
-        with self.assertRaisesRegex(CitationClosureError, "hand-written"):
+        with self.assertRaisesRegex(CitationClosureError, "手写的数字引用"):
             render_citations("A claim [1]. [[cite:h1]]", self.handles)
-        with self.assertRaisesRegex(CitationClosureError, "References section"):
+        with self.assertRaisesRegex(CitationClosureError, "参考资料小节"):
             render_citations(
                 "A claim [[cite:h1]].\n\n## References\n\nsomething", self.handles
             )
 
     def test_a_malformed_marker_is_rejected(self) -> None:
-        with self.assertRaisesRegex(CitationClosureError, "malformed"):
+        with self.assertRaisesRegex(CitationClosureError, "格式错误的引用标记"):
             render_citations("Broken [[cite:]]. [[cite:h1]]", self.handles)
-        with self.assertRaisesRegex(CitationClosureError, "malformed"):
+        with self.assertRaisesRegex(CitationClosureError, "格式错误的引用标记"):
             render_citations("Broken [[ CITE:h1]]. [[cite:h1]]", self.handles)
 
     def test_a_report_citing_nothing_cannot_be_published(self) -> None:
@@ -342,3 +343,46 @@ class ReferenceFormatTest(RenderTest):
 
         self.assertIn("(2026-08-12)", result.markdown)
         self.assertNotIn("10:26:46", result.markdown)
+
+
+class SyntaxCorrectionTest(unittest.TestCase):
+    """The correctable check and the fail-closed check must be one rule.
+
+    Publication resolves every marker or refuses to publish, which is right: a
+    marker a reader cannot follow is worse than no report.  But a live
+    genre-shift run reached that refusal with a report already written,
+    reviewed and approved, and lost all of it -- the Author's submission
+    validator only looked for *well-formed* handles, so a malformed marker was
+    invisible to it and sailed through.
+
+    Both call sites now read the same function, so the guarantee at publication
+    stays a last resort instead of becoming a second, slightly different rule.
+    """
+
+    FAULTS = {
+        "spaced opener": "结论 [[ cite:h1]] 继续。",
+        "unclosed marker": "结论 [[cite:h1] 继续。",
+        "two handles in one marker": "结论 [[cite:h1, h2]] 继续。",
+        "hand-written number": "结论 [[cite:h1]] 另一处 [1] 继续。",
+        "self-written references": "结论 [[cite:h1]]\n\n## 参考资料\n\n1. x\n",
+    }
+
+    def test_every_fault_is_described_before_publication(self) -> None:
+        for label, markdown in self.FAULTS.items():
+            with self.subTest(fault=label):
+                self.assertNotEqual("", citation_syntax_problem(markdown))
+
+    def test_a_clean_report_reports_no_problem(self) -> None:
+        self.assertEqual(
+            "", citation_syntax_problem("结论 [[cite:h1]] 与 [[cite:h2]]。")
+        )
+
+    def test_publication_refuses_exactly_what_the_validator_describes(self) -> None:
+        for label, markdown in self.FAULTS.items():
+            with self.subTest(fault=label):
+                with self.assertRaises(CitationClosureError):
+                    render_citations(markdown, ())
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -101,25 +101,44 @@ def extract_handles(markdown: str) -> tuple[str, ...]:
     return tuple(seen)
 
 
-def _reject_hand_written_citations(markdown: str) -> None:
-    malformed = _MALFORMED_MARKER_RE.findall(markdown)
-    if len(malformed) != len(_MARKER_RE.findall(markdown)):
-        raise CitationClosureError(
-            "the report contains a malformed citation marker; every marker must "
-            "be exactly [[cite:<handle>]]"
+def citation_syntax_problem(markdown: str) -> str:
+    """Describe the first citation-syntax fault in ``markdown``, or "".
+
+    Publication runs the same three checks and raises, because a report whose
+    markers cannot be resolved must never reach a reader.  But failing there
+    means discarding a report that was already written, reviewed and approved --
+    a live run lost one that way, at the last step, with no path back.
+
+    Every fault here is mechanical and fixable from its own description, so the
+    Author's submission validator calls this and hands the text back as a
+    correction.  Exposing one definition rather than two keeps the correctable
+    check and the fail-closed check from drifting apart, which is the only way
+    the guarantee at publication stays a genuine last resort instead of a
+    second, slightly different rule.
+    """
+
+    if len(_MALFORMED_MARKER_RE.findall(markdown)) != len(
+        _MARKER_RE.findall(markdown)
+    ):
+        return (
+            "报告里有格式错误的引用标记；每个标记必须严格写成 [[cite:<handle>]]，"
+            "不能加空格、不能一个标记里放多个 handle、不能漏掉右侧的 ]]"
         )
     manual = _MANUAL_NUMERIC_RE.search(markdown)
     if manual is not None:
-        raise CitationClosureError(
-            f"the report contains a hand-written numeric citation {manual.group(0)!r}; "
-            "numbering is assigned by the renderer"
+        return (
+            f"报告里有手写的数字引用 {manual.group(0)!r}；编号由渲染器统一分配，"
+            "正文只能使用 [[cite:<handle>]]"
         )
-    heading = _REFERENCE_HEADING_RE.search(markdown)
-    if heading is not None:
-        raise CitationClosureError(
-            "the report already contains a References section; it is generated "
-            "during publication"
-        )
+    if _REFERENCE_HEADING_RE.search(markdown) is not None:
+        return "报告里已经有参考资料小节；该小节在发布时自动生成，不要自己写"
+    return ""
+
+
+def _reject_hand_written_citations(markdown: str) -> None:
+    problem = citation_syntax_problem(markdown)
+    if problem:
+        raise CitationClosureError(problem)
 
 
 def _reference_line(number: int, source: SourceSnapshotBody) -> str:
@@ -227,6 +246,7 @@ __all__ = [
     "CitationHandle",
     "RenderedCitations",
     "build_handles",
+    "citation_syntax_problem",
     "extract_handles",
     "render_citations",
 ]

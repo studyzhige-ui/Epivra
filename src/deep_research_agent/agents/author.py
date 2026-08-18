@@ -13,7 +13,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from ..citations import extract_handles
+from ..citations import citation_syntax_problem, extract_handles
 from ..model import ToolSpec
 from . import AgentSpec, ToolError
 
@@ -172,6 +172,17 @@ def make_validator(
             return None
 
         markdown = str(arguments.get("report_markdown", ""))
+        # Syntax first: a malformed marker is invisible to extract_handles, so
+        # without this the submission passed validation, became a report,
+        # survived review, and then failed at the render step with the whole
+        # report already approved. One live run was lost exactly there.
+        syntax = citation_syntax_problem(markdown)
+        if syntax:
+            return ToolError(
+                action=name,
+                problem=syntax,
+                allowed=f"只用上下文给出的标记，例如 [[cite:{next(iter(sorted(allowed)), 'h1')}]]",
+            )
         used = extract_handles(markdown)
         if not used:
             return ToolError(
