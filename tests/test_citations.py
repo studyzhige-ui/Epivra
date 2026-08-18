@@ -372,6 +372,21 @@ class SyntaxCorrectionTest(unittest.TestCase):
             with self.subTest(fault=label):
                 self.assertNotEqual("", citation_syntax_problem(markdown))
 
+    def test_a_malformed_marker_is_located_not_just_announced(self) -> None:
+        """A fault the role cannot find is a fault it cannot fix.
+
+        The first Author told only that "there is a malformed marker" corrected
+        nothing and lost the run on its second attempt -- the report was 40,000
+        characters with about a hundred markers in it.
+        """
+
+        long_body = "正文段落。" * 200
+        problem = citation_syntax_problem(
+            f"{long_body} 结论 [[cite:h1]] 另一处 [[cite:h2, h3]] 收尾 [[cite:h4]]"
+        )
+        self.assertIn("[[cite:h2, h3]]", problem)
+        self.assertNotIn("[[cite:h1]]", problem)
+
     def test_a_clean_report_reports_no_problem(self) -> None:
         self.assertEqual(
             "", citation_syntax_problem("结论 [[cite:h1]] 与 [[cite:h2]]。")

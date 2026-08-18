@@ -101,6 +101,27 @@ def extract_handles(markdown: str) -> tuple[str, ...]:
     return tuple(seen)
 
 
+def _first_malformed_marker(markdown: str) -> str:
+    """Quote the first ``[[cite:`` opening that is not a well-formed marker.
+
+    "There is a malformed marker somewhere" is not actionable in a
+    forty-thousand-character report carrying a hundred markers, and a role that
+    cannot locate the fault cannot fix it: one live Author was told exactly that,
+    corrected nothing, and lost the run on its second attempt.  Everything else
+    the validators report is something the role can act on from the message
+    alone, so this one has to be too.
+    """
+
+    well_formed = [match.span() for match in _MARKER_RE.finditer(markdown)]
+    for opening in _MALFORMED_MARKER_RE.finditer(markdown):
+        start = opening.start()
+        if any(begin <= start < end for begin, end in well_formed):
+            continue
+        excerpt = markdown[start : start + 60].replace("\n", " ")
+        return excerpt
+    return ""
+
+
 def citation_syntax_problem(markdown: str) -> str:
     """Describe the first citation-syntax fault in ``markdown``, or "".
 
@@ -120,9 +141,12 @@ def citation_syntax_problem(markdown: str) -> str:
     if len(_MALFORMED_MARKER_RE.findall(markdown)) != len(
         _MARKER_RE.findall(markdown)
     ):
+        excerpt = _first_malformed_marker(markdown)
+        where = f"第一处出现在这里：「{excerpt}」" if excerpt else ""
         return (
             "报告里有格式错误的引用标记；每个标记必须严格写成 [[cite:<handle>]]，"
-            "不能加空格、不能一个标记里放多个 handle、不能漏掉右侧的 ]]"
+            "不能加空格、不能一个标记里放多个 handle、不能漏掉右侧的 ]]。"
+            f"{where}"
         )
     manual = _MANUAL_NUMERIC_RE.search(markdown)
     if manual is not None:
