@@ -89,6 +89,41 @@ def _require_text(value: str, label: str) -> str:
     return value.strip()
 
 
+#: A question long enough to stand on its own without a question mark.  Roles
+#: receive only ``label + text``, never the Contract section a heading sat in,
+#: so the text has to carry the whole question by itself.
+_QUESTION_MIN_CHARS = 12
+
+
+def _require_question_text(value: str, label: str) -> str:
+    """Reject a section label standing where a question belongs.
+
+    A live Contract stated ``### Q1. 核心问题`` as a *heading* and put the real
+    question in the prose beneath it.  The parser took the heading, so Q1 became
+    the literal string "核心问题" -- and because roles are handed
+    ``contract.resolve(labels)`` and nothing else, every Investigator downstream
+    would have received "核心问题" as its assignment while the run looked
+    perfectly healthy.  A silent misparse of the one thing the whole report must
+    answer has to fail loudly instead.
+
+    The bar is deliberately mechanical, not a judgment about quality: either the
+    text is punctuated as a question, or it is long enough to be a clause rather
+    than a topic.  Whether the question is a *good* one is the user's call at the
+    approval card.
+    """
+
+    text = _require_text(value, label)
+    if "？" in text or "?" in text:
+        return text
+    if len(text) >= _QUESTION_MIN_CHARS:
+        return text
+    raise ArtifactValidationError(
+        f"{label} reads as a section label rather than a question: {text!r}. "
+        "State the question itself on the Q-line -- roles only ever receive the "
+        "label and this text, never the prose around it."
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class ResearchQuestion:
     """One labelled question and the role it plays in answering the user."""
@@ -100,7 +135,7 @@ class ResearchQuestion:
 
     def __post_init__(self) -> None:
         require_question_label(self.label)
-        _require_text(self.text, f"{self.label} text")
+        _require_question_text(self.text, f"{self.label} text")
         if self.role not in ("primary", "supporting"):
             raise ArtifactValidationError(
                 f"{self.label} role must be 'primary' or 'supporting'"

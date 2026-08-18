@@ -197,5 +197,35 @@ class ContractResolutionTest(unittest.TestCase):
             section_title("coverage_matrix")
 
 
+class QuestionTextTest(unittest.TestCase):
+    """A question has to survive being read on its own.
+
+    Roles are handed ``contract.resolve(labels)`` and nothing else, so the text
+    on the Q-line is the entire question as far as every later role is
+    concerned.  A live Contract wrote ``### Q1. 核心问题`` as a heading with the
+    real question in the prose underneath; the parser took the heading, and the
+    run stayed healthy-looking while Q1 was the literal string "核心问题".
+    """
+
+    def test_a_bare_section_label_is_not_a_question(self) -> None:
+        for label in ("核心问题", "现行制度边界", "行为定性", "通用义务与云场景角色"):
+            with self.subTest(label=label):
+                with self.assertRaisesRegex(
+                    ArtifactValidationError, "section label rather than a question"
+                ):
+                    build_question_model(f"Q1. {label}\n")
+
+    def test_a_short_question_survives_if_it_is_punctuated_as_one(self) -> None:
+        model = build_question_model("Q1. 哪些法规现行有效？\n")
+        self.assertEqual("哪些法规现行有效？", model.primary.text)
+
+    def test_a_long_clause_survives_without_a_question_mark(self) -> None:
+        body = (
+            "Q1. 已获批的老年 RSV 疫苗对 65 岁以上人群的效力证据达到何种强度，"
+            "以监管审评为基线。\n"
+        )
+        self.assertIn("何种强度", build_question_model(body).primary.text)
+
+
 if __name__ == "__main__":
     unittest.main()

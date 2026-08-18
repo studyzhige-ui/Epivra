@@ -193,17 +193,7 @@ async def _propose_contract(
         print(f"  为何会改变方案：{action.arguments['why_it_changes_the_plan']}")
         return None
 
-    from deep_research_agent.contract import build_contract
-
-    supports = {
-        str(item["label"]): tuple(str(x) for x in item.get("supports", ()))
-        for item in action.arguments.get("question_supports", ()) or ()
-    }
-    contract = build_contract(
-        str(action.arguments["contract_markdown"]),
-        supports=supports,
-        pack_refs=(),
-    )
+    contract = architect_agent.contract_from_action(action.arguments)
     await store.put(
         kind="research_contract",
         body=contract.encode(),

@@ -31,7 +31,12 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from ..contract import CONTRACT_SECTIONS, build_contract, section_title
+from ..contract import (
+    CONTRACT_SECTIONS,
+    ResearchContract,
+    build_contract,
+    section_title,
+)
 from ..model import ToolSpec
 from ..packs import PackCatalog, PackFormatError, validate_selection
 from ..sources import ArtifactValidationError
@@ -51,7 +56,9 @@ Contract 必须覆盖六个区块，每个用同名标题：
 
 ## 问题模型
 编号问题。`Q1` 是核心问题——报告最终必须回答它。`Q2` 起是支撑问题，每个都要能
-说明它如何支撑 Q1。写成 `Q1. 问题正文` 这样的行（也可用 `### Q1. ...` 标题）。
+说明它如何支撑 Q1。写成 `Q1. 问题正文` 这样的行。
+**标签后面必须是问句本身，不是小节标题。** 后面的角色只会收到「标签 + 这行文字」，
+拿不到它周围的任何说明，所以 `Q1. 核心问题` 之类的写法会让整份研究去回答一个空标题。
 不能解释自己作用的"主题"不要写进来。
 
 ## 范围与定义
@@ -158,6 +165,36 @@ SPEC = AgentSpec(
 )
 
 
+def contract_from_action(arguments: Mapping[str, Any]) -> ResearchContract:
+    """Build the Contract a ``propose_contract`` action describes.
+
+    This lives beside the tool schema on purpose.  A caller that re-derives the
+    argument shape by hand drifts from the schema silently, and the drift only
+    surfaces on the first commission that actually populates the optional field.
+    One did: the runner read ``question_supports`` as a list of objects while the
+    schema declares an object, and seven fixtures passed before the eighth --
+    the first to declare a question hierarchy -- crashed on it.
+
+    Raises :class:`ArtifactValidationError` for a shape the schema forbids, so a
+    wrong shape reaches the Architect as a correction instead of killing the run.
+    """
+
+    raw = arguments.get("question_supports") or {}
+    if not isinstance(raw, Mapping):
+        raise ArtifactValidationError(
+            "question_supports must be an object mapping a question label to the "
+            'labels it supports, for example {"Q3": ["Q2"]}'
+        )
+    return build_contract(
+        str(arguments.get("contract_markdown", "")),
+        supports={
+            str(label): tuple(str(item) for item in targets)
+            for label, targets in raw.items()
+        },
+        pack_refs=tuple(str(item) for item in arguments.get("pack_refs", ()) or ()),
+    )
+
+
 def make_validator(catalog: PackCatalog | None = None):
     """Validate a Contract candidate's mechanical shape, not its quality.
 
@@ -171,15 +208,10 @@ def make_validator(catalog: PackCatalog | None = None):
         if name == "ask_scope_question":
             return None
 
-        markdown = str(arguments.get("contract_markdown", ""))
-        supports = {
-            str(label): tuple(str(item) for item in targets)
-            for label, targets in dict(arguments.get("question_supports", {})).items()
-        }
         refs = tuple(str(item) for item in arguments.get("pack_refs", ()) or ())
 
         try:
-            contract = build_contract(markdown, supports=supports, pack_refs=refs)
+            contract = contract_from_action(arguments)
         except ArtifactValidationError as error:
             return ToolError(
                 action=name,

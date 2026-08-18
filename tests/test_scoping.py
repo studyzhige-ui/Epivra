@@ -9,6 +9,7 @@ import aiosqlite
 from deep_research_agent.agents.architect import (
     SPEC,
     architect_context_body,
+    contract_from_action,
     make_validator,
 )
 from deep_research_agent.approval import (
@@ -364,6 +365,41 @@ class ApprovalCardTest(unittest.TestCase):
             ).encode()
         )
         self.assertIn("domain.medicine@1.0.0", approval_card(contract))
+
+
+class ActionTranslationTest(unittest.TestCase):
+    """One reader of the tool schema, because a second one drifted.
+
+    ``question_supports`` is declared as an object keyed by question label.  The
+    stress runner grew its own copy that read a list of ``{"label": ...}``
+    objects instead, and because the field is optional the divergence stayed
+    invisible for seven fixtures -- the eighth was the first Contract to declare
+    a question hierarchy, and it crashed the run.
+    """
+
+    def test_the_declared_object_shape_builds_a_layered_model(self) -> None:
+        contract = contract_from_action(
+            {"contract_markdown": CONTRACT, "question_supports": {"Q3": ["Q2"]}}
+        )
+        self.assertEqual(("Q2",), contract.question_model.resolve(("Q3",))[0].supports)
+
+    def test_an_omitted_mapping_defaults_every_question_to_the_primary(self) -> None:
+        contract = contract_from_action({"contract_markdown": CONTRACT})
+        for question in contract.question_model.questions:
+            if question.role == "supporting":
+                self.assertEqual(("Q1",), question.supports)
+
+    def test_a_wrong_shape_is_a_correction_rather_than_a_crash(self) -> None:
+        arguments = {
+            "contract_markdown": CONTRACT,
+            "question_supports": [{"label": "Q3", "supports": ["Q2"]}],
+        }
+        with self.assertRaisesRegex(ArtifactValidationError, "must be an object"):
+            contract_from_action(arguments)
+        # And the Architect sees it as something it can fix in one turn.
+        error = make_validator(None)("propose_contract", arguments)
+        self.assertIsNotNone(error)
+        self.assertIn("question_supports", error.problem)
 
 
 if __name__ == "__main__":
