@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 
 from .artifact_store import SqliteArtifactStore
 from .citations import CitationHandle, build_handles
-from .contract import ResearchContract, build_contract
+from .contract import ResearchContract
 from .sources import MaterialBody, SourceSnapshotBody
 
 
@@ -130,7 +130,7 @@ async def load_contract(store: SqliteArtifactStore) -> ResearchContract:
     head = view.head("research_contract")
     if head is None:
         raise ContextCapacityError("no approved Contract exists for this task")
-    return build_contract(await store.body(head))
+    return ResearchContract.decode(await store.body(head))
 
 
 async def load_evidence(store: SqliteArtifactStore) -> EvidenceView:

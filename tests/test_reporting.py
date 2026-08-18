@@ -21,6 +21,7 @@ import aiosqlite
 from deep_research_agent.agents import AgentProtocolError
 from deep_research_agent.artifact_store import SqliteArtifactStore
 from deep_research_agent.content_store import SqliteContentStore
+from deep_research_agent.contract import build_contract
 from deep_research_agent.model import ModelReply, ModelToolCall, ToolSpec
 from deep_research_agent.operations import ExecutionIdentity, SqliteOperationLedger
 from deep_research_agent.reporting import ReportingHalted, RoleRuntime, run_reporting
@@ -133,7 +134,9 @@ class ReportingFixture(unittest.IsolatedAsyncioTestCase):
         self.ledger = SqliteOperationLedger(self.connection, self.content)
         await self.ledger.setup()
 
-        await self.store.put(kind="research_contract", body=CONTRACT)
+        await self.store.put(
+            kind="research_contract", body=build_contract(CONTRACT).encode()
+        )
         text_ref = await self.content.put(SOURCE_TEXT)
         source = await self.store.put(
             kind="source_snapshot",
@@ -490,7 +493,9 @@ class FailClosedTest(ReportingFixture):
         store = SqliteArtifactStore(
             self.connection, self.content, task_id="empty-task"
         )
-        await store.put(kind="research_contract", body=CONTRACT)
+        await store.put(
+            kind="research_contract", body=build_contract(CONTRACT).encode()
+        )
         with self.assertRaisesRegex(ReportingHalted, "evidence set is empty"):
             await run_reporting(
                 store,
