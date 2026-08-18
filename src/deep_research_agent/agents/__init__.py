@@ -70,6 +70,21 @@ class TerminalValidator(Protocol):
     ) -> ToolError | None: ...
 
 
+class ToolHandler(Protocol):
+    """Execute one non-terminal tool and return what the role should read back.
+
+    Handlers own their own durability.  A search or fetch is a paid external
+    call, so a handler routes it through the operation ledger itself rather than
+    relying on the model call's ledger entry -- otherwise a crash between the
+    model's request and the tool's execution would replay the model turn while
+    silently re-charging the tool.
+    """
+
+    async def __call__(
+        self, name: str, arguments: Mapping[str, Any]
+    ) -> str: ...
+
+
 @dataclass(frozen=True, slots=True)
 class AgentSpec:
     """One role's complete, independently readable invocation contract."""
@@ -83,6 +98,10 @@ class AgentSpec:
     #: action arrives.  Forcing the provider was a crutch for a check the runner
     #: already performs.
     tool_choice: str = "auto"
+    #: Ceiling on non-terminal tool turns.  This bounds *automation liveness*,
+    #: never research sufficiency: reaching it is a recoverable pause for the
+    #: caller to judge, not a signal that the investigation is complete.
+    max_tool_turns: int = 24
 
     def __post_init__(self) -> None:
         names = {tool.name for tool in self.tools}
@@ -91,6 +110,23 @@ class AgentSpec:
             raise ValueError(f"{self.role} declares unknown terminal tools {unknown}")
         if not self.terminal_tools:
             raise ValueError(f"{self.role} must declare at least one terminal tool")
+        if self.max_tool_turns < 1:
+            raise ValueError(f"{self.role} max_tool_turns must be positive")
+
+    @property
+    def working_tools(self) -> frozenset[str]:
+        """Tools that do work and hand control back, rather than ending the turn."""
+
+        return frozenset(tool.name for tool in self.tools) - self.terminal_tools
+
+
+class AgentToolBudgetExhausted(AgentProtocolError):
+    """A role used its tool-turn ceiling without submitting a terminal action.
+
+    Distinct from a protocol error because the role was behaving legitimately --
+    it simply ran out of automated budget, which the caller may resolve by
+    pausing for a human rather than by correcting the role.
+    """
 
 
 def _reject_multiple_terminals(
@@ -121,9 +157,14 @@ async def invoke_agent(
     task_id: str,
     execution: ExecutionIdentity,
     validate: TerminalValidator | None = None,
+    handlers: Mapping[str, ToolHandler] | None = None,
     max_corrections: int = 1,
 ) -> TerminalAction:
     """Run one role until it submits a valid terminal action.
+
+    Roles with working tools -- an Investigator searching and reading -- loop
+    here: each working call is executed by its handler and the result appended,
+    until the role submits a terminal action or exhausts ``max_tool_turns``.
 
     Each provider call goes through the operation ledger, so a crash replays a
     completed call rather than paying for it twice, and an unknown outcome
@@ -134,7 +175,9 @@ async def invoke_agent(
         {"role": "system", "content": spec.system_prompt},
         {"role": "user", "content": context.body},
     ]
+    available = handlers or {}
     corrections = 0
+    tool_turns = 0
     seen_errors: list[str] = []
 
     while True:
@@ -173,12 +216,31 @@ async def invoke_agent(
             call = next(
                 (c for c in reply.tool_calls if c.name in spec.terminal_tools), None
             )
-            if call is None:
-                error = ToolError(
-                    action=reply.tool_calls[0].name if reply.tool_calls else "(none)",
-                    problem="本次调用必须提交一个终结动作",
-                    allowed="、".join(sorted(spec.terminal_tools)),
-                )
+
+        # No terminal action yet: run whatever working tools the role asked for
+        # and let it continue. This is the normal path for an Investigator.
+        if error is None and call is None and reply.tool_calls:
+            working = [c for c in reply.tool_calls if c.name in available]
+            if working:
+                if tool_turns >= spec.max_tool_turns:
+                    raise AgentToolBudgetExhausted(
+                        f"{spec.role} used its {spec.max_tool_turns} tool turns "
+                        "without submitting a terminal action"
+                    )
+                tool_turns += 1
+                messages.append(reply.assistant_message())
+                for item in working:
+                    messages.append(
+                        await _tool_result(item, available[item.name])
+                    )
+                continue
+
+        if error is None and call is None:
+            error = ToolError(
+                action=reply.tool_calls[0].name if reply.tool_calls else "(none)",
+                problem="本次调用必须提交一个终结动作",
+                allowed="、".join(sorted(spec.terminal_tools)),
+            )
 
         arguments: Mapping[str, Any] = {}
         if error is None and call is not None:
@@ -207,6 +269,28 @@ async def invoke_agent(
         corrections += 1
         messages.append(reply.assistant_message())
         messages.append({"role": "user", "content": rendered})
+
+
+async def _tool_result(
+    call: ModelToolCall, handler: ToolHandler
+) -> dict[str, Any]:
+    """Execute one working tool, returning its result as a tool message.
+
+    A handler failure is returned to the role as an error result rather than
+    raised: a provider that rejected one query is an operational fact the
+    Investigator should adapt to, not a reason to lose the whole assignment.
+    """
+
+    try:
+        arguments = call.parsed_arguments()
+        content = await handler(call.name, arguments)
+    except Exception as exc:  # noqa: BLE001 - reported to the role as a result
+        content = f"工具执行失败（{type(exc).__name__}）：{exc}。这是运行结果，不是证据结论。"
+    return {
+        "role": "tool",
+        "tool_call_id": call.call_id,
+        "content": content,
+    }
 
 
 def _encode_reply(reply: ModelReply) -> str:
@@ -246,8 +330,10 @@ def _decode_reply(payload: str) -> ModelReply:
 __all__ = [
     "AgentProtocolError",
     "AgentSpec",
+    "AgentToolBudgetExhausted",
     "TerminalAction",
     "TerminalValidator",
     "ToolError",
+    "ToolHandler",
     "invoke_agent",
 ]

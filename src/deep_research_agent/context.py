@@ -290,6 +290,100 @@ def reviewer_context(
     )
 
 
+def investigator_context(
+    contract: ResearchContract,
+    *,
+    assignment: str,
+    question_labels: Sequence[str],
+    known_claims: Sequence[str] = (),
+    source_access: Sequence[str] = ("public_web",),
+    pack_text: str = "",
+) -> RoleContext:
+    """One assignment's brief, and deliberately nothing about the wider task.
+
+    The Investigator sees the questions its assignment serves and a short list of
+    what is already established, so it does not re-find known ground.  It does
+    not see the full evidence set, other branches, or the Lead's reasoning: a
+    branch that knew what its siblings were doing would coordinate, and
+    coordination between parallel workers is exactly what the fan-out avoids.
+    """
+
+    questions = contract.resolve(question_labels)
+    parts = [
+        _section(
+            "研究合同（相关部分）",
+            "\n".join(f"- {q.label}. {q.text}" for q in questions),
+        ),
+        _section("本次任务", assignment),
+        _section(
+            "来源权限",
+            "允许使用：" + "、".join(source_access)
+            + "\n未获授权的来源族不得访问。",
+        ),
+    ]
+    if known_claims:
+        parts.append(
+            _section(
+                "已确立的内容（不必重复发现）",
+                "\n".join(f"- {claim}" for claim in known_claims),
+            )
+        )
+    if pack_text.strip():
+        parts.append(pack_text.strip() + "\n")
+    return RoleContext(
+        role="investigator",
+        purpose="在单个 Assignment 内发现并阅读候选来源",
+        body="\n".join(parts),
+        input_refs=(),
+    )
+
+
+def curator_context(
+    contract: ResearchContract,
+    *,
+    assignment: str,
+    candidates: Mapping[str, SourceSnapshotBody],
+    notes: Mapping[str, str] | None = None,
+    pack_text: str = "",
+) -> RoleContext:
+    """Candidate snapshots plus the purpose they were gathered for.
+
+    The Curator gets a fresh context precisely so it does not inherit the
+    Investigator's reasoning about why a source seemed promising -- it judges the
+    saved text on its own terms.
+    """
+
+    relevance = notes or {}
+    lines: list[str] = []
+    for index, (ref, source) in enumerate(sorted(candidates.items()), start=1):
+        lines.append(
+            f"{index}. `{ref}`\n"
+            f"   标题：{source.title}\n"
+            f"   URL：{source.url}\n"
+            f"   正文长度：{source.text_ref.char_count:,} 字符"
+        )
+        note = relevance.get(ref, "").strip()
+        if note:
+            lines.append(f"   调查者备注（仅供参考，不是判断）：{note}")
+
+    parts = [
+        _section("研究合同", contract.body_markdown),
+        _section("这批来源为何被收集", assignment),
+        _section(
+            "候选来源（用 read_saved_source 读取正文后再判断）",
+            "\n".join(lines) or "（没有候选来源）",
+        ),
+    ]
+    if pack_text.strip():
+        parts.append(pack_text.strip() + "\n")
+    return RoleContext(
+        role="curator",
+        purpose="判断候选来源能否忠实、可定位地成为正式素材",
+        body="\n".join(parts),
+        input_refs=tuple(sorted(candidates)),
+    )
+
+
 def lead_context(
     contract: ResearchContract,
     evidence: EvidenceView,

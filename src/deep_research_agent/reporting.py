@@ -99,7 +99,7 @@ async def run_reporting(
 
     outcome = ReportingOutcome()
 
-    synthesis_text = await _synthesise(
+    synthesis_text = await synthesise(
         store, ledger, runtimes["analyst"], task_id, contract, evidence
     )
     outcome.synthesis_ref = (await store.active_view()).head("synthesis") or ""
@@ -185,7 +185,7 @@ async def run_reporting(
     return outcome
 
 
-async def _synthesise(
+async def synthesise(
     store: SqliteArtifactStore,
     ledger: SqliteOperationLedger,
     runtime: RoleRuntime,
@@ -329,6 +329,7 @@ def _sorted(refs: Sequence[str]) -> tuple[str, ...]:
 __all__ = [
     "ReportingHalted",
     "ReportingOutcome",
+    "synthesise",
     "ReviewRound",
     "RoleRuntime",
     "run_reporting",
