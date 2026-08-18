@@ -18,6 +18,7 @@ not need, not by satisfying a threshold.
 from __future__ import annotations
 
 import ast
+import re
 import sys
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
@@ -229,6 +230,58 @@ def check_importer_isolation() -> Iterator[Violation]:
                 )
 
 
+def check_pack_boundaries() -> Iterator[Violation]:
+    """Capability packs may say what to look at, never what to conclude.
+
+    A pack that grows an evidence hierarchy, a quality rubric, a saturation
+    rule, or a heading template has taken over semantic work the model owns --
+    the Coverage-model failure relocated into Markdown.  The loader rejects
+    those sections; this gate makes the ban visible at the repository level so a
+    committed pack cannot quietly reintroduce one.
+    """
+
+    packs_root = ROOT / "packs"
+    if not packs_root.is_dir():
+        return
+    banned = _banned_pack_sections()
+    heading = re.compile(r"^\s{0,3}#{1,6}\s+(.+?)\s*#*\s*$")
+    for path in sorted(packs_root.rglob("PACK.md")):
+        for number, text in enumerate(
+            path.read_text(encoding="utf-8").splitlines(), start=1
+        ):
+            match = heading.match(text)
+            if match is None:
+                continue
+            title = match.group(1).strip()
+            reason = banned.get(title.casefold())
+            if reason is not None:
+                yield Violation(
+                    path, number, f"barred pack section {title!r} ({reason})"
+                )
+
+
+def _banned_pack_sections() -> dict[str, str]:
+    """Read the ban list from the package so the two cannot drift apart."""
+
+    source = PACKAGE / "packs.py"
+    if not source.is_file():
+        return {}
+    tree = ast.parse(source.read_text(encoding="utf-8"))
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.AnnAssign):
+            continue
+        target = node.target
+        if not isinstance(target, ast.Name) or target.id != "BANNED_SECTIONS":
+            continue
+        if isinstance(node.value, ast.Dict):
+            return {
+                str(ast.literal_eval(key)).casefold(): str(ast.literal_eval(value))
+                for key, value in zip(node.value.keys, node.value.values, strict=True)
+                if key is not None
+            }
+    return {}
+
+
 def run() -> list[Violation]:
     violations: list[Violation] = []
     for path in python_files(PACKAGE):
@@ -238,6 +291,7 @@ def run() -> list[Violation]:
         violations.extend(check_layer_direction(path, tree))
         violations.extend(check_legacy_symbols(path, source))
     violations.extend(check_importer_isolation())
+    violations.extend(check_pack_boundaries())
     return violations
 
 
@@ -246,6 +300,7 @@ def summarise() -> Iterable[str]:
     yield f"domain layer (no I/O): {', '.join(domain)}"
     yield f"layers, low to high: {' -> '.join(name for name, _ in LAYERS)}"
     yield f"legacy symbols barred: {len(LEGACY_SYMBOLS)}"
+    yield f"pack sections barred: {len(_banned_pack_sections())}"
 
 
 def main() -> int:
