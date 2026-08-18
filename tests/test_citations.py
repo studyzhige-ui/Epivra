@@ -303,3 +303,42 @@ class RenderTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AdjacentCitationTest(RenderTest):
+    def test_repeated_and_neighbouring_citations_merge_into_one_bracket(self) -> None:
+        draft = (
+            "Three handles, one source [[cite:h1]][[cite:h1]][[cite:h1]].\n"
+            "Two distinct sources [[cite:h1]][[cite:h2]].\n"
+        )
+
+        result = render_citations(draft, self.handles)
+
+        self.assertIn("one source [1].", result.markdown)
+        self.assertIn("distinct sources [1, 2].", result.markdown)
+        self.assertNotIn("[1][1]", result.markdown)
+
+    def test_citations_separated_by_prose_are_left_alone(self) -> None:
+        result = render_citations(
+            "First claim [[cite:h1]] and then a second one [[cite:h2]].", self.handles
+        )
+
+        self.assertIn("First claim [1] and then a second one [2].", result.markdown)
+
+
+class ReferenceFormatTest(RenderTest):
+    def test_a_capture_timestamp_is_shown_as_a_date(self) -> None:
+        precise = SourceSnapshotBody(
+            url="https://example.test/a",
+            title="Source a",
+            text_ref=BodyRef.from_content("Exact evidence body."),
+            fetched_at="2026-08-12T10:26:46.585733+00:00",
+        )
+        handles = build_handles(
+            {MATERIAL_A: self.materials[MATERIAL_A]}, {SOURCE_A: precise}
+        )
+
+        result = render_citations("A claim [[cite:h1]].", handles)
+
+        self.assertIn("(2026-08-12)", result.markdown)
+        self.assertNotIn("10:26:46", result.markdown)

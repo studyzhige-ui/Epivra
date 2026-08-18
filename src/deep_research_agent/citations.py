@@ -123,8 +123,37 @@ def _reject_hand_written_citations(markdown: str) -> None:
 
 
 def _reference_line(number: int, source: SourceSnapshotBody) -> str:
-    published = f" ({source.fetched_at})" if source.fetched_at else ""
+    # A reference carries the day a source was captured, not the microsecond:
+    # the timestamp exists so a reader can judge currency, and full ISO
+    # precision only obscures that.
+    captured = source.fetched_at.strip()[:10]
+    published = f" ({captured})" if captured else ""
     return f"{number}. {source.title}{published}. {source.url}"
+
+
+#: A run of adjacent rendered citations, e.g. ``[1][1][2]``.
+_ADJACENT_RUN_RE = re.compile(r"(?:\[\d+\]){2,}")
+_NUMBER_RE = re.compile(r"\[(\d+)\]")
+
+
+def _collapse_adjacent(markdown: str) -> str:
+    """Merge neighbouring citations into one bracket.
+
+    Several materials often anchor the same canonical source, so independent
+    substitution yields ``[1][1][1]``, which reads as a defect to anyone
+    skimming the report.  Collapsing runs is presentation only: it drops no
+    citation, because the material-level provenance lives in the artifact
+    lineage rather than in the rendered digits.
+    """
+
+    def merge(match: re.Match[str]) -> str:
+        seen: list[str] = []
+        for number in _NUMBER_RE.findall(match.group(0)):
+            if number not in seen:
+                seen.append(number)
+        return f"[{', '.join(seen)}]"
+
+    return _ADJACENT_RUN_RE.sub(merge, markdown)
 
 
 def render_citations(
@@ -183,7 +212,8 @@ def render_citations(
     def substitute(match: re.Match[str]) -> str:
         return f"[{numbering[by_handle[match.group(1)].source.url]}]"
 
-    body = _MARKER_RE.sub(substitute, markdown).rstrip()
+    body = _MARKER_RE.sub(substitute, markdown)
+    body = _collapse_adjacent(body).rstrip()
     rendered = f"{body}\n\n{heading}\n\n" + "\n".join(references) + "\n"
     return RenderedCitations(
         markdown=rendered,

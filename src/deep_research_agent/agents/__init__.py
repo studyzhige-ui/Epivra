@@ -19,7 +19,13 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from ..context import RoleContext
-from ..model import ChatModel, ModelReply, ModelToolCall, ToolSpec
+from ..model import (
+    ChatModel,
+    ModelReply,
+    ModelRequestRejected,
+    ModelToolCall,
+    ToolSpec,
+)
 from ..operations import (
     ExecutionIdentity,
     OperationRequest,
@@ -72,6 +78,11 @@ class AgentSpec:
     system_prompt: str
     tools: tuple[ToolSpec, ...]
     terminal_tools: frozenset[str]
+    #: Reasoning-mode models reject a forced tool choice, so the default is
+    #: "auto" and the runner relies on its own correction path when no terminal
+    #: action arrives.  Forcing the provider was a crutch for a check the runner
+    #: already performs.
+    tool_choice: str = "auto"
 
     def __post_init__(self) -> None:
         names = {tool.name for tool in self.tools}
@@ -146,11 +157,15 @@ async def invoke_agent(
 
         async def send() -> str:
             reply = await model.complete(
-                messages, tools=spec.tools, tool_choice="required"
+                messages, tools=spec.tools, tool_choice=spec.tool_choice
             )
             return _encode_reply(reply)
 
-        reply = _decode_reply(await run_once(ledger, request, send))
+        reply = _decode_reply(
+            await run_once(
+                ledger, request, send, not_executed=(ModelRequestRejected,)
+            )
+        )
 
         error = _reject_multiple_terminals(reply.tool_calls, spec.terminal_tools)
         call = None

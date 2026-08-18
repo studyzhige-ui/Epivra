@@ -618,6 +618,8 @@ async def run_once(
     ledger: SqliteOperationLedger,
     request: OperationRequest,
     send: Callable[[], Awaitable[str]],
+    *,
+    not_executed: tuple[type[BaseException], ...] = (),
 ) -> str:
     """Perform one external call at most once, across crashes and restarts.
 
@@ -627,9 +629,11 @@ async def run_once(
 
     ``send`` must raise on failure.  Any exception raised out of ``send`` is
     treated as *possibly executed* -- the honest default for a network call --
-    and freezes the operation for reconciliation.  A caller that can actually
-    prove nothing happened should catch the error itself and record
-    ``fail(..., category="not_executed")``, which keeps the retry budget usable.
+    and freezes the operation for reconciliation.  ``not_executed`` names the
+    exception types the caller can prove never reached execution (a provider
+    rejecting a malformed request, say); those record a retryable failure
+    instead, because freezing an operation nobody was billed for turns a typo
+    into a dead task.
     """
 
     record = await ledger.reserve(request)
@@ -660,6 +664,13 @@ async def run_once(
     await ledger.mark_sent(record.operation_id)
     try:
         outcome = await send()
+    except not_executed as error:
+        await ledger.fail(
+            record.operation_id,
+            category="not_executed",
+            detail=f"{type(error).__name__}: {error}"[:300],
+        )
+        raise
     except BaseException as error:
         await ledger.flag_reconciliation(
             record.operation_id, f"{type(error).__name__} during provider call"

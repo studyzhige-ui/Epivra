@@ -408,7 +408,27 @@ class ModelUnavailableError(RuntimeError):
 
 
 class ModelProtocolError(RuntimeError):
-    pass
+    """A reply arrived but its shape cannot be trusted; the call was billed."""
+
+
+class ModelRequestRejected(RuntimeError):
+    """The provider refused the request before running it, so nothing was billed.
+
+    Kept distinct from :class:`ModelProtocolError` because the two have opposite
+    billing consequences: a rejected request may be safely retried on the same
+    operation key, while a malformed reply means the provider already charged for
+    work whose outcome is now in doubt.
+    """
+
+
+def _redacted_error(response: "httpx.Response") -> str:
+    """Surface the provider's reason without echoing payloads or credentials."""
+
+    try:
+        message = response.json().get("error", {}).get("message", "")
+    except ValueError:
+        return "no machine-readable reason"
+    return str(message)[:200] or "no machine-readable reason"
 
 
 @dataclass(frozen=True, slots=True)
@@ -590,8 +610,9 @@ class OpenAICompatibleClient:
                     await self.sleep(min(2**attempt, 8))
                     continue
                 if response.status_code >= 400:
-                    raise ModelProtocolError(
-                        f"model request rejected with HTTP {response.status_code}"
+                    raise ModelRequestRejected(
+                        f"model request rejected with HTTP {response.status_code}: "
+                        f"{_redacted_error(response)}"
                     )
                 return self._parse_response(response)
             raise AssertionError("unreachable retry state")
@@ -642,6 +663,7 @@ __all__ = [
     "MessageCapacityError",
     "ModelAuthError",
     "ModelProtocolError",
+    "ModelRequestRejected",
     "ModelRateLimitError",
     "ModelReply",
     "ModelToolCall",
