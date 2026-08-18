@@ -7,8 +7,18 @@ decision rests on, and it would reliably conclude that its own work sufficed.
 
 "Long-lived" here means continuity of responsibility, not of conversation.  Each
 activation is a fresh context rebuilt from current artifacts, so continuity comes
-from :class:`MemoryBody` -- a compact working memory the Lead replaces wholesale
-with every terminal action, rather than a transcript that grows until it rots.
+from :class:`MemoryBody` -- a compact working memory the Lead replaces wholesale,
+rather than a transcript that grows until it rots.
+
+Replacing it is *offered*, not demanded.  It is the largest field the Lead emits,
+and requiring it on every action meant a formatting slip could destroy a correct
+governance decision -- which is what happened live: the Lead chose to commission
+the report, the right call on that evidence, and the run died twice over a
+missing snapshot.  Continuity never depended on the restatement anyway, since the
+previous MemoryBody is durable and is rendered back into the next context.  An
+omitted snapshot therefore has one unambiguous meaning: memory is unchanged.
+That reading keeps the model on semantics and leaves the bookkeeping to the
+runtime, which is the whole point of the split.
 
 No capability pack reaches this role (see ``packs.PACK_PROJECTION``): pack text
 that could influence when research ends would be a stopping rule at one remove.
@@ -102,7 +112,8 @@ SYSTEM_PROMPT = """\
 最有价值的研究行动，或决定以完整/有限结论委托报告。
 
 你每次都使用新的上下文。ResearchMemory、Synthesis 和上一次 Wave 结果是连续性的唯一
-来源，所以每个终结动作都必须附带一份**完整替代**的 memory_snapshot。
+来源。终结动作请尽量附带一份**完整替代**的 memory_snapshot；**省略它表示记忆没有变化**，
+运行时会沿用上一份。不要为了凑字段而重复证据判断或 Synthesis 内容。
 
 你不搜索、不读网页、不策展素材、不做跨来源综合、不写报告、不审报告。
 
@@ -221,7 +232,7 @@ COMMISSION_WAVE = ToolSpec(
             },
             "memory_snapshot": _MEMORY_SCHEMA,
         },
-        "required": ["wave_intent", "assignments", "memory_snapshot"],
+        "required": ["wave_intent", "assignments"],
         "additionalProperties": False,
     },
 )
@@ -250,7 +261,7 @@ COMMISSION_REPORT = ToolSpec(
             },
             "memory_snapshot": _MEMORY_SCHEMA,
         },
-        "required": ["stop_rationale", "report_brief", "memory_snapshot"],
+        "required": ["stop_rationale", "report_brief"],
         "additionalProperties": False,
     },
 )
@@ -265,7 +276,7 @@ REQUEST_USER_INPUT = ToolSpec(
             "reason": {"type": "string", "minLength": 20},
             "memory_snapshot": _MEMORY_SCHEMA,
         },
-        "required": ["question", "reason", "memory_snapshot"],
+        "required": ["question", "reason"],
         "additionalProperties": False,
     },
 )
@@ -283,7 +294,7 @@ REQUEST_CONTRACT_REAPPROVAL = ToolSpec(
             "proposed_change": {"type": "string", "minLength": 20},
             "memory_snapshot": _MEMORY_SCHEMA,
         },
-        "required": ["reason", "proposed_change", "memory_snapshot"],
+        "required": ["reason", "proposed_change"],
         "additionalProperties": False,
     },
 )
@@ -361,16 +372,36 @@ def parse_assignments(
     return tuple(drafts)
 
 
+def memory_after(
+    arguments: Mapping[str, Any], previous: MemoryBody | None
+) -> MemoryBody:
+    """The working memory that follows a terminal action.
+
+    An omitted ``memory_snapshot`` means "unchanged", so the previous memory
+    carries forward.  Committing an empty :class:`MemoryBody` instead would turn
+    a skipped optional field into silent amnesia, which is strictly worse than
+    the hard rejection this replaced: the Lead would keep governing, having
+    quietly forgotten every path it had already tried.
+    """
+
+    snapshot = arguments.get("memory_snapshot")
+    if isinstance(snapshot, Mapping) and snapshot:
+        return MemoryBody.from_snapshot(snapshot)
+    return previous if previous is not None else MemoryBody()
+
+
 def make_validator(contract: ResearchContract):
     """Validate a governance action's mechanical shape against this Contract."""
 
     def validate(name: str, arguments: Mapping[str, Any]) -> ToolError | None:
-        snapshot = arguments.get("memory_snapshot")
-        if not isinstance(snapshot, Mapping):
-            return ToolError(
-                action=name,
-                problem="缺少 memory_snapshot；每个终结动作都必须附带完整替代研究记忆",
-            )
+        # memory_snapshot is deliberately not required. It is the largest field
+        # the Lead emits, and rejecting an action for omitting it destroyed a
+        # correct governance decision in a live run: the Lead chose
+        # commission_report -- the right call on that evidence -- and the run
+        # died twice over bookkeeping. Continuity does not depend on the Lead
+        # restating memory anyway; the previous MemoryBody is already durable and
+        # is rendered back into the next context. An omitted snapshot means
+        # "memory is unchanged", which is exactly what the store already holds.
 
         if name == "commission_wave":
             raw = arguments.get("assignments", ())
@@ -401,5 +432,6 @@ __all__ = [
     "AssignmentDraft",
     "MemoryBody",
     "make_validator",
+    "memory_after",
     "parse_assignments",
 ]

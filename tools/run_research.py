@@ -227,6 +227,9 @@ async def _govern(
         evidence = await load_evidence(store)
         synthesis = await latest_body(store, "synthesis")
         memory = await latest_body(store, "research_memory")
+        previous_memory = (
+            lead_agent.MemoryBody.decode(memory[1]) if memory else None
+        )
 
         action = await invoke_agent(
             lead_agent.SPEC,
@@ -234,9 +237,7 @@ async def _govern(
                 contract,
                 evidence,
                 synthesis=synthesis[1] if synthesis else "",
-                memory=(
-                    lead_agent.MemoryBody.decode(memory[1]).render() if memory else ""
-                ),
+                memory=previous_memory.render() if previous_memory else "",
                 latest_outcome=latest_outcome,
             ),
             model=runtimes["lead"].model,
@@ -245,7 +246,7 @@ async def _govern(
             execution=runtimes["lead"].execution,
             validate=lead_agent.make_validator(contract),
         )
-        await _commit_memory(store, action.arguments)
+        await _commit_memory(store, action.arguments, previous_memory)
         print(f"\n[lead #{round_index}] {action.name}")
 
         if action.name == "commission_report":
@@ -336,9 +337,12 @@ async def _report(
     return "published"
 
 
-async def _commit_memory(store: SqliteArtifactStore, arguments) -> None:  # noqa: ANN001
-    snapshot = arguments.get("memory_snapshot") or {}
-    body = lead_agent.MemoryBody.from_snapshot(snapshot)
+async def _commit_memory(
+    store: SqliteArtifactStore,
+    arguments,  # noqa: ANN001
+    previous: lead_agent.MemoryBody | None,
+) -> None:
+    body = lead_agent.memory_after(arguments, previous)
     await store.put(
         kind="research_memory",
         body=body.encode(),

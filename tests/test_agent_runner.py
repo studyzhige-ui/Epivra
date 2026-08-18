@@ -20,8 +20,12 @@ from typing import Any
 import aiosqlite
 
 from deep_research_agent.agents import AgentSpec, invoke_agent
+from deep_research_agent.agents.lead import MemoryBody as LeadMemory
+from deep_research_agent.agents.lead import make_validator as lead_make_validator
+from deep_research_agent.agents.lead import memory_after
 from deep_research_agent.content_store import SqliteContentStore
 from deep_research_agent.context import RoleContext
+from deep_research_agent.contract import build_contract
 from deep_research_agent.model import ModelReply, ModelToolCall, ToolSpec
 from deep_research_agent.operations import ExecutionIdentity, SqliteOperationLedger
 
@@ -276,6 +280,61 @@ class BudgetNoticeTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("工具回合", seen_notices[0])
         # Warned with turns left over, not at the moment it was already too late.
         self.assertIn("还剩", seen_notices[0])
+
+
+class LeadMemoryTest(unittest.TestCase):
+    """A correct governance decision must not die on a bookkeeping field.
+
+    memory_snapshot is the largest thing the Lead emits, and it was required on
+    every terminal action.  A live conflicting-primary-sources run chose
+    commission_report -- the right call on 50 materials -- omitted the snapshot,
+    got its one correction, omitted it again, and the whole run was lost.  That
+    is the exact shape of the fifteen control-protocol failures this
+    architecture was built to remove.
+
+    Omission now means "unchanged", which is the only reading that is both
+    unambiguous and safe: the previous memory is already durable, so carrying it
+    forward loses nothing, while writing an empty one would leave the Lead
+    governing with no record of what it had already tried.
+    """
+
+    PREVIOUS = LeadMemory(
+        tried_paths=("Wave1 覆盖 Q1–Q3，仅得二手摘要",),
+        decisions=("Wave2 定向探测条款级证据",),
+        open_intents=("确认豁免门槛的精确数字",),
+    )
+
+    def test_a_supplied_snapshot_replaces_the_previous_memory(self) -> None:
+        result = memory_after(
+            {"memory_snapshot": {"tried_paths": ["新的一轮"], "decisions": []}},
+            self.PREVIOUS,
+        )
+        self.assertEqual(("新的一轮",), result.tried_paths)
+        self.assertEqual((), result.decisions)
+
+    def test_an_omitted_snapshot_carries_the_previous_memory_forward(self) -> None:
+        for arguments in ({}, {"memory_snapshot": None}, {"memory_snapshot": {}}):
+            with self.subTest(arguments=arguments):
+                self.assertEqual(self.PREVIOUS, memory_after(arguments, self.PREVIOUS))
+
+    def test_an_omitted_snapshot_on_the_first_action_is_empty_not_an_error(
+        self,
+    ) -> None:
+        self.assertEqual(LeadMemory(), memory_after({}, None))
+
+    def test_no_terminal_action_is_rejected_for_omitting_the_snapshot(self) -> None:
+        contract = build_contract(
+            "Q1. 最低工资上调对就业的影响，研究结论之间存在哪些实质性冲突？\n"
+        )
+        validate = lead_make_validator(contract)
+        error = validate(
+            "commission_report",
+            {
+                "stop_rationale": "证据已合理穷尽，冲突根源已可归因。",
+                "report_brief": "面向政策研究读者的系统综述，解释分歧根源。",
+            },
+        )
+        self.assertIsNone(error)
 
 
 if __name__ == "__main__":
