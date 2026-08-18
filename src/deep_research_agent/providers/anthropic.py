@@ -128,6 +128,29 @@ def translate_messages(
 
         content = message.get("content")
         text = content if isinstance(content, str) else json.dumps(content)
+
+        if role == "tool":
+            # A tool turn already names the call it answers, so it maps
+            # one-to-one onto a tool_result block.
+            tool_id = str(message.get("tool_call_id", ""))
+            pending_tool_ids = [
+                item for item in pending_tool_ids if item != tool_id
+            ]
+            translated.append(
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": tool_id,
+                            "content": text,
+                            "is_error": True,
+                        }
+                    ],
+                }
+            )
+            continue
+
         if pending_tool_ids:
             translated.append(
                 {

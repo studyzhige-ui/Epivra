@@ -41,6 +41,13 @@ from .operations import (
     SqliteOperationLedger,
     run_once,
 )
+from .providers._http import (
+    ProviderAuthError,
+    ProviderRateLimitError,
+    ProviderUnavailableError,
+    SourceReadError,
+    UnsafeUrlError,
+)
 from .reporting import RoleRuntime, synthesise
 from .sources import (
     ArtifactValidationError,
@@ -50,6 +57,18 @@ from .sources import (
     locate_quote,
 )
 from .tools import SearchRequest
+
+#: Provider failures that are provably unbilled, so the ledger records a
+#: retryable failure instead of freezing the operation.  A URL the policy
+#: refused never left the process; a provider that returned an error served
+#: no billable result.  Treating these as unknown outcomes would strand one
+#: dead link as a terminal state for the rest of the task.
+_UNBILLED_SEARCH = (
+    ProviderAuthError,
+    ProviderRateLimitError,
+    ProviderUnavailableError,
+)
+_UNBILLED_FETCH = (SourceReadError, UnsafeUrlError, *_UNBILLED_SEARCH)
 
 BranchStatus = Literal["completed", "operational_failure"]
 
@@ -181,7 +200,9 @@ class _InvestigationTools:
             ]
             return "\n".join(lines) if lines else "（本次检索没有返回结果）"
 
-        found = await run_once(self._ledger, request, send)
+        found = await run_once(
+            self._ledger, request, send, not_executed=_UNBILLED_SEARCH
+        )
         return f"检索「{query}」结果（摘要是线索，不是证据）：\n{found}"
 
     async def _read(self, arguments: Mapping[str, Any]) -> str:
@@ -201,7 +222,9 @@ class _InvestigationTools:
             result = await self._reader.read(url)
             return f"{result.title}\n\n{result.content}"
 
-        payload = await run_once(self._ledger, request, send)
+        payload = await run_once(
+            self._ledger, request, send, not_executed=_UNBILLED_FETCH
+        )
         title, _, text = payload.partition("\n\n")
         if not text.strip():
             return f"读取 {url} 得到空正文，无法作为证据。"

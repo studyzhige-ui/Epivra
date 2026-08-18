@@ -268,7 +268,25 @@ async def invoke_agent(
         seen_errors.append(rendered)
         corrections += 1
         messages.append(reply.assistant_message())
-        messages.append({"role": "user", "content": rendered})
+        messages.extend(_correction_turn(reply, rendered))
+
+
+def _correction_turn(reply: ModelReply, rendered: str) -> list[dict[str, Any]]:
+    """Deliver a correction in the shape the protocol requires.
+
+    Both the OpenAI and Anthropic protocols require every tool call to be
+    answered by a result carrying its own call id; a plain user turn after
+    ``tool_calls`` is rejected outright.  A correction *is* a failed tool
+    result, so it is sent as one -- which is both what the wire format demands
+    and what the turn actually means.
+    """
+
+    if not reply.tool_calls:
+        return [{"role": "user", "content": rendered}]
+    return [
+        {"role": "tool", "tool_call_id": call.call_id, "content": rendered}
+        for call in reply.tool_calls
+    ]
 
 
 async def _tool_result(
