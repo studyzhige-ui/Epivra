@@ -167,5 +167,116 @@ class ReplayScopeTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(2, rows[0][0], "the edit must open a second operation")
 
 
+class BudgetNoticeTest(unittest.IsolatedAsyncioTestCase):
+    """A role cannot see its own ceiling, so the runtime has to say so.
+
+    Reaching the ceiling raises AgentToolBudgetExhausted and the branch keeps
+    nothing -- not the summary, not the paths tried, not the limitations hit. A
+    live regulatory-timepoint run lost seven assignments that way, on a topic
+    where "the official text exists but this tooling cannot reach it" was the
+    most valuable thing the run had established.
+    """
+
+    async def asyncSetUp(self) -> None:
+        self._directory = tempfile.TemporaryDirectory()
+        path = Path(self._directory.name) / "budget.sqlite3"
+        self._connection = await aiosqlite.connect(path)
+        content = SqliteContentStore(self._connection)
+        await content.setup()
+        self.ledger = SqliteOperationLedger(self._connection, content)
+        await self.ledger.setup()
+
+    async def asyncTearDown(self) -> None:
+        await self._connection.close()
+        self._directory.cleanup()
+
+    async def test_the_role_is_warned_before_the_ceiling_and_can_still_submit(
+        self,
+    ) -> None:
+        search = ToolSpec(
+            name="search",
+            description="检索。",
+            parameters={
+                "type": "object",
+                "properties": {"query": {"type": "string"}},
+                "required": ["query"],
+                "additionalProperties": False,
+            },
+        )
+        spec = AgentSpec(
+            role="investigator",
+            system_prompt="你是调查者。",
+            tools=(search, SUBMIT),
+            terminal_tools=frozenset({"submit"}),
+            max_tool_turns=5,
+        )
+
+        seen_notices: list[str] = []
+
+        class Searcher:
+            """Searches forever unless told the budget is nearly gone."""
+
+            def __init__(self) -> None:
+                self.calls = 0
+
+            async def complete(
+                self,
+                messages: Sequence[Mapping[str, Any]],
+                *,
+                json_output: bool = False,
+                tools: Sequence[ToolSpec] = (),
+                tool_choice: str | None = None,
+            ) -> ModelReply:
+                self.calls += 1
+                notices = [
+                    str(m.get("content", ""))
+                    for m in messages
+                    if m.get("role") == "user"
+                    and "预算提示" in str(m.get("content", ""))
+                ]
+                if notices:
+                    seen_notices.extend(notices[len(seen_notices) :])
+                    return ModelReply(
+                        tool_calls=(
+                            ModelToolCall(
+                                call_id="toolu_submit",
+                                name="submit",
+                                arguments=json.dumps(
+                                    {"answer": "检索反复返回同类结果，如实交回。"},
+                                    ensure_ascii=False,
+                                ),
+                            ),
+                        )
+                    )
+                return ModelReply(
+                    tool_calls=(
+                        ModelToolCall(
+                            call_id=f"toolu_search_{self.calls}",
+                            name="search",
+                            arguments=json.dumps({"query": "q"}, ensure_ascii=False),
+                        ),
+                    )
+                )
+
+        async def handle(name: str, arguments: Mapping[str, Any]) -> str:
+            return "（本次检索没有返回结果）"
+
+        action = await invoke_agent(
+            spec,
+            CONTEXT,
+            model=Searcher(),
+            ledger=self.ledger,
+            task_id="task-1",
+            execution=ExecutionIdentity(provider="scripted", model_id="test"),
+            handlers={"search": handle},
+        )
+
+        self.assertEqual("submit", action.name)
+        self.assertTrue(seen_notices, "the runtime must state the remaining budget")
+        self.assertIn("工具回合", seen_notices[0])
+        # Warned with turns left over, not at the moment it was already too late.
+        self.assertIn("还剩", seen_notices[0])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -159,6 +159,40 @@ class AgentToolBudgetExhausted(AgentProtocolError):
     """
 
 
+#: How many turns before the ceiling the runtime says so.  Three is enough for a
+#: role to finish reading what it already fetched and still submit.
+_BUDGET_NOTICE_TURNS = 3
+
+
+def _budget_notice(remaining: int) -> str:
+    """Tell a role its remaining budget, because it cannot see it otherwise.
+
+    The prompts already say when to stop -- when queries stop producing anything
+    new -- but a role has no view of the hard ceiling, and reaching it discards
+    everything the branch found: the summary, the paths tried, the limitations
+    hit, all of it, recorded only as an operational failure.  One live run lost
+    seven assignments that way and roughly 170 model calls with them, on a topic
+    where "the official text exists but this tooling cannot reach it" was the
+    single most valuable thing the run had learned.
+
+    Remaining turns are a resource fact the runtime owns, so reporting one is
+    not a research judgment: what to do with the last turns stays the role's
+    decision, and an empty-handed investigation is a legitimate thing to submit.
+    """
+
+    if remaining <= 0:
+        return (
+            "预算提示（运行时事实，不是研究结论）：工具回合已用尽，本回合必须提交终结"
+            "动作。把已经查到的内容、尝试过的路径与遇到的限制如实交回——空手而归是合法"
+            "结果，耗尽预算却什么都不交回会让这一分支的全部发现丢失。"
+        )
+    return (
+        f"预算提示（运行时事实，不是研究结论）：还剩 {remaining} 个工具回合。"
+        "如果检索已经反复返回同类结果，现在就提交终结动作，把尝试过的路径与限制写清楚；"
+        "不要为了用完预算继续检索——耗尽预算而未提交终结动作，这一分支的全部发现都会丢失。"
+    )
+
+
 def _reject_multiple_terminals(
     calls: Sequence[ModelToolCall], terminal: frozenset[str]
 ) -> ToolError | None:
@@ -265,6 +299,11 @@ async def invoke_agent(
                 for item in working:
                     messages.append(
                         await _tool_result(item, available[item.name])
+                    )
+                remaining = spec.max_tool_turns - tool_turns
+                if 0 <= remaining <= _BUDGET_NOTICE_TURNS:
+                    messages.append(
+                        {"role": "user", "content": _budget_notice(remaining)}
                     )
                 continue
 
