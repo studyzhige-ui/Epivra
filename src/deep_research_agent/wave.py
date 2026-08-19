@@ -56,7 +56,7 @@ from .sources import (
     SourceSnapshotBody,
     locate_quote,
 )
-from .tools import SearchRequest
+from .tools import SearchRequest, SearchRouting
 
 #: Provider failures that are provably unbilled, so the ledger records a
 #: retryable failure instead of freezing the operation.  A URL the policy
@@ -71,6 +71,36 @@ _UNBILLED_SEARCH = (
 _UNBILLED_FETCH = (SourceReadError, UnsafeUrlError, *_UNBILLED_SEARCH)
 
 BranchStatus = Literal["completed", "operational_failure"]
+
+#: What each research scope needs from a provider, resolved against the
+#: capabilities providers declare about themselves.  The Investigator states the
+#: need; the runtime picks the vendors, because which vendor to pay is a
+#: deployment decision and not a research judgment.
+_SCOPE_CAPABILITIES: Mapping[str, tuple[str, ...]] = {
+    "academic": ("academic",),
+    "web": ("web",),
+    "both": (),
+}
+
+
+def _provider_notes(attempts: Sequence[Any]) -> str:
+    """Tell the role which providers did not answer, and why.
+
+    Without this an empty result set is indistinguishable from a provider that
+    was skipped or errored, and the Investigator is required to report that
+    difference as an operational limit instead of as absent evidence.
+    """
+
+    unfinished = [item for item in attempts if getattr(item, "status", "") != "success"]
+    if not unfinished:
+        return ""
+    rendered = "、".join(
+        f"{getattr(item, 'provider_id', '?')}"
+        f"（{getattr(item, 'status', '?')}"
+        f"{'：' + str(item.error_type) if getattr(item, 'error_type', '') else ''}）"
+        for item in unfinished
+    )
+    return f"（未参与本次检索的来源：{rendered}。这是运行事实，不是证据判断。）"
 
 
 @dataclass(frozen=True, slots=True)
@@ -178,6 +208,12 @@ class _InvestigationTools:
     async def _search(self, arguments: Mapping[str, Any]) -> str:
         query = str(arguments.get("query", "")).strip()
         intent = str(arguments.get("intent", "")).strip() or "discovery"
+        scope = str(arguments.get("scope", "both")).strip() or "both"
+        if scope not in _SCOPE_CAPABILITIES:
+            # An unrecognised scope must widen the search, never raise: an
+            # exception here is not an unbilled provider failure, so the ledger
+            # would freeze the operation over a typo in one tool argument.
+            scope = "both"
         request = OperationRequest(
             task_id=self._store.task_id,
             kind="search",
@@ -186,19 +222,31 @@ class _InvestigationTools:
             parameters={
                 "query": query,
                 "intent": intent,
+                # Scope changes which providers are paid, so it is part of what
+                # makes two searches the same work.
+                "scope": scope,
                 "branch": str(self._branch),
             },
         )
 
         async def send() -> str:
             response = await self._broker.search(
-                SearchRequest(query=query, intent=intent)
+                SearchRequest(
+                    query=query,
+                    intent=intent,
+                    routing=SearchRouting(capabilities=_SCOPE_CAPABILITIES[scope]),
+                )
             )
             lines = [
                 f"{i}. {r.title}\n   {r.url}\n   {r.snippet[:300]}"
                 for i, r in enumerate(response.results, start=1)
             ]
-            return "\n".join(lines) if lines else "（本次检索没有返回结果）"
+            body = "\n".join(lines) if lines else "（本次检索没有返回结果）"
+            # An empty result set and an unreachable provider look identical
+            # without this, and the Investigator is required to report the
+            # difference as an operational limit rather than as absent evidence.
+            notes = _provider_notes(getattr(response, "attempts", ()))
+            return f"{body}\n{notes}" if notes else body
 
         found = await run_once(
             self._ledger, request, send, not_executed=_UNBILLED_SEARCH

@@ -34,14 +34,33 @@ class ProviderInfo:
 
 @dataclass(frozen=True)
 class SearchRouting:
+    """Which providers a search may reach, and how strictly.
+
+    ``providers`` names vendors directly and is a *deployment* concern -- which
+    vendor is cheapest or best-covered is not a research judgment.  A role
+    instead states the ``capabilities`` its question needs (``academic`` for
+    peer-reviewed literature and preprints, ``web`` for official sites and
+    documentation) and the broker resolves that against what each provider
+    declares about itself.  That keeps the model naming a research need rather
+    than a runtime identity, and keeps the tool stable across deployments whose
+    provider sets differ.
+
+    It is also the main cost lever.  Under ``auto`` every provider is queried on
+    every search, so Phase 1e's 2,289 searches were 2,289 paid calls to the one
+    metered vendor even for questions only an academic index could answer.
+    """
+
     mode: RoutingMode = "auto"
     providers: tuple[str, ...] = ()
+    capabilities: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if self.mode in {"prefer", "only"} and not self.providers:
             raise ValueError(f"{self.mode} routing requires at least one provider")
         if any(not provider.strip() for provider in self.providers):
             raise ValueError("provider IDs must not be empty")
+        if any(not capability.strip() for capability in self.capabilities):
+            raise ValueError("capabilities must not be empty")
 
 
 @dataclass(frozen=True)
@@ -352,6 +371,20 @@ class TransparentSearchBroker:
                         provider_id=provider_id,
                         status="skipped",
                         error_type="unsupported_source_kind",
+                    )
+                )
+                continue
+            if routing.capabilities and not set(routing.capabilities).intersection(
+                info.capabilities
+            ):
+                # Recorded rather than silently dropped: a role that asked for
+                # academic sources and got nothing must be able to tell "no such
+                # literature" from "no academic provider is configured here".
+                skipped.append(
+                    SearchAttempt(
+                        provider_id=provider_id,
+                        status="skipped",
+                        error_type="capability_not_declared",
                     )
                 )
                 continue

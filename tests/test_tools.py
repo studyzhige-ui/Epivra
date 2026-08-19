@@ -25,10 +25,11 @@ class FakeProvider:
         failures: tuple[BaseException, ...] = (),
         health: str = "healthy",
         call_log: list[str] | None = None,
+        capabilities: tuple[str, ...] = ("search",),
     ) -> None:
         self.info = ProviderInfo(
             provider_id=provider_id,
-            capabilities=("search",),
+            capabilities=capabilities,
             health=health,  # type: ignore[arg-type]
         )
         self.results = results
@@ -440,6 +441,70 @@ class TransparentSearchBrokerTest(unittest.IsolatedAsyncioTestCase):
             )
         )
         self.assertEqual(failed.results, ())
+
+
+class CapabilityRoutingTest(unittest.IsolatedAsyncioTestCase):
+    """A role states the kind of source it needs; the runtime picks the vendors.
+
+    This is the main cost lever. Under `auto` every provider is queried on every
+    search, so Phase 1e's 2,289 searches were 2,289 paid calls to the one metered
+    vendor -- including for questions only an academic index could answer.
+    Naming a vendor stays a deployment decision, because which vendor is cheapest
+    is not a research judgment.
+    """
+
+    def _providers(self, log: list[str]):  # noqa: ANN202
+        return [
+            FakeProvider("tavily", call_log=log, capabilities=("web", "news")),
+            FakeProvider("duckduckgo", call_log=log, capabilities=("web", "keyless")),
+            FakeProvider("pubmed", call_log=log, capabilities=("academic", "keyless")),
+            FakeProvider("arxiv", call_log=log, capabilities=("academic", "preprint")),
+        ]
+
+    async def _route(self, capabilities: tuple[str, ...]) -> list[str]:
+        log: list[str] = []
+        await TransparentSearchBroker(self._providers(log)).search(
+            SearchRequest(
+                query="rsv vaccine efficacy",
+                intent="find trial reports",
+                routing=SearchRouting(capabilities=capabilities),
+            )
+        )
+        return sorted(log)
+
+    async def test_an_academic_question_does_not_pay_the_web_vendors(self) -> None:
+        self.assertEqual(["arxiv", "pubmed"], await self._route(("academic",)))
+
+    async def test_a_web_question_does_not_query_the_literature_indices(self) -> None:
+        self.assertEqual(["duckduckgo", "tavily"], await self._route(("web",)))
+
+    async def test_no_capability_filter_queries_everything(self) -> None:
+        self.assertEqual(
+            ["arxiv", "duckduckgo", "pubmed", "tavily"], await self._route(())
+        )
+
+    async def test_a_capability_nobody_declares_is_reported_not_silent(self) -> None:
+        """Otherwise "no academic provider here" reads as "no such literature"."""
+
+        log: list[str] = []
+        response = await TransparentSearchBroker(self._providers(log)).search(
+            SearchRequest(
+                query="anything",
+                intent="discover",
+                routing=SearchRouting(capabilities=("patent",)),
+            )
+        )
+        self.assertEqual([], log)
+        self.assertEqual((), response.results)
+        skipped = [item for item in response.attempts if item.status == "skipped"]
+        self.assertEqual(4, len(skipped))
+        self.assertTrue(
+            all(item.error_type == "capability_not_declared" for item in skipped)
+        )
+
+    def test_a_blank_capability_is_refused(self) -> None:
+        with self.assertRaises(ValueError):
+            SearchRouting(capabilities=(" ",))
 
 
 if __name__ == "__main__":

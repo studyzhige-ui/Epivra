@@ -65,8 +65,18 @@ SEARCH = ToolSpec(
                 "type": "string",
                 "description": "这次检索想找什么，用于路由与审计。",
             },
+            "scope": {
+                "type": "string",
+                "enum": ["academic", "web", "both"],
+                "description": (
+                    "该去哪一类来源找：academic=同行评议文献、预印本、DOI；"
+                    "web=官方站点、法规原文、新闻、技术文档；both=两边都要。"
+                    "选对能少打无关的检索接口——查法规不必问文献库，"
+                    "查试验报告不必问通用搜索。不确定时用 both。"
+                ),
+            },
         },
-        "required": ["query", "intent"],
+        "required": ["query", "intent", "scope"],
         "additionalProperties": False,
     },
 )
