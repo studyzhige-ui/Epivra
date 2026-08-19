@@ -38,29 +38,36 @@ INFRASTRUCTURE = frozenset(
 DOMAIN_MODULES = frozenset({"artifacts", "contract", "sources"})
 
 #: Layer order.  A module may import its own layer and any layer below it.
+#:
+#: Every module in the package must appear here.  An unlisted module used to be
+#: skipped silently, which meant the gate printed "architecture OK" while never
+#: checking `wave`, `reporting`, `context` or `approval` -- the orchestration
+#: core.  Completeness is now enforced by :func:`check_every_module_classified`,
+#: so adding a module forces a decision about where it sits.
 LAYERS: tuple[tuple[str, frozenset[str]], ...] = (
     ("domain", DOMAIN_MODULES),
     (
         "trust",
         frozenset(
             {
+                "approval",
                 "artifact_store",
                 "checkpoint",
                 "citations",
                 "config",
                 "content_store",
-                "packs",
+                "context",
                 "model",
                 "operations",
+                "packs",
                 "providers",
                 "tools",
-                "trust",
             }
         ),
     ),
     ("agents", frozenset({"agents"})),
-    ("graphs", frozenset({"graphs"})),
-    ("application", frozenset({"application", "cli", "mcp_server"})),
+    ("orchestration", frozenset({"reporting", "wave"})),
+    ("application", frozenset({"application"})),
 )
 
 _LAYER_INDEX = {
@@ -282,6 +289,61 @@ def _banned_pack_sections() -> dict[str, str]:
     return {}
 
 
+def check_every_module_classified() -> Iterator[Violation]:
+    """Every package module must be placed in LAYERS.
+
+    Without this the layer check quietly skips whatever it cannot classify, so
+    the gate reports success while the newest and least-settled code is the code
+    it never examined.  That is how ``wave``, ``reporting``, ``context`` and
+    ``approval`` went unchecked: the list still named ``graphs`` and ``trust``
+    packages that were never built, and the four real modules matched nothing.
+
+    Failing here forces the placement decision at the moment a module is added,
+    which is the only time anyone actually knows the answer.
+    """
+
+    for path in python_files(PACKAGE):
+        relative = path.relative_to(PACKAGE)
+        key = relative.parts[0] if len(relative.parts) > 1 else relative.stem
+        if key == "__init__":
+            continue
+        if key not in _LAYER_INDEX:
+            yield Violation(
+                path,
+                1,
+                f"module {key!r} is not placed in any layer; add it to LAYERS so "
+                "the dependency-direction check can see it",
+            )
+
+
+def check_readme_describes_the_current_system() -> Iterator[Violation]:
+    """The README must not name a removed control-plane concept.
+
+    It is the one document that tells a newcomer what the system *is*, and it
+    drifted the furthest: it went on describing a role chain, a revision
+    protocol and a CLI that had all been deleted, because it duplicated the
+    architecture instead of pointing at it.  The gate never noticed because it
+    only ever read ``src/``.
+
+    Only the README is scanned.  ARCHITECTURE.md and the calibration notes have
+    to be able to name what was removed and why -- recording a rejected design
+    is their job.
+    """
+
+    readme = ROOT / "README.md"
+    if not readme.is_file():
+        return
+    for number, text in enumerate(readme.read_text(encoding="utf-8").splitlines(), 1):
+        for symbol, reason in LEGACY_SYMBOLS:
+            if symbol in text:
+                yield Violation(
+                    readme,
+                    number,
+                    f"README names removed concept {symbol!r} ({reason}); it "
+                    "should point at docs/ARCHITECTURE.md rather than restate it",
+                )
+
+
 def run() -> list[Violation]:
     violations: list[Violation] = []
     for path in python_files(PACKAGE):
@@ -290,6 +352,8 @@ def run() -> list[Violation]:
         violations.extend(check_domain_purity(path, tree))
         violations.extend(check_layer_direction(path, tree))
         violations.extend(check_legacy_symbols(path, source))
+    violations.extend(check_every_module_classified())
+    violations.extend(check_readme_describes_the_current_system())
     violations.extend(check_importer_isolation())
     violations.extend(check_pack_boundaries())
     return violations

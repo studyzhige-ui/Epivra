@@ -104,6 +104,88 @@ class LegacySymbolTest(GateFixture):
         self.assertIn("ResearchState", messages[0])
 
 
+class ClassificationCompletenessTest(unittest.TestCase):
+    """An unclassified module must fail, not be skipped.
+
+    The layer check can only examine modules it can place.  While the list named
+    `graphs` and `trust` packages that were never built, the four real
+    orchestration modules -- wave, reporting, context, approval -- matched
+    nothing and were silently exempt, so the gate printed "architecture OK"
+    without having looked at them.
+    """
+
+    def test_a_module_missing_from_layers_is_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            package = Path(directory) / "deep_research_agent"
+            package.mkdir()
+            (package / "__init__.py").write_text("", encoding="utf-8")
+            (package / "artifacts.py").write_text("X = 1\n", encoding="utf-8")
+            (package / "smuggled.py").write_text("Y = 2\n", encoding="utf-8")
+
+            original = gate.PACKAGE
+            gate.PACKAGE = package
+            try:
+                messages = [
+                    v.message for v in gate.check_every_module_classified()
+                ]
+            finally:
+                gate.PACKAGE = original
+
+        self.assertEqual(1, len(messages), messages)
+        self.assertIn("smuggled", messages[0])
+        self.assertIn("LAYERS", messages[0])
+
+    def test_every_real_module_is_classified(self) -> None:
+        self.assertEqual([], [v.render() for v in gate.check_every_module_classified()])
+
+    def test_no_layer_names_a_module_that_does_not_exist(self) -> None:
+        """A placeholder layer entry is how the gap opened in the first place."""
+
+        present = {
+            path.stem if path.suffix == ".py" else path.name
+            for path in gate.PACKAGE.iterdir()
+            if path.name != "__pycache__" and path.stem != "__init__"
+        }
+        listed = {module for _name, modules in gate.LAYERS for module in modules}
+        self.assertEqual(set(), listed - present, "LAYERS names absent modules")
+
+
+class ReadmeDriftTest(unittest.TestCase):
+    """The README is the one doc that must describe only the current system.
+
+    It drifted the furthest of anything in the repo -- still presenting a
+    deleted role chain, a deleted revision protocol and a CLI that never
+    existed as current fact -- because it duplicated the architecture instead of
+    pointing at it, and the gate only ever read src/.
+    """
+
+    def test_the_current_readme_names_no_removed_concept(self) -> None:
+        self.assertEqual(
+            [], [v.render() for v in gate.check_readme_describes_the_current_system()]
+        )
+
+    def test_a_readme_naming_a_removed_concept_is_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "README.md").write_text(
+                "# Demo\n\n流程：Planner → Supervisor → Researcher\n",
+                encoding="utf-8",
+            )
+            original = gate.ROOT
+            gate.ROOT = root
+            try:
+                messages = [
+                    v.message
+                    for v in gate.check_readme_describes_the_current_system()
+                ]
+            finally:
+                gate.ROOT = original
+
+        self.assertEqual(1, len(messages), messages)
+        self.assertIn("Supervisor", messages[0])
+        self.assertIn("ARCHITECTURE.md", messages[0])
+
+
 class RealPackageTest(unittest.TestCase):
     def test_the_current_package_passes_its_own_gate(self) -> None:
         self.assertEqual([], [v.render() for v in gate.run()])
