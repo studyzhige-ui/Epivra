@@ -26,11 +26,3 @@ line-length = 88
 
 [tool.ruff.lint]
 select = ["E4", "E7", "E9", "F", "I"]
-
-[tool.setuptools.data-files]
-"share/deep-research-agent/guides/domain/artificial-intelligence" = [
-    "guides/domain/artificial-intelligence/GUIDE.md",
-]
-"share/deep-research-agent/guides/capability/systematic-evidence-synthesis" = [
-    "guides/capability/systematic-evidence-synthesis/GUIDE.md",
-]
