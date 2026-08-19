@@ -337,5 +337,45 @@ class LeadMemoryTest(unittest.TestCase):
         self.assertIsNone(error)
 
 
+class EmptyWaveTest(unittest.TestCase):
+    """Refusing an action without naming the right one leaves nowhere to go.
+
+    An empty wave is how the Lead reaches for "there is nothing left worth
+    investigating".  The refusal used to state only that a wave needs an
+    assignment, so a live regulatory-timepoint run submitted the empty wave,
+    got that correction, submitted it again, and died with 183 Materials and
+    three syntheses already committed.
+    """
+
+    CONTRACT = build_contract(
+        "Q1. 截至 2026 年 8 月，中国 SaaS 公司将用户数据存于境外云服务，"
+        "适用哪些数据出境合规要求？\n"
+    )
+
+    def test_an_empty_wave_is_told_which_action_does_mean_finished(self) -> None:
+        error = lead_make_validator(self.CONTRACT)(
+            "commission_wave", {"wave_intent": "无需进一步调查。", "assignments": []}
+        )
+        self.assertIsNotNone(error)
+        self.assertIn("commission_report", error.allowed)
+
+    def test_a_wave_with_an_assignment_is_accepted(self) -> None:
+        error = lead_make_validator(self.CONTRACT)(
+            "commission_wave",
+            {
+                "wave_intent": "确认现行有效的法规版本。",
+                "assignments": [
+                    {
+                        "question_labels": ["Q1"],
+                        "focus": "现行有效的数据出境法规与生效日期",
+                        "why_it_matters": "决定全部后续义务的对象",
+                        "evidence_sought": "官方发布的法规原文",
+                    }
+                ],
+            },
+        )
+        self.assertIsNone(error)
+
+
 if __name__ == "__main__":
     unittest.main()

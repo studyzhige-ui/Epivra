@@ -28,8 +28,8 @@ sys.path.insert(0, str(ROOT / "evals"))
 
 import fixtures as fixture_set  # noqa: E402
 
+from deep_research_agent.agents import AgentProtocolError, invoke_agent  # noqa: E402
 from deep_research_agent.agents import architect as architect_agent  # noqa: E402
-from deep_research_agent.agents import invoke_agent  # noqa: E402
 from deep_research_agent.agents import lead as lead_agent  # noqa: E402
 from deep_research_agent.application import (  # noqa: E402
     build_runtimes,
@@ -231,21 +231,34 @@ async def _govern(
             lead_agent.MemoryBody.decode(memory[1]) if memory else None
         )
 
-        action = await invoke_agent(
-            lead_agent.SPEC,
-            lead_context(
-                contract,
-                evidence,
-                synthesis=synthesis[1] if synthesis else "",
-                memory=previous_memory.render() if previous_memory else "",
-                latest_outcome=latest_outcome,
-            ),
-            model=runtimes["lead"].model,
-            ledger=ledger,
-            task_id=store.task_id,
-            execution=runtimes["lead"].execution,
-            validate=lead_agent.make_validator(contract),
-        )
+        try:
+            action = await invoke_agent(
+                lead_agent.SPEC,
+                lead_context(
+                    contract,
+                    evidence,
+                    synthesis=synthesis[1] if synthesis else "",
+                    memory=previous_memory.render() if previous_memory else "",
+                    latest_outcome=latest_outcome,
+                ),
+                model=runtimes["lead"].model,
+                ledger=ledger,
+                task_id=store.task_id,
+                execution=runtimes["lead"].execution,
+                validate=lead_agent.make_validator(contract),
+            )
+        except AgentProtocolError as error:
+            # A role that cannot produce a valid action is a recoverable pause,
+            # which is what ARCHITECTURE §8.2 already requires -- letting it
+            # escape here threw away a task that was substantively finished.
+            # Every artifact is already committed, so the honest terminal state
+            # is "paused", and a later run resumes from the same store.
+            print(f"\n[lead #{round_index}] 协议暂停：{error}")
+            print(
+                f"已保全 {len(evidence.materials)} 份素材"
+                f"{'与一份综合' if synthesis else ''}；重跑同一数据库即可继续。"
+            )
+            return "paused"
         await _commit_memory(store, action.arguments, previous_memory)
         print(f"\n[lead #{round_index}] {action.name}")
 

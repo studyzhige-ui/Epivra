@@ -406,8 +406,17 @@ def make_validator(contract: ResearchContract):
         if name == "commission_wave":
             raw = arguments.get("assignments", ())
             if not raw:
+                # An empty wave is how the Lead tries to say "there is nothing
+                # left to investigate".  Refusing it without naming the action
+                # that *does* say that leaves the role with nowhere to go, and a
+                # live run repeated the empty wave and lost the task.
                 return ToolError(
-                    action=name, problem="一个 Wave 至少需要一个 Assignment"
+                    action=name,
+                    problem="一个 Wave 至少需要一个 Assignment",
+                    allowed=(
+                        "如果已经没有值得调查的缺口，用 commission_report 委托写作。"
+                        "空 Wave 不是表达「调查已经充分」的方式。"
+                    ),
                 )
             try:
                 parse_assignments(contract, raw)
