@@ -13,10 +13,13 @@ import asyncio
 import json
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
+from unittest import mock
 
 import aiosqlite
 
+from deep_research_agent.agents import investigator as investigator_agent
 from deep_research_agent.agents.lead import AssignmentDraft
 from deep_research_agent.artifact_store import SqliteArtifactStore
 from deep_research_agent.content_store import SqliteContentStore
@@ -583,6 +586,75 @@ class LedgerClassificationTest(WaveFixture):
         status, attempts, max_attempts = rows[0]
         self.assertEqual("failed", status)
         self.assertLess(attempts, max_attempts, "the failure must stay retryable")
+
+
+class BudgetHarvestTest(WaveFixture):
+    """Running out of budget must not throw away evidence already paid for.
+
+    The ceiling used to raise out of the branch before curation, so every
+    candidate the Investigator had already saved was orphaned: snapshots in the
+    store that no Curator ever judged.  The Lead then saw an empty failure,
+    re-commissioned the same ground, and spent another full budget rediscovering
+    the same sources.  Across the 1e matrix that loop dominated cost -- the worst
+    fixture ran 382 searches for 5 Materials with 4 of 4 branches ending here.
+
+    Harvesting must not soften the verdict: the branch is still an operational
+    failure and the exhaustion is still reported, because a budget that ran out
+    is never evidence that the research is finished.
+    """
+
+    async def test_an_exhausted_branch_still_curates_what_it_paid_for(self) -> None:
+        # Two working turns are allowed, so the branch saves a candidate and is
+        # then cut off mid-search with that candidate already committed.
+        spec = replace(investigator_agent.SPEC, max_tool_turns=2)
+        runtimes = self.runtimes(
+            investigator=[
+                ModelReply(tool_calls=(call("read", url="https://cdc.example/acip"),)),
+                ModelReply(
+                    tool_calls=(
+                        call(
+                            "save_candidate_source",
+                            url="https://cdc.example/acip",
+                            relevance_note="ACIP 的正式建议原文。",
+                        ),
+                    )
+                ),
+                ModelReply(tool_calls=(call("search", query="more", intent="gap"),)),
+            ],
+            curator=curator_script(),
+            analyst=[ANALYST_REPLY],
+        )
+
+        with mock.patch.object(investigator_agent, "SPEC", spec):
+            outcome = await run_wave(
+                self.store,
+                self.ledger,
+                runtimes,
+                contract=CONTRACT,
+                wave_intent="确认预算耗尽时证据不被丢弃。",
+                assignments=[
+                    AssignmentDraft(
+                        question_labels=("Q1",),
+                        focus="ACIP 记录",
+                        why_it_matters="唯一的一手入口",
+                        evidence_sought="ACIP 官方记录",
+                    )
+                ],
+                broker=self.broker,
+                reader=self.reader,
+            )
+
+        branch = outcome.branches[0]
+        # The verdict stays honest ...
+        self.assertEqual("operational_failure", branch.status)
+        self.assertTrue(
+            any("tool turns" in item for item in branch.limitations),
+            f"the exhaustion must be reported, got {branch.limitations}",
+        )
+        # ... and the evidence already bought is kept.
+        self.assertEqual(1, len(branch.source_refs))
+        self.assertEqual(1, len(branch.material_refs))
+        self.assertTrue(outcome.changed_materials)
 
 
 if __name__ == "__main__":

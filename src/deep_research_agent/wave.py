@@ -24,9 +24,9 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal
 
+from .agents import AgentToolBudgetExhausted, invoke_agent
 from .agents import curator as curator_agent
 from .agents import investigator as investigator_agent
-from .agents import invoke_agent
 from .agents.lead import AssignmentDraft
 from .artifact_store import SqliteArtifactStore
 from .artifacts import Provenance, evidence_set_id
@@ -364,29 +364,54 @@ async def _run_branch(
         store, ledger, runtimes["investigator"], broker=broker, reader=reader,
         branch=index,
     )
-    action = await invoke_agent(
-        investigator_agent.SPEC,
-        investigator_context(
-            contract,
-            assignment=brief,
-            question_labels=draft.question_labels,
-            known_claims=known_claims,
-            source_access=source_access,
-        ),
-        model=runtimes["investigator"].model,
-        ledger=ledger,
-        task_id=store.task_id,
-        execution=runtimes["investigator"].execution,
-        validate=investigator_agent.make_validator(tools.candidates),
-        handlers={
-            "search": tools,
-            "read": tools,
-            "save_candidate_source": tools,
-        },
+    exhausted = ""
+    try:
+        action = await invoke_agent(
+            investigator_agent.SPEC,
+            investigator_context(
+                contract,
+                assignment=brief,
+                question_labels=draft.question_labels,
+                known_claims=known_claims,
+                source_access=source_access,
+            ),
+            model=runtimes["investigator"].model,
+            ledger=ledger,
+            task_id=store.task_id,
+            execution=runtimes["investigator"].execution,
+            validate=investigator_agent.make_validator(tools.candidates),
+            handlers={
+                "search": tools,
+                "read": tools,
+                "save_candidate_source": tools,
+            },
+        )
+    except AgentToolBudgetExhausted as error:
+        # The ceiling is a bounded stop, not a void.  Candidates already saved
+        # are paid facts sitting in the store, and letting the exception escape
+        # orphaned every one of them: the branch never reached curation, so the
+        # Lead saw an empty failure, re-commissioned the same ground, and spent
+        # another full budget finding the same sources.  Across the 1e matrix
+        # that loop was the single largest cost -- 382 searches for 5 Materials
+        # on the worst fixture, with 4 of 4 branches ending exactly here.
+        #
+        # Harvesting does not soften the verdict.  The status stays an
+        # operational failure and the exhaustion is reported verbatim, because
+        # "the budget ran out" must never read as "the research is done".
+        exhausted = str(error)
+        action = None
+    summary = "" if action is None else str(action.arguments.get("summary", ""))
+    attempted = (
+        ()
+        if action is None
+        else tuple(str(x) for x in action.arguments.get("attempted_paths", ()))
     )
-    summary = str(action.arguments.get("summary", ""))
-    attempted = tuple(str(x) for x in action.arguments.get("attempted_paths", ()))
-    limitations = tuple(str(x) for x in action.arguments.get("limitations", ()))
+    limitations = (
+        (exhausted,)
+        if action is None
+        else tuple(str(x) for x in action.arguments.get("limitations", ()))
+    )
+    status: BranchStatus = "operational_failure" if exhausted else "completed"
 
     if not tools.candidates:
         # An empty-handed branch is a legitimate outcome, not a failure: the Lead
@@ -394,7 +419,7 @@ async def _run_branch(
         return BranchOutcome(
             index=index,
             focus=draft.focus,
-            status="completed",
+            status=status,
             summary=summary,
             attempted_paths=attempted,
             limitations=limitations,
@@ -428,7 +453,7 @@ async def _run_branch(
     return BranchOutcome(
         index=index,
         focus=draft.focus,
-        status="completed",
+        status=status,
         material_refs=tuple(curation.material_refs),
         source_refs=tuple(sorted(candidates)),
         summary=summary,
