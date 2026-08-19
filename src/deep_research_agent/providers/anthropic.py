@@ -36,6 +36,7 @@ from ..model import (
     ModelRequestRejected,
     ModelToolCall,
     ModelUnavailableError,
+    TokenUsage,
     ToolSpec,
 )
 
@@ -198,7 +199,11 @@ def parse_reply(payload: Mapping[str, Any]) -> ModelReply:
                     ),
                 )
             )
-    return ModelReply(content="\n".join(texts), tool_calls=tuple(calls))
+    return ModelReply(
+        content="\n".join(texts),
+        tool_calls=tuple(calls),
+        usage=TokenUsage.from_payload(payload.get("usage")),
+    )
 
 
 @dataclass(slots=True)

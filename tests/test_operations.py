@@ -340,5 +340,109 @@ async def _never_called() -> str:  # pragma: no cover - guards unreachable sends
     raise AssertionError("this operation must not call the provider")
 
 
+class SpendAccountingTest(LedgerFixture):
+    """What the ledger records must be what was actually paid.
+
+    Phase 1e could not answer "what did that cost" at all: the table held no
+    token counts and no timestamps, so the resource axis had to be argued from
+    call counts and output characters. Both are now recorded, and the property
+    that makes the numbers trustworthy is that a replay adds nothing -- a
+    resumed task must not be billed twice in the report any more than it is
+    billed twice by the provider.
+    """
+
+    async def _spend(self) -> tuple[int, int, int]:
+        rows = await self._connection.execute_fetchall(
+            "select coalesce(sum(input_tokens),0), coalesce(sum(output_tokens),0), "
+            "count(*) from operations where status='completed'"
+        )
+        return int(rows[0][0]), int(rows[0][1]), int(rows[0][2])
+
+    async def test_completed_calls_record_the_tokens_they_used(self) -> None:
+        async def send() -> str:
+            return '{"content": "done", "usage": {"input_tokens": 1200}}'
+
+        await run_once(
+            self.ledger,
+            request(),
+            send,
+            usage_of=lambda _outcome: {"input_tokens": 1200, "output_tokens": 340},
+        )
+        self.assertEqual((1200, 340, 1), await self._spend())
+
+    async def test_a_replay_does_not_bill_twice(self) -> None:
+        async def send() -> str:
+            return "outcome"
+
+        usage = {"input_tokens": 500, "output_tokens": 100}
+        await run_once(self.ledger, request(), send, usage_of=lambda _o: usage)
+        await run_once(self.ledger, request(), send, usage_of=lambda _o: usage)
+        self.assertEqual((500, 100, 1), await self._spend())
+
+    async def test_an_unmeasured_call_stays_null_rather_than_zero(self) -> None:
+        async def send() -> str:
+            return "outcome"
+
+        # A provider that reports no usage must not look like a free call.
+        await run_once(self.ledger, request(), send)
+        rows = await self._connection.execute_fetchall(
+            "select input_tokens, output_tokens from operations"
+        )
+        self.assertEqual((None, None), tuple(rows[0]))
+
+    async def test_every_settled_operation_carries_a_start_and_an_end(self) -> None:
+        async def send() -> str:
+            return "outcome"
+
+        await run_once(self.ledger, request(), send)
+        rows = await self._connection.execute_fetchall(
+            "select started_at, settled_at from operations"
+        )
+        started, settled = rows[0]
+        self.assertTrue(started, "mark_sent must stamp the start")
+        self.assertTrue(settled, "complete must stamp the end")
+        self.assertLessEqual(started, settled)
+
+    async def test_a_database_written_before_accounting_gains_the_columns(
+        self,
+    ) -> None:
+        """An older run must stay readable and resumable, not be migrated away."""
+
+        for column in (
+            "started_at",
+            "settled_at",
+            "input_tokens",
+            "output_tokens",
+            "cached_input_tokens",
+        ):
+            await self._connection.execute(
+                f"ALTER TABLE operations DROP COLUMN {column}"
+            )
+        await self._connection.commit()
+
+        await self.ledger.setup()
+        columns = {
+            row[1]
+            for row in await self._connection.execute_fetchall(
+                "PRAGMA table_info(operations)"
+            )
+        }
+        self.assertLessEqual(
+            {
+                "started_at",
+                "settled_at",
+                "input_tokens",
+                "output_tokens",
+                "cached_input_tokens",
+            },
+            columns,
+        )
+
+        async def send() -> str:
+            return "outcome"
+
+        self.assertEqual("outcome", await run_once(self.ledger, request(), send))
+
+
 if __name__ == "__main__":
     unittest.main()

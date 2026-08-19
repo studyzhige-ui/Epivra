@@ -26,6 +26,7 @@ from ..model import (
     ModelReply,
     ModelRequestRejected,
     ModelToolCall,
+    TokenUsage,
     ToolSpec,
 )
 from ..operations import (
@@ -273,7 +274,11 @@ async def invoke_agent(
 
         reply = _decode_reply(
             await run_once(
-                ledger, request, send, not_executed=(ModelRequestRejected,)
+                ledger,
+                request,
+                send,
+                not_executed=(ModelRequestRejected,),
+                usage_of=_usage_of,
             )
         )
 
@@ -386,25 +391,55 @@ async def _tool_result(
 def _encode_reply(reply: ModelReply) -> str:
     """Serialise a reply for the ledger so recovery replays it exactly."""
 
-    import json
+    payload: dict[str, Any] = {
+        "content": reply.content,
+        "tool_calls": [
+            {"call_id": c.call_id, "name": c.name, "arguments": c.arguments}
+            for c in reply.tool_calls
+        ],
+    }
+    if reply.usage is not None:
+        payload["usage"] = {
+            "input_tokens": reply.usage.input_tokens,
+            "output_tokens": reply.usage.output_tokens,
+            "cached_input_tokens": reply.usage.cached_input_tokens,
+        }
+    return json.dumps(payload, ensure_ascii=False)
 
-    return json.dumps(
-        {
-            "content": reply.content,
-            "tool_calls": [
-                {"call_id": c.call_id, "name": c.name, "arguments": c.arguments}
-                for c in reply.tool_calls
-            ],
-        },
-        ensure_ascii=False,
-    )
+
+def _usage_of(outcome: str) -> Mapping[str, int] | None:
+    """Read spend off an encoded reply, for the ledger to record.
+
+    Only called when a call really executed, so the ledger's summed totals are
+    tokens actually paid for rather than tokens the work would have cost.
+    """
+
+    try:
+        value = json.loads(outcome).get("usage")
+    except (json.JSONDecodeError, AttributeError):
+        return None
+    if not isinstance(value, Mapping):
+        return None
+    return {
+        key: int(value[key])
+        for key in ("input_tokens", "output_tokens", "cached_input_tokens")
+        if isinstance(value.get(key), int)
+    } or None
 
 
 def _decode_reply(payload: str) -> ModelReply:
-    import json
-
     value = json.loads(payload)
+    usage = value.get("usage")
     return ModelReply(
+        usage=(
+            TokenUsage(
+                input_tokens=int(usage.get("input_tokens", 0)),
+                output_tokens=int(usage.get("output_tokens", 0)),
+                cached_input_tokens=int(usage.get("cached_input_tokens", 0)),
+            )
+            if isinstance(usage, Mapping)
+            else None
+        ),
         content=str(value.get("content", "")),
         tool_calls=tuple(
             ModelToolCall(

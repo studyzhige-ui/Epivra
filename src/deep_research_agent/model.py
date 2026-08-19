@@ -90,10 +90,75 @@ class ModelToolCall:
 
 
 @dataclass(frozen=True, slots=True)
+class TokenUsage:
+    """What one provider call actually consumed.
+
+    Recorded because a research system that cannot say what it spent cannot be
+    held to a resource budget, and Phase 1e showed the resource axis is invisible
+    inside any single run -- the hundredfold spread in yield per search only
+    appeared across runs.  ``cached_input_tokens`` is reported separately by
+    several vendors and is billed differently, so it is kept rather than folded
+    into the input total.
+    """
+
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cached_input_tokens: int = 0
+
+    def __post_init__(self) -> None:
+        for name in ("input_tokens", "output_tokens", "cached_input_tokens"):
+            value = getattr(self, name)
+            if not isinstance(value, int) or value < 0:
+                raise ValueError(f"{name} must be a non-negative integer")
+
+    @property
+    def total_tokens(self) -> int:
+        return self.input_tokens + self.output_tokens
+
+    @classmethod
+    def from_payload(cls, payload: Mapping[str, Any] | None) -> TokenUsage | None:
+        """Read a usage block, tolerating vendors that omit or rename fields.
+
+        Absent usage returns ``None`` rather than a zeroed record: "the provider
+        did not tell us" and "this call cost nothing" must not look the same in
+        the ledger, or a spend report would silently under-count.
+        """
+
+        if not isinstance(payload, Mapping):
+            return None
+
+        def count(*names: str) -> int:
+            for name in names:
+                value = payload.get(name)
+                if isinstance(value, bool):
+                    continue
+                if isinstance(value, int) and value >= 0:
+                    return value
+            return 0
+
+        details = payload.get("prompt_tokens_details")
+        cached = 0
+        if isinstance(details, Mapping):
+            raw = details.get("cached_tokens")
+            cached = raw if isinstance(raw, int) and raw >= 0 else 0
+        cached = cached or count("cache_read_input_tokens", "prompt_cache_hit_tokens")
+
+        usage = cls(
+            input_tokens=count("prompt_tokens", "input_tokens"),
+            output_tokens=count("completion_tokens", "output_tokens"),
+            cached_input_tokens=cached,
+        )
+        if usage.total_tokens == 0 and usage.cached_input_tokens == 0:
+            return None
+        return usage
+
+
+@dataclass(frozen=True, slots=True)
 class ModelReply:
     content: str = ""
     tool_calls: tuple[ModelToolCall, ...] = ()
     reasoning_content: str = ""
+    usage: TokenUsage | None = None
 
     def assistant_message(self) -> dict[str, Any]:
         value: dict[str, Any] = {"role": "assistant", "content": self.content or None}
@@ -274,6 +339,7 @@ class OpenAICompatibleClient:
             content=content,
             tool_calls=tuple(calls),
             reasoning_content=str(message.get("reasoning_content") or ""),
+            usage=TokenUsage.from_payload(data.get("usage")),
         )
 
 
@@ -287,5 +353,6 @@ __all__ = [
     "ModelReply",
     "ModelToolCall",
     "ModelUnavailableError",
+    "TokenUsage",
     "ToolSpec",
 ]

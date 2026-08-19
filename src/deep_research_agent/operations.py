@@ -37,6 +37,7 @@ import json
 import re
 from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Literal, Protocol
 
 import aiosqlite
@@ -139,6 +140,12 @@ def _canonical(payload: object) -> str:
 
 def _digest(payload: object) -> str:
     return hashlib.sha256(_canonical(payload).encode("utf-8")).hexdigest()
+
+
+def _utc_now() -> str:
+    """Wall-clock stamp for spend and latency accounting, never for identity."""
+
+    return datetime.now(UTC).isoformat(timespec="milliseconds")
 
 
 def _require_text(value: str, label: str) -> str:
@@ -326,7 +333,13 @@ class OperationLedger(Protocol):
     async def mark_sent(self, operation_id: str) -> OperationRecord:
         """Record that a request is going out and its outcome is not yet known."""
 
-    async def complete(self, operation_id: str, outcome: str) -> OperationRecord:
+    async def complete(
+        self,
+        operation_id: str,
+        outcome: str,
+        *,
+        usage: Mapping[str, int] | None = None,
+    ) -> OperationRecord:
         """Store the outcome in the content store, then mark the call done."""
 
     async def fail(
@@ -383,10 +396,35 @@ class SqliteOperationLedger:
                 outcome_hash TEXT,
                 outcome_chars INTEGER,
                 failure TEXT NOT NULL DEFAULT '',
-                detail TEXT NOT NULL DEFAULT ''
+                detail TEXT NOT NULL DEFAULT '',
+                started_at TEXT NOT NULL DEFAULT '',
+                settled_at TEXT NOT NULL DEFAULT '',
+                input_tokens INTEGER,
+                output_tokens INTEGER,
+                cached_input_tokens INTEGER
             )
             """
         )
+        # Databases written before spend accounting existed are still readable
+        # and resumable; the new columns simply stay NULL for their rows, which
+        # is the honest record -- those calls really were unmeasured.
+        existing = {
+            row[1]
+            for row in await self._connection.execute_fetchall(
+                "PRAGMA table_info(operations)"
+            )
+        }
+        for column, definition in (
+            ("started_at", "TEXT NOT NULL DEFAULT ''"),
+            ("settled_at", "TEXT NOT NULL DEFAULT ''"),
+            ("input_tokens", "INTEGER"),
+            ("output_tokens", "INTEGER"),
+            ("cached_input_tokens", "INTEGER"),
+        ):
+            if column not in existing:
+                await self._connection.execute(
+                    f"ALTER TABLE operations ADD COLUMN {column} {definition}"
+                )
         await self._connection.execute(
             "CREATE INDEX IF NOT EXISTS operations_task_status "
             "ON operations(task_id, status)"
@@ -458,12 +496,19 @@ class SqliteOperationLedger:
             operation_id,
             status="in_flight",
             attempts=record.attempts + 1,
+            started_at=_utc_now(),
             failure="",
             detail="",
         )
         return await self._require(operation_id)
 
-    async def complete(self, operation_id: str, outcome: str) -> OperationRecord:
+    async def complete(
+        self,
+        operation_id: str,
+        outcome: str,
+        *,
+        usage: Mapping[str, int] | None = None,
+    ) -> OperationRecord:
         record = await self._require(operation_id)
         if record.status == "completed":
             return record
@@ -476,11 +521,19 @@ class SqliteOperationLedger:
         # so a crash between these two writes leaves a replayable body and a
         # still-in_flight row rather than a completed row pointing at nothing.
         ref = await self._content_store.put(outcome)
+        counts = dict(usage or {})
         await self._update(
             operation_id,
             status="completed",
             outcome_hash=ref.content_hash,
             outcome_chars=ref.char_count,
+            settled_at=_utc_now(),
+            # Only written on real execution.  A replayed call returns above
+            # without touching these, so summing them gives tokens actually
+            # paid for rather than tokens the work would have cost.
+            input_tokens=counts.get("input_tokens"),
+            output_tokens=counts.get("output_tokens"),
+            cached_input_tokens=counts.get("cached_input_tokens"),
             failure="",
             detail="",
         )
@@ -502,7 +555,11 @@ class SqliteOperationLedger:
             raise ArtifactValidationError(f"unsupported failure {category!r}")
         status: OperationStatus = "cancelled" if category == "cancelled" else "failed"
         await self._update(
-            operation_id, status=status, failure=category, detail=detail
+            operation_id,
+            status=status,
+            failure=category,
+            detail=detail,
+            settled_at=_utc_now(),
         )
         return await self._require(operation_id)
 
@@ -521,6 +578,7 @@ class SqliteOperationLedger:
             status="needs_reconciliation",
             failure="terminal",
             detail=detail,
+            settled_at=_utc_now(),
         )
         return await self._require(operation_id)
 
@@ -620,6 +678,7 @@ async def run_once(
     send: Callable[[], Awaitable[str]],
     *,
     not_executed: tuple[type[BaseException], ...] = (),
+    usage_of: Callable[[str], Mapping[str, int] | None] | None = None,
 ) -> str:
     """Perform one external call at most once, across crashes and restarts.
 
@@ -676,7 +735,13 @@ async def run_once(
             record.operation_id, f"{type(error).__name__} during provider call"
         )
         raise
-    completed = await ledger.complete(record.operation_id, outcome)
+    # Spend is read off the outcome the caller just produced, so the ledger
+    # stays generic: it records token counts without knowing what a model is.
+    completed = await ledger.complete(
+        record.operation_id,
+        outcome,
+        usage=usage_of(outcome) if usage_of is not None else None,
+    )
     return await ledger.outcome(completed.operation_id)
 
 
