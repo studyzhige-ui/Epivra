@@ -8,16 +8,32 @@ respectable dimensions -- exactly the failure a publication gate must not have.
 So the verdict here is **tiered on critical-domain outcomes**, and no total is
 ever produced.
 
-Three authorities shape the structure (`docs/ARCHITECTURE.md` §10):
+Three authorities shape the structure, each checked against its primary text
+rather than recalled (`docs/ARCHITECTURE.md` §10):
 
-* **AMSTAR 2** -- critical versus non-critical domains, verdict decided by the
-  critical ones, no summary score.
-* **GRADE** -- certainty is judged per claim and must cover benefits *and*
-  harms, so the question is never "is the report confident" but "is each central
-  claim worded to match its own evidence".
+* **AMSTAR 2** (Shea et al., BMJ 2017) -- "AMSTAR 2 is not intended to generate
+  an overall score", and "we strongly recommend that individual item ratings are
+  not combined to create an overall score", because a total "may disguise
+  critical weaknesses".  Its four confidence bands are reproduced exactly in
+  :attr:`RubricVerdict.tier`.  Its own critical list is explicitly advisory --
+  "appraisers may add or substitute domains" -- which is what licenses the
+  research-report-specific set below rather than copying a review-appraisal one.
+* **GRADE** -- certainty is judged **per outcome** ("outcome centric"), never for
+  a document as a whole, and GRADE "is not a quantitative system for grading the
+  quality of evidence".  Its *defining* feature is that certainty and strength of
+  recommendation are decoupled: high certainty need not produce a strong
+  recommendation, and low certainty can still support one where benefits clearly
+  dominate.  An earlier version of this rubric had that backwards and treated
+  "recommendation stronger than certainty" as a failure.  It is not.
 * **PRISMA 2020** -- evidence limitations (23b) and process limitations (23c) are
   separate items.  "The studies are small" and "we searched only the open web"
   must be stated apart, or a reader cannot tell what to go and fix.
+
+**The rubric answers to those sources and to nothing else.**  Reports this system
+produces are *subjects* of measurement and hold no authority over the standard: a
+low score changes the report or the system, never the criteria.  Only new external
+authority may change what is written here.  Calibrating the standard toward our
+own output would build a mirror rather than an instrument.
 
 The five critical domains are the same five the Reviewer must block on, stated
 once here so the offline judge and the in-run gate cannot drift into disagreeing
@@ -31,7 +47,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Literal
 
-Tier = Literal["不可发布", "可发布·中", "可发布·高"]
+Tier = Literal["不可依赖", "不可发布", "可发布·中", "可发布·高"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -130,9 +146,15 @@ SUPPORTING: tuple[Domain, ...] = (
     ),
     Domain(
         key="actionable_recommendations",
-        title="建议可执行",
-        question="建议是否绑定条件、触发点与风险，并与证据强度相称？",
-        failure="给出无依据的明确建议，或建议强度超过证据确定性。",
+        title="建议可执行且与确定性解耦",
+        question=(
+            "建议是否绑定条件、触发点与风险，并说明它依据的是收益—危害平衡、"
+            "受众重视什么、资源与可行性——而不是直接由证据确定性推导出来？"
+        ),
+        failure=(
+            "把建议强度当成证据确定性的读数（两个方向都算错：低确定性就不敢给建议，"
+            "或高确定性就自动给强建议）；或给出无依据的明确建议。"
+        ),
     ),
     Domain(
         key="reader_fit",
@@ -229,21 +251,38 @@ class RubricVerdict:
 
     @property
     def tier(self) -> Tier:
-        """Tier from critical outcomes first, then weakness count.
+        """Four tiers, matching AMSTAR 2's confidence bands exactly.
 
-        An honest "we cannot determine this yet" reaches 可发布·高: low certainty
-        is not a defect, and only over-confidence, hidden limitations or
-        fabricated support are.  Nothing here averages anything.
+        AMSTAR 2 Box 2, verified against Shea et al. BMJ 2017: high = "no or one
+        non-critical weakness"; moderate = "more than one non-critical weakness"
+        with no critical flaw; low = "one critical flaw"; critically low = "more
+        than one critical flaw", a review that "should not be relied on".
+
+        The distinction between one critical flaw and several is not cosmetic.
+        One is a defect to fix; several mean the document cannot be trusted as a
+        summary of anything, which is a different message to its reader.  An
+        earlier version of this rubric collapsed the two and lost that.
+
+        An honest "we cannot determine this yet" still reaches 可发布·高: low
+        certainty is not a defect, and only over-confidence, hidden limitations
+        or fabricated support are.  Nothing here averages anything -- AMSTAR 2
+        says outright that item ratings must not be combined into a score, and
+        GRADE that it "is not a quantitative system".
         """
 
-        if self.critical_failures:
+        failures = len(self.critical_failures)
+        if failures > 1:
+            return "不可依赖"
+        if failures == 1:
             return "不可发布"
         return "可发布·高" if len(self.weaknesses) <= 1 else "可发布·中"
 
     def render(self) -> str:
         lines = [f"判定：{self.tier}"]
         if self.critical_failures:
-            lines.append("关键域失败（任一即不可发布）：")
+            lines.append(
+                "关键域失败（1 项 → 不可发布；>1 项 → 不可依赖）："
+            )
             lines.extend(
                 f"  ✗ {verdict.domain.title}：{verdict.reason}"
                 for verdict in self.critical_failures

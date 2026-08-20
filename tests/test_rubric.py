@@ -58,6 +58,20 @@ class TierTest(unittest.TestCase):
         self.assertFalse(verdict.publishable)
         self.assertEqual(1, len(verdict.critical_failures))
 
+    def test_more_than_one_critical_failure_is_a_distinct_worse_tier(self) -> None:
+        """AMSTAR 2 separates "one critical flaw" from "more than one".
+
+        One is a defect to fix; several mean the document cannot be relied on as
+        a summary of anything, which is a different message to its reader.
+        """
+
+        critical = _all(True, rubric.CRITICAL)
+        critical[0] = (rubric.CRITICAL[0].key, False, "捏造引用")
+        critical[3] = (rubric.CRITICAL[3].key, False, "删掉了不显著结果")
+        verdict = rubric.build_verdict(critical, _all(True, rubric.SUPPORTING))
+        self.assertEqual("不可依赖", verdict.tier)
+        self.assertFalse(verdict.publishable)
+
     def test_a_clean_report_with_one_weakness_is_still_top_tier(self) -> None:
         supporting = _all(True, rubric.SUPPORTING)
         supporting[0] = (rubric.SUPPORTING[0].key, False, "检索范围写得笼统")
@@ -95,6 +109,32 @@ class TierTest(unittest.TestCase):
             _all(True, rubric.CRITICAL), _all(True, rubric.SUPPORTING)
         )
         self.assertEqual("可发布·高", verdict.tier)
+
+
+class AuthorityFidelityTest(unittest.TestCase):
+    """Where the rubric departs from a source, it must be on purpose.
+
+    GRADE's defining feature is that certainty and strength of recommendation are
+    decoupled -- low certainty can still support a strong recommendation where
+    benefits clearly dominate. An earlier version of this rubric had it backwards
+    and would have penalised exactly that.
+    """
+
+    def test_recommendations_are_not_read_off_certainty(self) -> None:
+        domain = next(
+            item
+            for item in rubric.SUPPORTING
+            if item.key == "actionable_recommendations"
+        )
+        self.assertIn("解耦", domain.title)
+        self.assertIn("收益—危害平衡", domain.question)
+        self.assertIn("两个方向都算错", domain.failure)
+
+    def test_the_four_tiers_match_amstar_2s_bands(self) -> None:
+        self.assertEqual(
+            {"不可依赖", "不可发布", "可发布·中", "可发布·高"},
+            set(rubric.Tier.__args__),
+        )
 
 
 class VerdictValidationTest(unittest.TestCase):
