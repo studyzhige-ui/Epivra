@@ -66,7 +66,7 @@ LAYERS: tuple[tuple[str, frozenset[str]], ...] = (
     ),
     ("agents", frozenset({"agents"})),
     ("orchestration", frozenset({"reporting", "wave"})),
-    ("application", frozenset({"application"})),
+    ("application", frozenset({"application", "service"})),
 )
 
 _LAYER_INDEX = {

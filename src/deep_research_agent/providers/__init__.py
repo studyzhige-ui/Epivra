@@ -87,6 +87,17 @@ _KEYED_WEB_PROVIDERS = {
 }
 
 
+def search_credentials() -> Mapping[str, str]:
+    """Which environment variable supplies each keyed web provider's credential.
+
+    Exposed so an interface can show the user which vendors are actually usable
+    before they choose one, instead of letting a selected-but-unkeyed provider be
+    silently skipped at run time.
+    """
+
+    return {name: env_var for name, (env_var, _factory) in _KEYED_WEB_PROVIDERS.items()}
+
+
 def build_search_providers(
     names: Sequence[str],
     academic_names: Sequence[str] = (),
@@ -131,6 +142,7 @@ def build_search_providers(
 
 __all__ = [
     "LLM_PROVIDERS",
+    "search_credentials",
     "ArxivSearchProvider",
     "BochaSearchProvider",
     "BraveSearchProvider",
