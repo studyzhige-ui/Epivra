@@ -314,6 +314,14 @@ class CommissionBody:
             )
         if len(set(self.source_access)) != len(self.source_access):
             raise ArtifactValidationError("source_access must not repeat a family")
+        if "local_only" in self.source_access and len(self.source_access) > 1:
+            # "local only" and "the public web" are a contradiction, not a union.
+            # Accepting both would leave the runtime guessing which the user
+            # meant, on the one artifact no model may rewrite.
+            raise ArtifactValidationError(
+                "local_only forbids the network, so it cannot be combined with "
+                f"another source family; got {list(self.source_access)}"
+            )
         _require_text(self.language, "commission language")
         for item in self.constraints:
             _require_text(item, "commission constraint")
@@ -323,6 +331,12 @@ class CommissionBody:
         """Whether any external search is permitted at all."""
 
         return "public_web" in self.source_access
+
+    @property
+    def allows_local_corpus(self) -> bool:
+        """Whether the user's own files may be read."""
+
+        return "user_files" in self.source_access or "local_only" in self.source_access
 
     def encode(self) -> str:
         """Canonical body text; the request is stored verbatim."""

@@ -65,9 +65,11 @@ class ScriptedModel:
         self._replies = list(replies)
         self._store = store
         self.calls = 0
+        self.seen: list[str] = []
 
     async def complete(self, messages, **kwargs) -> ModelReply:  # noqa: ANN001
         self.calls += 1
+        self.seen.append(str(messages[1].get("content", "")) if len(messages) > 1 else "")
         if not self._replies:
             raise AssertionError("scripted model ran out of replies")
         reply = self._replies.pop(0)
@@ -655,6 +657,167 @@ class BudgetHarvestTest(WaveFixture):
         self.assertEqual(1, len(branch.source_refs))
         self.assertEqual(1, len(branch.material_refs))
         self.assertTrue(outcome.changed_materials)
+
+
+class SourceAccessEnforcementTest(WaveFixture):
+    """The permission has to stop the call, not merely be described to the role.
+
+    Under local_only the whole point is that the topic never reaches a search
+    vendor. Before this was enforced, source_access reached the Investigator only
+    as a sentence in its context and nothing checked it.
+    """
+
+    async def _run(self, access: tuple[str, ...], replies, local_reader=None):  # noqa: ANN001
+        runtimes = self.runtimes(investigator=replies, curator=[], analyst=[])
+        return await run_wave(
+            self.store,
+            self.ledger,
+            runtimes,
+            contract=CONTRACT,
+            wave_intent="检验来源权限。",
+            assignments=[
+                AssignmentDraft(
+                    question_labels=("Q1",),
+                    focus="来源权限",
+                    why_it_matters="决定可用来源族",
+                    evidence_sought="任意可用来源",
+                )
+            ],
+            broker=self.broker,
+            reader=self.reader,
+            source_access=access,
+            local_reader=local_reader,
+        )
+
+    async def test_local_only_never_reaches_the_search_vendor(self) -> None:
+        replies = [
+            ModelReply(tool_calls=(call("search", query="x", intent="i", scope="both"),)),
+            ModelReply(
+                tool_calls=(
+                    call(
+                        "complete_investigation",
+                        summary="本次委托未授权公开网络，改用本地资料。",
+                        attempted_paths=["尝试公开检索，被权限拒绝"],
+                        limitations=["未授权公开网络检索"],
+                    ),
+                )
+            ),
+        ]
+        await self._run(("local_only",), replies)
+
+        self.assertEqual([], self.broker.queries, "the broker must not be called")
+        rows = await self._connection.execute_fetchall(
+            "select count(*) from operations where kind='search'"
+        )
+        # Nothing was sent, so there is no operation to record or reconcile.
+        self.assertEqual(0, rows[0][0])
+
+    async def test_a_local_read_is_refused_without_the_local_grant(self) -> None:
+        replies = [
+            ModelReply(tool_calls=(call("read", url="local:notes.md"),)),
+            ModelReply(
+                tool_calls=(
+                    call(
+                        "complete_investigation",
+                        summary="本地资料未获授权。",
+                        attempted_paths=["尝试读取本地资料"],
+                        limitations=["未授权读取用户本地资料"],
+                    ),
+                )
+            ),
+        ]
+        await self._run(("public_web",), replies)
+
+        rows = await self._connection.execute_fetchall(
+            "select count(*) from operations where kind='fetch'"
+        )
+        self.assertEqual(0, rows[0][0])
+        self.assertEqual([], self.reader.reads, "the web reader must not see a local ref")
+
+    async def test_a_granted_local_read_becomes_a_snapshot(self) -> None:
+        class StubLocal:
+            def __init__(self) -> None:
+                self.reads: list[str] = []
+
+            def listing(self, limit: int = 500) -> tuple[str, ...]:
+                return ("local:notes.md",)
+
+            async def read(self, url: str) -> ReadResult:
+                self.reads.append(url)
+                return ReadResult(title="notes.md", url=url, content=PAGE)
+
+        local = StubLocal()
+        replies = [
+            ModelReply(tool_calls=(call("read", url="local:notes.md"),)),
+            ModelReply(
+                tool_calls=(
+                    call(
+                        "save_candidate_source",
+                        url="local:notes.md",
+                        relevance_note="用户自己的记录，直接相关。",
+                    ),
+                )
+            ),
+            ModelReply(
+                tool_calls=(
+                    call(
+                        "complete_investigation",
+                        summary="读取了用户本地记录一份。",
+                        attempted_paths=["用户本地资料库"],
+                    ),
+                )
+            ),
+        ]
+        runtimes = self.runtimes(
+            investigator=replies, curator=curator_script(), analyst=[ANALYST_REPLY]
+        )
+        outcome = await run_wave(
+            self.store,
+            self.ledger,
+            runtimes,
+            contract=CONTRACT,
+            wave_intent="读取用户本地资料。",
+            assignments=[
+                AssignmentDraft(
+                    question_labels=("Q1",),
+                    focus="本地资料",
+                    why_it_matters="用户提供的一手材料",
+                    evidence_sought="用户记录",
+                )
+            ],
+            broker=self.broker,
+            reader=self.reader,
+            source_access=("local_only",),
+            local_reader=local,
+        )
+
+        self.assertEqual(["local:notes.md"], local.reads)
+        self.assertEqual([], self.broker.queries)
+        self.assertEqual(1, len(outcome.branches[0].source_refs))
+
+    async def test_the_corpus_listing_is_shown_so_names_are_not_invented(self) -> None:
+        class StubLocal:
+            def listing(self, limit: int = 500) -> tuple[str, ...]:
+                return ("local:notes.md", "local:sub/data.csv")
+
+            async def read(self, url: str) -> ReadResult:  # pragma: no cover
+                raise AssertionError("not read in this test")
+
+        replies = [
+            ModelReply(
+                tool_calls=(
+                    call(
+                        "complete_investigation",
+                        summary="先查看可用的本地资料清单。",
+                        attempted_paths=["列出用户本地资料库"],
+                        limitations=["尚未读取任何一份"],
+                    ),
+                )
+            )
+        ]
+        await self._run(("user_files",), replies, local_reader=StubLocal())
+        body = self.models["investigator"].seen[0]
+        self.assertIn("local:sub/data.csv", body)
 
 
 if __name__ == "__main__":

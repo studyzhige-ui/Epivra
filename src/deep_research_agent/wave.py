@@ -54,6 +54,7 @@ from .sources import (
     MaterialBody,
     SourceAnchor,
     SourceSnapshotBody,
+    is_local_source,
     locate_quote,
 )
 from .tools import SearchRequest, SearchRouting
@@ -71,6 +72,38 @@ _UNBILLED_SEARCH = (
 _UNBILLED_FETCH = (SourceReadError, UnsafeUrlError, *_UNBILLED_SEARCH)
 
 BranchStatus = Literal["completed", "operational_failure"]
+
+
+@dataclass(frozen=True, slots=True)
+class SourcePermission:
+    """What a branch may reach, enforced by code rather than described in prose.
+
+    ``source_access`` used to travel to the Investigator only as a sentence in
+    its context ("允许使用：public_web").  Nothing checked it, so under
+    ``local_only`` -- the mode whose entire purpose is that the topic never
+    reaches a search vendor -- the branch could still have searched Tavily and
+    fetched any URL.  §2.2 puts tool permissions in the Trust Plane precisely
+    because a permission a model is merely *told about* is not a permission.
+    """
+
+    network: bool
+    local: bool
+
+    @classmethod
+    def of(cls, access: Sequence[str]) -> SourcePermission:
+        families = set(access)
+        return cls(
+            network="public_web" in families and "local_only" not in families,
+            local="user_files" in families or "local_only" in families,
+        )
+
+    def render(self) -> str:
+        allowed = [
+            name
+            for name, ok in (("公开网络检索与抓取", self.network), ("用户本地资料库", self.local))
+            if ok
+        ]
+        return "、".join(allowed) if allowed else "（无）"
 
 #: What each research scope needs from a provider, resolved against the
 #: capabilities providers declare about themselves.  The Investigator states the
@@ -186,6 +219,8 @@ class _InvestigationTools:
         broker: Any,
         reader: Any,
         branch: int,
+        permission: SourcePermission,
+        local_reader: Any = None,
     ) -> None:
         self._store = store
         self._ledger = ledger
@@ -193,6 +228,8 @@ class _InvestigationTools:
         self._broker = broker
         self._reader = reader
         self._branch = branch
+        self._permission = permission
+        self._local_reader = local_reader
         self.snapshots: dict[str, str] = {}
         self.candidates: dict[str, str] = {}
 
@@ -206,6 +243,14 @@ class _InvestigationTools:
         return f"未知工具 {name!r}。"
 
     async def _search(self, arguments: Mapping[str, Any]) -> str:
+        if not self._permission.network:
+            # Refused here, before the ledger: nothing was sent, so there is no
+            # operation to record or reconcile.
+            return (
+                "本次委托未授权公开网络检索（运行事实，不是证据判断）。"
+                f"当前授权：{self._permission.render()}。"
+                "请改用已授权的来源族，或在总结里如实记下这条限制。"
+            )
         query = str(arguments.get("query", "")).strip()
         intent = str(arguments.get("intent", "")).strip() or "discovery"
         scope = str(arguments.get("scope", "both")).strip() or "both"
@@ -258,6 +303,22 @@ class _InvestigationTools:
         if url in self.snapshots:
             return f"已读取过，快照引用 `{self.snapshots[url]}`。"
 
+        local = is_local_source(url)
+        if local and not self._permission.local:
+            return (
+                "本次委托未授权读取用户本地资料（运行事实，不是证据判断）。"
+                f"当前授权：{self._permission.render()}。"
+            )
+        if not local and not self._permission.network:
+            return (
+                "本次委托未授权抓取公开网络（运行事实，不是证据判断）。"
+                f"当前授权：{self._permission.render()}。"
+                "只能读取 local: 开头的本地来源。"
+            )
+        source_reader = self._local_reader if local else self._reader
+        if source_reader is None:
+            return "该来源族在本次部署中没有可用的读取器。"
+
         request = OperationRequest(
             task_id=self._store.task_id,
             kind="fetch",
@@ -267,7 +328,7 @@ class _InvestigationTools:
         )
 
         async def send() -> str:
-            result = await self._reader.read(url)
+            result = await source_reader.read(url)
             return f"{result.title}\n\n{result.content}"
 
         payload = await run_once(
@@ -402,6 +463,7 @@ async def _run_branch(
     reader: Any,
     known_claims: Sequence[str],
     source_access: Sequence[str],
+    local_reader: Any = None,
 ) -> BranchOutcome:
     """Investigate, then curate, inside one assignment's boundary."""
 
@@ -411,6 +473,8 @@ async def _run_branch(
     tools = _InvestigationTools(
         store, ledger, runtimes["investigator"], broker=broker, reader=reader,
         branch=index,
+        permission=SourcePermission.of(source_access),
+        local_reader=local_reader,
     )
     exhausted = ""
     try:
@@ -422,6 +486,12 @@ async def _run_branch(
                 question_labels=draft.question_labels,
                 known_claims=known_claims,
                 source_access=source_access,
+                local_sources=(
+                    local_reader.listing()
+                    if local_reader is not None
+                    and SourcePermission.of(source_access).local
+                    else ()
+                ),
             ),
             model=runtimes["investigator"].model,
             ledger=ledger,
@@ -521,6 +591,7 @@ async def run_wave(
     broker: Any,
     reader: Any,
     source_access: Sequence[str] = ("public_web",),
+    local_reader: Any = None,
 ) -> WaveOutcome:
     """Run one wave to completion and, if it changed evidence, synthesise once."""
 
@@ -543,6 +614,7 @@ async def run_wave(
                 reader=reader,
                 known_claims=known,
                 source_access=source_access,
+                local_reader=local_reader,
             )
             for index, draft in enumerate(assignments, start=1)
         ),
@@ -591,6 +663,7 @@ async def run_wave(
 __all__ = [
     "BranchOutcome",
     "BranchStatus",
+    "SourcePermission",
     "WaveOutcome",
     "run_wave",
 ]

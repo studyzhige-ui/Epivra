@@ -90,6 +90,74 @@ def canonical_url(url: str) -> str:
     )
 
 
+#: Prefix marking a source that came from the user's own corpus rather than the
+#: web.  The reference is kept **relative to the corpus root**: an absolute path
+#: would put the user's directory layout into an artifact body and then into the
+#: published reference list, which is a disclosure the user never asked for.
+LOCAL_SCHEME = "local:"
+
+
+def canonical_local_ref(value: str) -> str:
+    """Return a corpus-relative identity for a file the user supplied.
+
+    Deliberately *not* folded into :func:`canonical_url`.  The two guard against
+    different attacks -- a web URL must not reach a private address, a local path
+    must not escape the granted corpus -- and a single validator trying to do both
+    would weaken each.  Keeping them apart also means the web checks cannot be
+    bypassed by dressing a request up as a local read.
+
+    Shape only.  Whether the path resolves inside the real corpus root, symlinks
+    included, is enforced by the reader, which is the component that knows the
+    root and can touch the filesystem.
+    """
+
+    text = _require_text(value, "local source reference")
+    body = text[len(LOCAL_SCHEME):] if text.startswith(LOCAL_SCHEME) else text
+    if any(ord(character) < 32 or ord(character) == 127 for character in body):
+        raise ArtifactValidationError(
+            "local source reference must not contain control characters"
+        )
+    normalised = body.replace("\\", "/")
+    if normalised.startswith("/"):
+        # Stripping the slash would silently reinterpret an absolute path as a
+        # relative one -- accepting a reference the caller did not write.
+        raise ArtifactValidationError(
+            "local source reference must be relative to the corpus root, not absolute"
+        )
+    normalised = normalised.strip("/")
+    if not normalised:
+        raise ArtifactValidationError("local source reference must name a file")
+    segments = [segment for segment in normalised.split("/") if segment != "."]
+    if any(segment == ".." for segment in segments):
+        raise ArtifactValidationError(
+            "local source reference must not climb out of the corpus with '..'"
+        )
+    if not segments:
+        raise ArtifactValidationError("local source reference must name a file")
+    if ":" in segments[0]:
+        # A Windows drive letter makes the reference absolute, which both leaks
+        # the layout and escapes the root.
+        raise ArtifactValidationError(
+            "local source reference must be relative to the corpus root"
+        )
+    return LOCAL_SCHEME + "/".join(segments)
+
+
+def source_locator(value: str) -> str:
+    """Canonical identity for any source, web or local, dispatched by scheme."""
+
+    text = _require_text(value, "source locator")
+    if text.startswith(LOCAL_SCHEME):
+        return canonical_local_ref(text)
+    return canonical_url(text)
+
+
+def is_local_source(value: str) -> bool:
+    """Whether a canonical locator names the user's corpus rather than the web."""
+
+    return isinstance(value, str) and value.startswith(LOCAL_SCHEME)
+
+
 def content_digest(content: str) -> str:
     """Hash exact saved content; whitespace is evidence and is not normalized."""
 
@@ -248,7 +316,7 @@ class SourceSnapshotBody:
     metadata: Mapping[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "url", canonical_url(self.url))
+        object.__setattr__(self, "url", source_locator(self.url))
         _require_text(self.title, "source title")
         if not isinstance(self.text_ref, BodyRef):
             raise ArtifactValidationError("source text_ref must be a BodyRef")
@@ -362,12 +430,16 @@ class MaterialBody:
 __all__ = [
     "ArtifactValidationError",
     "BodyRef",
+    "LOCAL_SCHEME",
     "MaterialBody",
     "SourceAnchor",
     "SourceSnapshotBody",
     "TextLocator",
+    "canonical_local_ref",
     "canonical_url",
     "content_digest",
+    "is_local_source",
+    "source_locator",
     "locate_quote",
     "validate_anchor",
 ]

@@ -316,6 +316,7 @@ def investigator_context(
     question_labels: Sequence[str],
     known_claims: Sequence[str] = (),
     source_access: Sequence[str] = ("public_web",),
+    local_sources: Sequence[str] = (),
     pack_text: str = "",
 ) -> RoleContext:
     """One assignment's brief, and deliberately nothing about the wider task.
@@ -337,9 +338,24 @@ def investigator_context(
         _section(
             "来源权限",
             "允许使用：" + "、".join(source_access)
-            + "\n未获授权的来源族不得访问。",
+            + "\n未获授权的来源族**由运行时拒绝**，不是靠你自觉——被拒绝时如实记为运行限制。",
         ),
     ]
+    if local_sources:
+        # A role cannot guess filenames, and inventing one would be authoring
+        # identity.  It selects from this list, which the runtime produced.
+        listed = "\n".join(f"- {ref}" for ref in local_sources[:200])
+        more = (
+            f"\n（还有 {len(local_sources) - 200} 份未列出）"
+            if len(local_sources) > 200
+            else ""
+        )
+        parts.append(
+            _section(
+                "用户本地资料库（用 read 读取，标识必须原样使用）",
+                listed + more,
+            )
+        )
     if known_claims:
         parts.append(
             _section(

@@ -84,8 +84,9 @@ SEARCH = ToolSpec(
 READ = ToolSpec(
     name="read",
     description=(
-        "读取一个 URL 的正文并保存快照。只有读过并保存的正文才能成为证据。"
-        "URL 必须来自本次检索结果。"
+        "读取一个来源的正文并保存快照。只有读过并保存的正文才能成为证据。"
+        "公开网络的 URL 必须来自本次检索结果；本地资料用「用户本地资料库」一节"
+        "列出的 local: 标识，两者都不能自己编造。"
     ),
     parameters={
         "type": "object",
