@@ -16,6 +16,7 @@ report costs nothing to produce.
 
 from __future__ import annotations
 
+import re
 import sqlite3
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
@@ -62,6 +63,7 @@ class RunResources:
     source_snapshots: int = 0
     materials: int = 0
     published: int = 0
+    cited_sources: int | None = None
     input_tokens: int | None = None
     output_tokens: int | None = None
     cached_input_tokens: int | None = None
@@ -106,6 +108,20 @@ class RunResources:
         """Task plus which database it came from; the same task appears in several."""
 
         return f"{self.task_id}@{Path(self.database).stem}"
+
+    @property
+    def source_survival(self) -> float | None:
+        """Share of fetched snapshots that survived into the published report.
+
+        This is the resource question stated properly.  The point is not to spend
+        less, it is to **spend nothing that does not reach the deliverable**: a run
+        that fetched 151 sources and cited 15 paid for 136 that no reader will ever
+        see.  Reported per run, never merged into the quality verdict (§10.6).
+        """
+
+        if not self.source_snapshots or self.cited_sources is None:
+            return None
+        return self.cited_sources / self.source_snapshots
 
     @property
     def fetch_failure_rate(self) -> float | None:
@@ -169,6 +185,41 @@ def _sum_or_none(connection: sqlite3.Connection, column: str, task_id: str) -> i
     if row is None or not row[1]:
         return None
     return int(row[0] or 0)
+
+
+#: A rendered reference entry, e.g. "12. Title. https://...".  The reference list
+#: is produced deterministically by the citation renderer, so counting its entries
+#: is a faithful count of sources that reached the reader -- no model involved.
+_REFERENCE_ENTRY = re.compile(r"^\s{0,3}(\d{1,3})\.\s+\S")
+
+#: The renderer's own heading.  Counting must start after it: report bodies are
+#: full of numbered lists, and an unscoped count silently inflates the survival
+#: rate -- flattering the exact metric that exists to catch waste.
+_REFERENCE_HEADING = "## 参考资料"
+
+
+def _cited_sources(connection: sqlite3.Connection, task_id: str) -> int | None:
+    """Count reference entries in the published report, or None if unpublished."""
+
+    row = connection.execute(
+        """SELECT b.content FROM artifacts a JOIN content_blobs b
+           ON a.body_hash = b.hash
+           WHERE a.task_id = ? AND a.kind = 'publication_receipt'
+           ORDER BY a.sequence DESC LIMIT 1""",
+        (task_id,),
+    ).fetchone()
+    if row is None or not row[0]:
+        return None
+    body = str(row[0])
+    index = body.rfind(_REFERENCE_HEADING)
+    if index < 0:
+        return None
+    numbers: set[int] = set()
+    for line in body[index + len(_REFERENCE_HEADING) :].splitlines():
+        match = _REFERENCE_ENTRY.match(line)
+        if match is not None:
+            numbers.add(int(match.group(1)))
+    return len(numbers) or None
 
 
 def _wall_clock(
@@ -290,6 +341,7 @@ def read_run(database: Path, task_id: str) -> RunResources:
                 if measured
                 else None
             ),
+            cited_sources=_cited_sources(connection, task_id),
             wall_clock_seconds=_wall_clock(connection, task_id, timed=timed),
             by_provider=_grouped(
                 connection,

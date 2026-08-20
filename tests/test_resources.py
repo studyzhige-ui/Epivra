@@ -200,5 +200,75 @@ class ForeignDatabaseTest(unittest.TestCase):
             self.assertEqual((), resources.read_cohort([path]).runs)
 
 
+class SurvivalTest(unittest.IsolatedAsyncioTestCase):
+    """Spending is only justified by what reaches the reader.
+
+    The resource requirement is not "spend less" but "spend nothing that does not
+    survive into the deliverable". genre-shift fetched 151 sources and cited 15:
+    136 paid fetches no reader will ever see.
+    """
+
+    async def asyncSetUp(self) -> None:
+        self._directory = tempfile.TemporaryDirectory()
+        self.path = Path(self._directory.name) / "survival.sqlite3"
+        self._connection = await aiosqlite.connect(self.path)
+        content = SqliteContentStore(self._connection)
+        await content.setup()
+        self.store = SqliteArtifactStore(self._connection, content, task_id="task-1")
+        await self.store.setup()
+        self.ledger = SqliteOperationLedger(self._connection, content)
+        await self.ledger.setup()
+
+    async def asyncTearDown(self) -> None:
+        await self._connection.close()
+        self._directory.cleanup()
+
+    async def _publish(self, body: str, snapshots: int) -> None:
+        for index in range(snapshots):
+            await self.store.put(kind="source_snapshot", body=f"s{index}")
+        await self.store.put(kind="publication_receipt", body=body)
+        await self._connection.commit()
+
+    async def test_only_the_reference_list_is_counted(self) -> None:
+        """Report bodies are full of numbered lists; counting them inflates it."""
+
+        body = "\n".join(
+            [
+                "# 报告",
+                "",
+                "## 缺口清单",
+                "",
+                "1. 本土负担未量化",
+                "2. 可及性未确认",
+                "3. 季节性缺失",
+                "",
+                "## 参考资料",
+                "",
+                "1. A trial. https://a.example/1",
+                "2. B guidance. https://b.example/2",
+            ]
+        )
+        await self._publish(body, snapshots=10)
+
+        run = resources.read_run(self.path, "task-1")
+        self.assertEqual(2, run.cited_sources)
+        self.assertAlmostEqual(0.2, run.source_survival or 0.0)
+
+    async def test_an_unpublished_run_has_no_survival_rate(self) -> None:
+        for index in range(3):
+            await self.store.put(kind="source_snapshot", body=f"s{index}")
+        await self._connection.commit()
+
+        run = resources.read_run(self.path, "task-1")
+        self.assertIsNone(run.cited_sources)
+        self.assertIsNone(run.source_survival)
+
+    async def test_a_report_without_a_reference_section_is_not_guessed_at(self) -> None:
+        await self._publish("# 报告\n\n1. 一条编号列表\n", snapshots=4)
+
+        run = resources.read_run(self.path, "task-1")
+        self.assertIsNone(run.cited_sources)
+
+
 if __name__ == "__main__":
     unittest.main()

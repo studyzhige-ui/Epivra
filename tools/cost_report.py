@@ -60,7 +60,8 @@ def render(cohort) -> str:  # noqa: ANN001 - duck-typed across the import shim
     lines: list[str] = []
     header = (
         f"{'run':<40}{'时长':>8}{'LLM':>6}{'检索':>6}{'抓取':>6}"
-        f"{'素材':>6}{'输入tok':>10}{'输出tok':>10}{'素材/检索':>10}{'素材/快照':>10}"
+        f"{'素材':>6}{'引用源':>7}{'输入tok':>10}{'输出tok':>10}"
+        f"{'素材/检索':>10}{'存活率':>8}"
     )
     lines.append(header)
     lines.append("-" * len(header))
@@ -70,9 +71,10 @@ def render(cohort) -> str:  # noqa: ANN001 - duck-typed across the import shim
             f"{_duration(run.wall_clock_seconds):>8}"
             f"{run.model_calls:>6}{run.searches:>6}"
             f"{run.fetches_ok:>6}{run.materials:>6}"
+            f"{(run.cited_sources if run.cited_sources is not None else '—'):>7}"
             f"{_tokens(run.input_tokens):>10}{_tokens(run.output_tokens):>10}"
             f"{_ratio(run.materials_per_search):>10}"
-            f"{_ratio(run.materials_per_snapshot):>10}"
+            f"{_ratio(run.source_survival):>8}"
         )
 
     lines.append("")
@@ -103,6 +105,21 @@ def render(cohort) -> str:  # noqa: ANN001 - duck-typed across the import shim
         lines.append(
             f"  最差 {worst.label}：{_ratio(worst.materials_per_search)}"
             f"（抓取失败率 {_ratio(worst.fetch_failure_rate)}）"
+        )
+
+    wasteful = sorted(
+        (run for run in cohort.runs if run.source_survival is not None),
+        key=lambda run: run.source_survival or 0.0,
+    )
+    if wasteful:
+        worst = wasteful[0]
+        unused = worst.source_snapshots - (worst.cited_sources or 0)
+        lines.append("")
+        lines.append("存活率最低（抓取了却从未进入报告的来源是纯浪费）：")
+        lines.append(
+            f"  {worst.label}：抓取 {worst.source_snapshots}，"
+            f"引用 {worst.cited_sources}，"
+            f"{unused} 个来源没有任何读者会看到"
         )
 
     frozen = [run for run in cohort.runs if run.frozen_operations]
