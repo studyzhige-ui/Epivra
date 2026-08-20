@@ -66,6 +66,69 @@ ACADEMIC_CHOICES: tuple[tuple[str, str], ...] = (
 )
 
 
+# ------------------------------------------------------------------ 欢迎与自检
+
+
+BANNER = """\
+  ╭──────────────────────────────────────────────────────────────╮
+  │  Deep Research Agent                                         │
+  ╰──────────────────────────────────────────────────────────────╯
+
+  把一个开放的研究问题，做成一份每条重要事实都能回溯到来源原文的报告。
+
+  它不会先动手再解释：先给你一份研究方案——研究什么、看哪些证据、交付
+  什么、哪些边界一改就得重新批准——你批准之后，才开始花钱检索。
+  证据不足时它会如实说「不足」，而不是把话说满。
+"""
+
+
+def _readiness(environ: Mapping[str, str]) -> tuple[list[str], list[str]]:
+    """``(就绪, 缺失)``：影响能否开工的条件，用用户能照做的话写。"""
+
+    ready: list[str] = []
+    missing: list[str] = []
+
+    vendors = [spec.name for spec in LLM_PROVIDERS if spec.api_key(environ)]
+    if vendors:
+        ready.append(f"模型厂商：{'、'.join(vendors)}")
+    else:
+        names = "、".join(spec.key_env_var for spec in LLM_PROVIDERS)
+        missing.append(
+            "没有任何模型厂商的密钥。研究无法开始。\n"
+            f"      在项目根目录建一个 .env 文件，写入其中任意一个：{names}"
+        )
+
+    keyed = [
+        name
+        for name, env_var in sorted(search_credentials().items())
+        if environ.get(env_var, "").strip()
+    ]
+    if keyed:
+        ready.append(f"网页搜索：{'、'.join(keyed)}（另有 DuckDuckGo 兜底）")
+    else:
+        ready.append("网页搜索：仅 DuckDuckGo（无需密钥）")
+        missing.append(
+            "没有付费搜索厂商的密钥，检索质量会明显下降但仍能运行。\n"
+            "      想提升的话，在 .env 里加 TAVILY_API_KEY 之类的任意一个。"
+        )
+    ready.append("学术索引：arXiv、Crossref、PubMed（都不需要密钥）")
+    return ready, missing
+
+
+def _welcome(environ: Mapping[str, str], *, database: Path) -> None:
+    print(BANNER)
+    ready, missing = _readiness(environ)
+    print("  当前环境")
+    for line in ready:
+        print(f"    ✓ {line}")
+    for line in missing:
+        print(f"    ! {line}")
+    if database.is_file():
+        print(f"    ✓ 任务库：{database}")
+    else:
+        print(f"    · 任务库还未创建，第一次提交时会自动建在 {database}")
+
+
 # ------------------------------------------------------------------ 交互原语
 
 
@@ -200,6 +263,14 @@ async def _service(args: argparse.Namespace, environ: Mapping[str, str]):  # noq
 
 async def cmd_new(args: argparse.Namespace) -> int:
     environ = dict(load_environment(ROOT / ".env"))
+    _ready, missing = _readiness(environ)
+    blocking = [line for line in missing if "无法开始" in line]
+    if blocking:
+        print(BANNER)
+        for line in blocking:
+            print(f"  ! {line}")
+        print("\n  配好密钥后再执行一次就行。")
+        return 2
 
     print("=== 新的研究委托 ===")
     request = args.request or _ask("\n你想研究什么？请尽量具体")
@@ -266,11 +337,32 @@ async def cmd_new(args: argparse.Namespace) -> int:
     except Exception as error:  # noqa: BLE001 - shown to the user as-is
         print(f"\n配置无法使用：{error}")
         return 2
-    print("\n角色 → 模型：")
+
+    # Everything the user chose, in one place, before the first paid call.  The
+    # Architect call is cheap; the research that follows is not, so the summary
+    # sits here rather than after the Contract is already written.
+    print("\n────────── 请确认 ──────────")
+    print(f"  研究问题：{request}")
+    print(f"  交付语言：{language}")
+    print(f"  来源授权：{'、'.join(source_access)}" + (f"（{corpus}）" if corpus else ""))
+    print(f"  模型厂商：{vendor}")
+    if access_key != "local_only":
+        print(f"  网页搜索：{'、'.join(config.search_providers)}")
+        print(f"  学术索引：{'、'.join(config.academic_providers) or '（不使用）'}")
+    print("\n  角色 → 模型：")
     print(render_role_models(config))
+    print(
+        "\n  接下来只做一件事：由 Architect 写出研究方案交给你审批"
+        "（一次模型调用，很便宜）。\n"
+        "  真正花钱的检索要等你批准之后才开始。"
+    )
+    if _ask("\n继续吗？(y/n)", "y").casefold() not in ("y", "yes", "是"):
+        print("已取消，什么都没有发生。")
+        return 0
 
     connection, service = await _service(args, environ)
     try:
+        print("\n正在生成研究方案…（通常 30–90 秒）")
         task = await service.open_task(
             request,
             language=language,
@@ -280,11 +372,20 @@ async def cmd_new(args: argparse.Namespace) -> int:
         )
         print(f"\n任务号：{task.task_id}")
         if task.state == "clarification_requested":
-            print("补充说明后用 `new` 重新提交即可。")
+            print(
+                "这个委托太模糊，无法定出一个方案——上面那个问题的两种答案会导向"
+                "两份完全不同的研究。\n"
+                "把答案补进问题里，再执行一次 `new` 就行。"
+            )
             return 0
         print(
-            "请阅读上面的研究合同。同意就执行：\n"
-            f"  python tools/research.py approve {task.task_id}"
+            "上面就是研究方案。请读一遍，特别看这三处：\n"
+            "  · 核心问题 Q1 —— 报告最后必须回答它，写错了后面全跑偏\n"
+            "  · 默认假设   —— 它替你做的决定，不同意就改问题重新提交\n"
+            "  · 不支持的用途 —— 这份报告不能拿去做什么\n\n"
+            "同意就执行（之后开始真正花钱的检索）：\n"
+            f"  python tools/research.py approve {task.task_id}\n"
+            "不同意就直接换个说法重新 `new`，这个任务留着不影响。"
         )
         return 0
     finally:
@@ -360,24 +461,51 @@ async def cmd_report(args: argparse.Namespace) -> int:
         await connection.close()
 
 
+async def cmd_doctor(args: argparse.Namespace) -> int:
+    """环境自检：能不能开工，缺什么，怎么补。"""
+
+    environ = load_environment(ROOT / ".env")
+    database = Path(args.database)
+    _welcome(environ, database=database)
+
+    env_file = ROOT / ".env"
+    print()
+    if env_file.is_file():
+        print(f"  ✓ 读到配置文件 {env_file}")
+    else:
+        print(f"  ! 没有 {env_file}；密钥只能来自系统环境变量")
+
+    _ready, missing = _readiness(environ)
+    if any("无法开始" in line for line in missing):
+        print("\n  结论：还不能开始研究。补上模型厂商密钥即可。")
+        return 1
+    print("\n  结论：可以开始。执行 `python tools/research.py new`")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(
+        description="Deep Research Agent 命令行", add_help=True
+    )
     parser.add_argument("--database", default=str(DEFAULT_DATABASE))
-    sub = parser.add_subparsers(dest="command", required=True)
+    sub = parser.add_subparsers(dest="command")
 
     new = sub.add_parser("new", help="提交一个新的研究委托（交互式）")
     new.add_argument("request", nargs="?", default="")
     new.add_argument("--corpus", default="")
     new.set_defaults(run=cmd_new)
 
+    doctor = sub.add_parser("doctor", help="检查环境是否可以开始研究")
+    doctor.set_defaults(run=cmd_doctor)
+
     listing = sub.add_parser("list", help="列出所有任务")
     listing.set_defaults(run=cmd_list)
 
-    show = sub.add_parser("show", help="查看任务状态，待审批时打印合同")
+    show = sub.add_parser("show", help="查看任务状态，待审批时打印方案")
     show.add_argument("task_id")
     show.set_defaults(run=cmd_show)
 
-    approve = sub.add_parser("approve", help="批准合同并开始研究")
+    approve = sub.add_parser("approve", help="批准方案并开始研究")
     approve.add_argument("task_id")
     approve.add_argument("--note", default="")
     approve.add_argument("--corpus", default="")
@@ -395,6 +523,21 @@ def main(argv: list[str] | None = None) -> int:
     report.set_defaults(run=cmd_report)
 
     args = parser.parse_args(argv)
+    if args.command is None:
+        # A bare invocation should introduce the tool, not print an argparse
+        # error. This is the first thing a new user sees.
+        _welcome(load_environment(ROOT / ".env"), database=Path(args.database))
+        print("\n  常用命令")
+        print("    research.py new              提交一个新的研究委托")
+        print("    research.py list             我的所有任务")
+        print("    research.py show     <任务号>  查看状态 / 重读方案")
+        print("    research.py approve  <任务号>  批准方案并开始研究")
+        print("    research.py continue <任务号>  中断后接着跑")
+        print("    research.py report   <任务号>  取出报告")
+        print("    research.py doctor           环境自检")
+        print("\n  第一次使用请看 docs/GETTING-STARTED.md")
+        return 0
+
     try:
         return asyncio.run(args.run(args))
     except KeyboardInterrupt:
