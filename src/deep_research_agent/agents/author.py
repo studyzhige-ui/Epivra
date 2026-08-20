@@ -61,7 +61,7 @@ SYSTEM_PROMPT = """\
 - 只有当合同的核心交付确实依赖证据集中不存在的事实时，才调用 raise_evidence_issue
   把问题交回 Research Lead，而不是在文字中补造。
 
-用中文写作。\
+用「交付语言」一节指定的语言写作。引用标记与锚点引文保持素材里的原样，不要翻译引文。\
 """
 
 SUBMIT_REPORT = ToolSpec(

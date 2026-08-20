@@ -38,7 +38,7 @@ SYSTEM_PROMPT = """\
 - 不要决定下一步做什么、是否继续研究、是否可以写报告——那是 Research Lead 的判断。
 - 不要写面向用户的报告，也不要设计报告章节。
 
-用中文提交，通过 publish_synthesis 一次性给出完整综合。\
+用「交付语言」一节指定的语言提交，通过 publish_synthesis 一次性给出完整综合。\
 """
 
 PUBLISH_SYNTHESIS = ToolSpec(

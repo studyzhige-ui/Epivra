@@ -94,7 +94,7 @@ Research Lead 可以自行调整什么（查询、来源顺序、并行度），
 - 能力包按需选择，**不选任何包是完全合法的默认**。包只在你判断这个领域/探究方式/
   体裁确实需要额外方法提示时才选，每类最多一个。
 
-用中文撰写 Contract。\
+用「交付语言」一节指定的语言撰写 Contract——用户要读它并批准它。\
 """
 
 PROPOSE_CONTRACT = ToolSpec(
@@ -165,7 +165,9 @@ SPEC = AgentSpec(
 )
 
 
-def contract_from_action(arguments: Mapping[str, Any]) -> ResearchContract:
+def contract_from_action(
+    arguments: Mapping[str, Any], *, language: str = "zh"
+) -> ResearchContract:
     """Build the Contract a ``propose_contract`` action describes.
 
     This lives beside the tool schema on purpose.  A caller that re-derives the
@@ -192,6 +194,9 @@ def contract_from_action(arguments: Mapping[str, Any]) -> ResearchContract:
             for label, targets in raw.items()
         },
         pack_refs=tuple(str(item) for item in arguments.get("pack_refs", ()) or ()),
+        # The deliverable's language comes from the Commission, not from the
+        # Architect: it is the user's choice, not a research judgment.
+        language=language,
     )
 
 

@@ -193,7 +193,9 @@ async def _propose_contract(
         print(f"  为何会改变方案：{action.arguments['why_it_changes_the_plan']}")
         return None
 
-    contract = architect_agent.contract_from_action(action.arguments)
+    contract = architect_agent.contract_from_action(
+        action.arguments, language=commission.language
+    )
     await store.put(
         kind="research_contract",
         body=contract.encode(),

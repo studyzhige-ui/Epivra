@@ -52,7 +52,7 @@ SYSTEM_PROMPT = """\
 - 存在发布阻断项 → block_report，逐项给出位置、问题、影响与可验证的关闭条件。
 
 每一条 block_report 里的 finding 都必须是真正的发布阻断项。仅供改进的建议只能
-放在 approve_report 的 advisories 里。用中文提交。\
+放在 approve_report 的 advisories 里。用「交付语言」一节指定的语言提交。\
 """
 
 APPROVE_REPORT = ToolSpec(

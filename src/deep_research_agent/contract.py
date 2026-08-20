@@ -360,9 +360,15 @@ class ResearchContract:
     question_model: QuestionModel
     pack_refs: tuple[str, ...] = ()
     supports: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
+    #: The language the deliverable is written in, carried structurally rather
+    #: than only as prose in the delivery block.  Roles used to have "write in
+    #: Chinese" fixed in their prompts while the context announced a delivery
+    #: language beside it -- a direct contradiction, and the prompt won.
+    language: str = "zh"
 
     def __post_init__(self) -> None:
         _require_text(self.body_markdown, "contract body")
+        _require_text(self.language, "contract language")
         if not isinstance(self.question_model, QuestionModel):
             raise ArtifactValidationError("question_model must be a QuestionModel")
         for ref in self.pack_refs:
@@ -417,6 +423,7 @@ class ResearchContract:
                     for label, targets in sorted(self.supports.items())
                 },
                 "packs": list(self.pack_refs),
+                "language": self.language,
             }
         )
 
@@ -430,6 +437,9 @@ class ResearchContract:
                 for label, targets in dict(value.get("supports", {})).items()
             },
             pack_refs=tuple(str(item) for item in value.get("packs", ())),
+            # Contracts written before the language was carried structurally
+            # were all Chinese deliverables, so that is the honest default.
+            language=str(value.get("language") or "zh"),
         )
 
 
@@ -492,6 +502,7 @@ def build_contract(
     *,
     supports: Mapping[str, Sequence[str]] | None = None,
     pack_refs: Iterable[str] = (),
+    language: str = "zh",
 ) -> ResearchContract:
     """Parse Contract prose into the approved agreement the runtime enforces."""
 
@@ -502,6 +513,7 @@ def build_contract(
         supports={
             label: tuple(targets) for label, targets in dict(supports or {}).items()
         },
+        language=language,
     )
 
 

@@ -183,6 +183,22 @@ def _section(title: str, content: str) -> str:
     return f"## {title}\n\n{content.strip()}\n"
 
 
+def _delivery_language(contract: ResearchContract) -> str:
+    """State the deliverable's language once, from the approved Contract.
+
+    Roles used to carry "write in Chinese" fixed in their prompts while the
+    Architect's context announced a delivery language beside it.  The two
+    contradicted each other and the prompt won, so the language field was
+    decorative and non-Chinese output was impossible rather than merely untested.
+    """
+
+    return _section(
+        "交付语言",
+        f"{contract.language}\n\n"
+        "本次交付物用这个语言撰写。来源正文与锚点引文保持原语言，不翻译。",
+    )
+
+
 def analyst_context(
     contract: ResearchContract,
     evidence: EvidenceView,
@@ -198,6 +214,7 @@ def analyst_context(
 
     parts = [
         _section("研究合同", contract.body_markdown),
+        _delivery_language(contract),
         _section(
             "当前证据集",
             f"标识：{evidence.evidence_set_id}\n"
@@ -225,6 +242,7 @@ def author_context(
 
     parts = [
         _section("研究合同", contract.body_markdown),
+        _delivery_language(contract),
         _section("委托说明", report_brief),
         _section("当前综合", synthesis),
         _section(
@@ -260,6 +278,7 @@ def reviewer_context(
 
     parts = [
         _section("研究合同", contract.body_markdown),
+        _delivery_language(contract),
         _section("当前综合", synthesis),
         _section(
             "当前证据集全集（含报告未引用的素材）",
@@ -368,6 +387,7 @@ def curator_context(
 
     parts = [
         _section("研究合同", contract.body_markdown),
+        _delivery_language(contract),
         _section("这批来源为何被收集", assignment),
         _section(
             "候选来源（用 read_saved_source 读取正文后再判断）",
