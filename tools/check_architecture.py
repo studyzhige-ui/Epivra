@@ -52,7 +52,6 @@ LAYERS: tuple[tuple[str, frozenset[str]], ...] = (
             {
                 "approval",
                 "artifact_store",
-                "checkpoint",
                 "citations",
                 "config",
                 "content_store",
