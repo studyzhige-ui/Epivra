@@ -29,7 +29,7 @@ from deep_research_agent.operations import ExecutionIdentity, SqliteOperationLed
 from deep_research_agent.providers._http import SourceReadError
 from deep_research_agent.reporting import RoleRuntime
 from deep_research_agent.tools import ReadResult, SearchResponse, SearchResult
-from deep_research_agent.wave import run_wave
+from deep_research_agent.wave import run_wave, stalled
 
 CONTRACT = build_contract(
     "## 问题模型\n\n"
@@ -818,6 +818,39 @@ class SourceAccessEnforcementTest(WaveFixture):
         await self._run(("user_files",), replies, local_reader=StubLocal())
         body = self.models["investigator"].seen[0]
         self.assertIn("local:sub/data.csv", body)
+
+
+class StallRuleTest(unittest.TestCase):
+    """The stopping rule is non-progress, not a wave ceiling.
+
+    A preset wave limit bounds spending rather than sufficiency: it cut two 1e
+    fixtures off mid-convergence while doing nothing about a run that circles
+    forever adding nothing. §8.2 already required the non-progress pause.
+    """
+
+    def test_one_empty_wave_is_tolerated(self) -> None:
+        """An exploratory wave that finds nothing is a legitimate outcome."""
+
+        self.assertFalse(stalled([5, 0]))
+
+    def test_two_consecutive_empty_waves_pause(self) -> None:
+        self.assertTrue(stalled([5, 0, 0]))
+
+    def test_progress_resets_the_count(self) -> None:
+        self.assertFalse(stalled([0, 0, 3]))
+
+    def test_a_short_history_never_stalls(self) -> None:
+        self.assertFalse(stalled([]))
+        self.assertFalse(stalled([0]))
+
+    def test_a_converging_run_is_never_cut_off(self) -> None:
+        """The observed trajectory of the fixture that had been paused early."""
+
+        self.assertFalse(stalled([121, 49, 13, 15]))
+
+    def test_the_tolerance_must_be_positive(self) -> None:
+        with self.assertRaises(ValueError):
+            stalled([0, 0], tolerance=0)
 
 
 if __name__ == "__main__":

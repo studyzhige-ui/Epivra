@@ -73,7 +73,7 @@ def _pdf_worker(
         sender.close()
 
 
-def _extract_pdf_in_subprocess(
+def extract_pdf_in_subprocess(
     body: bytes,
     *,
     max_pages: int,
@@ -313,7 +313,7 @@ class PublicHttpReader:
                     or body.lstrip().startswith(b"%PDF-")
                 ):
                     declared, content = await asyncio.to_thread(
-                        _extract_pdf_in_subprocess,
+                        extract_pdf_in_subprocess,
                         body,
                         max_pages=self.max_pdf_pages,
                         max_text_chars=self.max_text_chars,
@@ -404,6 +404,7 @@ class _HttpResponse:
 
 
 __all__ = [
+    "extract_pdf_in_subprocess",
     "PublicHttpReader",
     "PublicUrlPolicy",
     "SourceReadError",

@@ -57,7 +57,7 @@ from deep_research_agent.providers import build_search_providers  # noqa: E402
 from deep_research_agent.providers.reader import PublicHttpReader  # noqa: E402
 from deep_research_agent.reporting import RoleRuntime, run_reporting  # noqa: E402
 from deep_research_agent.tools import TransparentSearchBroker  # noqa: E402
-from deep_research_agent.wave import run_wave  # noqa: E402
+from deep_research_agent.wave import STALL_TOLERANCE, run_wave, stalled  # noqa: E402
 
 
 async def run(args: argparse.Namespace) -> int:
@@ -120,6 +120,20 @@ async def run(args: argparse.Namespace) -> int:
         )
         broker = TransparentSearchBroker(providers)
         reader = PublicHttpReader()
+        local_reader = None
+        if args.corpus:
+            from deep_research_agent.providers.local import LocalCorpusReader
+            from deep_research_agent.providers.reader import (
+                extract_pdf_in_subprocess,
+            )
+
+            local_reader = LocalCorpusReader(
+                root=Path(args.corpus), extract_pdf=extract_pdf_in_subprocess
+            )
+            print(
+                f"[corpus] {args.corpus}"
+                f"（{len(local_reader.listing())} 份可读文件）"
+            )
         print(f"[providers] {', '.join(p.provider_id for p in providers)}")
 
         kind = await _govern(
@@ -131,6 +145,7 @@ async def run(args: argparse.Namespace) -> int:
             reader=reader,
             max_waves=args.max_waves,
             source_access=fixture.source_access,
+            local_reader=local_reader,
             output=(
                 Path(args.output)
                 if args.output
@@ -216,16 +231,23 @@ async def _govern(
     max_waves: int,
     source_access,  # noqa: ANN001
     output: Path,
+    local_reader=None,  # noqa: ANN001
 ) -> str:
     """Let the Lead govern until it commissions a report or asks for a human.
 
     Returns which terminal state the run reached -- ``published``, ``halted``, or
     ``paused``.  All three are legitimate; deciding whether the *right* one was
     reached is the fixture's job, not the runner's.
+
+    There is no preset research budget.  Governance runs until the Lead judges the
+    evidence sufficient, or until waves stop producing any Material -- which is the
+    non-progress pause §8.2 already requires.  ``max_waves`` is only a runaway
+    guard, set far above anything an observed run has needed.
     """
 
     latest_outcome = ""
-    for round_index in range(1, max_waves + 2):
+    progress: list[int] = []
+    for round_index in range(1, max_waves + 1):
         evidence = await load_evidence(store)
         synthesis = await latest_body(store, "synthesis")
         memory = await latest_body(store, "research_memory")
@@ -273,8 +295,13 @@ async def _govern(
             print(f"暂停：{action.arguments}")
             return "paused"
 
-        if round_index > max_waves:
-            print(f"已达 --max-waves={max_waves}，暂停等待人工判断。")
+        if stalled(progress):
+            # Measured from the Trust Plane's MaterialDelta, never from the
+            # Lead's own claim to be making progress.
+            print(
+                f"连续 {STALL_TOLERANCE} 个 Wave 没有产生任何素材，"
+                "按 §8.2 进入可恢复暂停；重跑同一数据库即可继续。"
+            )
             return "paused"
 
         drafts = lead_agent.parse_assignments(
@@ -294,7 +321,9 @@ async def _govern(
             broker=broker,
             reader=reader,
             source_access=source_access,
+            local_reader=local_reader,
         )
+        progress.append(len(wave.new_material_refs))
         latest_outcome = wave.render()
         print(
             f"  → 新增素材 {len(wave.new_material_refs)}，"
@@ -375,7 +404,15 @@ def main(argv: list[str] | None = None) -> int:
         help="发布报告的写入路径（默认 .deep-research-agent/<fixture>.md）",
     )
     parser.add_argument("--approve", action="store_true")
-    parser.add_argument("--max-waves", type=int, default=2)
+    # A runaway guard, not a research budget: the stopping rule is the Lead's
+    # saturation judgment plus the non-progress pause. No observed run has come
+    # close to this, and reaching it means something is circling.
+    parser.add_argument("--max-waves", type=int, default=24)
+    parser.add_argument(
+        "--corpus",
+        default="",
+        help="用户本地资料库根目录（需要 Contract 授权 user_files 或 local_only）",
+    )
     parser.add_argument("--list", action="store_true")
     args = parser.parse_args(argv)
 

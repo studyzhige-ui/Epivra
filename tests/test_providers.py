@@ -296,7 +296,7 @@ class PublicHttpReaderTest(unittest.IsolatedAsyncioTestCase):
                     policy=PublicUrlPolicy(resolver=public_resolver),
                 )
                 with patch(
-                    "deep_research_agent.providers.reader._extract_pdf_in_subprocess",
+                    "deep_research_agent.providers.reader.extract_pdf_in_subprocess",
                     return_value=("", "Extracted PDF evidence."),
                 ) as extract:
                     result = await reader.read(url)
@@ -318,7 +318,7 @@ class PublicHttpReaderTest(unittest.IsolatedAsyncioTestCase):
             policy=PublicUrlPolicy(resolver=public_resolver),
         )
         with patch(
-            "deep_research_agent.providers.reader._extract_pdf_in_subprocess",
+            "deep_research_agent.providers.reader.extract_pdf_in_subprocess",
             return_value=("  WHO SAGE\n  methods\t2024 ", "body"),
         ):
             result = await reader.read("https://example.test/bitstreams/abc/content")
@@ -333,7 +333,7 @@ class PublicHttpReaderTest(unittest.IsolatedAsyncioTestCase):
             policy=PublicUrlPolicy(resolver=public_resolver),
         )
         with patch(
-            "deep_research_agent.providers.reader._extract_pdf_in_subprocess",
+            "deep_research_agent.providers.reader.extract_pdf_in_subprocess",
             return_value=("", "body"),
         ):
             result = await reader.read("https://example.test/bitstreams/abc/content")

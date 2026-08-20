@@ -116,6 +116,31 @@ _SCOPE_CAPABILITIES: Mapping[str, tuple[str, ...]] = {
 }
 
 
+#: Consecutive waves that may add no Material before governance is paused.  Two
+#: allows one genuinely exploratory wave that finds nothing -- a legitimate
+#: outcome -- while refusing an endless run of them.
+STALL_TOLERANCE = 2
+
+
+def stalled(new_material_counts: Sequence[int], tolerance: int = STALL_TOLERANCE) -> bool:
+    """Whether the recent waves have stopped producing evidence.
+
+    This is the stopping rule, in place of a wave ceiling.  A preset limit on
+    waves bounds *spending*, not sufficiency: it pauses converging runs early --
+    two 1e fixtures were cut off mid-convergence that way -- while doing nothing
+    about a run that circles forever adding nothing.
+
+    ARCHITECTURE §8.2 already requires it: "无变化输出、A→B→A 振荡：进入可恢复暂停".
+    Progress is measured from the MaterialDelta the Trust Plane computes, never
+    from a model's claim to be making progress.
+    """
+
+    if tolerance < 1:
+        raise ValueError("stall tolerance must be positive")
+    recent = list(new_material_counts)[-tolerance:]
+    return len(recent) >= tolerance and not any(recent)
+
+
 def _provider_notes(attempts: Sequence[Any]) -> str:
     """Tell the role which providers did not answer, and why.
 
@@ -661,9 +686,11 @@ async def run_wave(
 
 
 __all__ = [
+    "STALL_TOLERANCE",
     "BranchOutcome",
     "BranchStatus",
     "SourcePermission",
     "WaveOutcome",
     "run_wave",
+    "stalled",
 ]
