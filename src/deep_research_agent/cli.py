@@ -10,18 +10,19 @@
 
 用法::
 
-    python tools/research.py new            # 交互式提交（语言、来源授权、厂商都会问）
-    python tools/research.py list
-    python tools/research.py show   <任务号>
-    python tools/research.py approve <任务号>
-    python tools/research.py continue <任务号>
-    python tools/research.py report <任务号> [-o 文件]
+    deep-research new            # 交互式提交（语言、来源授权、厂商都会问）
+    deep-research list
+    deep-research show   <任务号>
+    deep-research approve <任务号>
+    deep-research continue <任务号>
+    deep-research report <任务号> [-o 文件]
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+import getpass
 import sys
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
@@ -29,19 +30,27 @@ from pathlib import Path
 
 import aiosqlite
 
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT / "src"))
+from .application import load_environment, render_role_models
+from .config import load_config
+from .providers import search_credentials
+from .providers.llm import LLM_PROVIDERS
+from .service import Event, ResearchService, Task
 
-from deep_research_agent.application import (  # noqa: E402
-    load_environment,
-    render_role_models,
-)
-from deep_research_agent.config import load_config  # noqa: E402
-from deep_research_agent.providers import search_credentials  # noqa: E402
-from deep_research_agent.providers.llm import LLM_PROVIDERS  # noqa: E402
-from deep_research_agent.service import Event, ResearchService, Task  # noqa: E402
+#: Where a user's studies and configuration live when the command is installed.
+HOME = Path.home() / ".deep-research-agent"
+DEFAULT_DATABASE = HOME / "tasks.sqlite3"
 
-DEFAULT_DATABASE = ROOT / ".deep-research-agent" / "tasks.sqlite3"
+
+def config_path() -> Path:
+    """Prefer a project-local .env, fall back to the user's home directory.
+
+    Running inside a checkout should pick up that checkout's configuration; an
+    installed command run from anywhere should still find the user's own.
+    """
+
+    local = Path.cwd() / ".env"
+    return local if local.is_file() else HOME / ".env"
+
 
 LANGUAGES: tuple[tuple[str, str], ...] = (
     ("zh", "中文"),
@@ -262,7 +271,7 @@ async def _service(args: argparse.Namespace, environ: Mapping[str, str]):  # noq
 
 
 async def cmd_new(args: argparse.Namespace) -> int:
-    environ = dict(load_environment(ROOT / ".env"))
+    environ = dict(load_environment(config_path()))
     _ready, missing = _readiness(environ)
     blocking = [line for line in missing if "无法开始" in line]
     if blocking:
@@ -375,7 +384,7 @@ async def cmd_new(args: argparse.Namespace) -> int:
             print(
                 "这个委托太模糊，无法定出一个方案——上面那个问题的两种答案会导向"
                 "两份完全不同的研究。\n"
-                "把答案补进问题里，再执行一次 `new` 就行。"
+                "把答案补进问题里，再执行一次 `deep-research new` 就行。"
             )
             return 0
         print(
@@ -384,8 +393,8 @@ async def cmd_new(args: argparse.Namespace) -> int:
             "  · 默认假设   —— 它替你做的决定，不同意就改问题重新提交\n"
             "  · 不支持的用途 —— 这份报告不能拿去做什么\n\n"
             "同意就执行（之后开始真正花钱的检索）：\n"
-            f"  python tools/research.py approve {task.task_id}\n"
-            "不同意就直接换个说法重新 `new`，这个任务留着不影响。"
+            f"  deep-research approve {task.task_id}\n"
+            "不同意就直接换个说法重新 `deep-research new`，这个任务留着不影响。"
         )
         return 0
     finally:
@@ -393,7 +402,7 @@ async def cmd_new(args: argparse.Namespace) -> int:
 
 
 async def cmd_list(args: argparse.Namespace) -> int:
-    connection, service = await _service(args, load_environment(ROOT / ".env"))
+    connection, service = await _service(args, load_environment(config_path()))
     try:
         tasks = await service.tasks()
         if not tasks:
@@ -407,7 +416,7 @@ async def cmd_list(args: argparse.Namespace) -> int:
 
 
 async def cmd_show(args: argparse.Namespace) -> int:
-    connection, service = await _service(args, load_environment(ROOT / ".env"))
+    connection, service = await _service(args, load_environment(config_path()))
     try:
         task = await service.task(args.task_id)
         print(_render_task(task))
@@ -419,7 +428,7 @@ async def cmd_show(args: argparse.Namespace) -> int:
 
 
 async def cmd_approve(args: argparse.Namespace) -> int:
-    connection, service = await _service(args, load_environment(ROOT / ".env"))
+    connection, service = await _service(args, load_environment(config_path()))
     try:
         await service.approve(args.task_id, note=args.note)
         print(f"已批准 {args.task_id}。")
@@ -433,7 +442,7 @@ async def cmd_approve(args: argparse.Namespace) -> int:
 
 
 async def cmd_continue(args: argparse.Namespace) -> int:
-    connection, service = await _service(args, load_environment(ROOT / ".env"))
+    connection, service = await _service(args, load_environment(config_path()))
     try:
         state = await service.advance(args.task_id, listen=_render)
         print(f"\n当前状态：{state}")
@@ -443,7 +452,7 @@ async def cmd_continue(args: argparse.Namespace) -> int:
 
 
 async def cmd_report(args: argparse.Namespace) -> int:
-    connection, service = await _service(args, load_environment(ROOT / ".env"))
+    connection, service = await _service(args, load_environment(config_path()))
     try:
         report = await service.report(args.task_id)
         if report is None:
@@ -461,14 +470,93 @@ async def cmd_report(args: argparse.Namespace) -> int:
         await connection.close()
 
 
-async def cmd_doctor(args: argparse.Namespace) -> int:
-    """环境自检：能不能开工，缺什么，怎么补。"""
+def _secret(prompt: str) -> str:
+    """Read a credential without echoing it, falling back if the tty cannot.
 
-    environ = load_environment(ROOT / ".env")
+    A key pasted into a terminal ends up in shell history and scrollback, so it
+    is read through getpass where possible.  Some environments have no usable
+    tty; there the visible prompt is better than refusing to configure at all.
+    """
+
+    try:
+        value = getpass.getpass(f"{prompt}：")
+    except (EOFError, getpass.GetPassWarning, OSError):
+        value = input(f"{prompt}（注意：输入会显示）：")
+    return value.strip()
+
+
+async def cmd_init(args: argparse.Namespace) -> int:
+    """交互式写出配置文件，不需要用户手改 .env。"""
+
+    print(BANNER)
+    target = Path(args.config) if args.config else config_path()
+    if target.is_file() and not args.force:
+        print(f"  配置文件已存在：{target}")
+        print("  想重新配置就加 --force（会覆盖），或直接编辑该文件。")
+        return 1
+
+    print("  下面配置两件事：一个模型厂商的密钥（必需），一个搜索厂商的密钥（可选）。")
+    print(f"  会写入 {target}\n")
+
+    vendor = _choose(
+        "用哪家模型厂商？",
+        [
+            (spec.name, f"{spec.name}（密钥变量 {spec.key_env_var}）")
+            for spec in sorted(LLM_PROVIDERS, key=lambda item: item.name)
+        ],
+    )
+    spec = next(item for item in LLM_PROVIDERS if item.name == vendor)
+    while True:
+        key = _secret(f"粘贴 {vendor} 的 API 密钥")
+        if key:
+            break
+        print("  密钥不能为空——没有它无法开始研究。")
+
+    lines = [
+        "# Deep Research Agent 配置。这个文件包含密钥，不要提交到 git。",
+        f"{spec.key_env_var}={key}",
+        f"DEEP_RESEARCH_LLM_PROVIDER={vendor}",
+    ]
+
+    print(
+        "\n搜索厂商是可选的。不配也能跑（DuckDuckGo 兜底 + arXiv/Crossref/PubMed），"
+        "但检索质量会明显下降。"
+    )
+    credentials = sorted(search_credentials().items())
+    search = _choose(
+        "配一个网页搜索厂商吗？",
+        [("", "先跳过，以后再说")]
+        + [(name, f"{name}（密钥变量 {env_var}）") for name, env_var in credentials],
+    )
+    if search:
+        env_var = dict(credentials)[search]
+        value = _secret(f"粘贴 {search} 的 API 密钥")
+        if value:
+            lines.append(f"{env_var}={value}")
+            lines.append(f"DEEP_RESEARCH_SEARCH_PROVIDERS={search}")
+        else:
+            print("  没有输入，跳过。")
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    # 0600 where the platform supports it: the file holds credentials.
+    try:
+        target.chmod(0o600)
+    except OSError:
+        pass
+
+    print(f"\n  ✓ 已写入 {target}")
+    print("  下一步：deep-research doctor  确认环境，然后 deep-research new 开始。")
+    return 0
+
+
+async def cmd_doctor(args: argparse.Namespace) -> int:
+
+    environ = load_environment(config_path())
     database = Path(args.database)
     _welcome(environ, database=database)
 
-    env_file = ROOT / ".env"
+    env_file = config_path()
     print()
     if env_file.is_file():
         print(f"  ✓ 读到配置文件 {env_file}")
@@ -479,7 +567,7 @@ async def cmd_doctor(args: argparse.Namespace) -> int:
     if any("无法开始" in line for line in missing):
         print("\n  结论：还不能开始研究。补上模型厂商密钥即可。")
         return 1
-    print("\n  结论：可以开始。执行 `python tools/research.py new`")
+    print("\n  结论：可以开始。执行 `deep-research new`")
     return 0
 
 
@@ -494,6 +582,11 @@ def main(argv: list[str] | None = None) -> int:
     new.add_argument("request", nargs="?", default="")
     new.add_argument("--corpus", default="")
     new.set_defaults(run=cmd_new)
+
+    init = sub.add_parser("init", help="交互式配置密钥（第一次使用先跑这个）")
+    init.add_argument("--config", default="", help="写到指定文件而不是默认位置")
+    init.add_argument("--force", action="store_true", help="覆盖已有配置")
+    init.set_defaults(run=cmd_init)
 
     doctor = sub.add_parser("doctor", help="检查环境是否可以开始研究")
     doctor.set_defaults(run=cmd_doctor)
@@ -526,15 +619,16 @@ def main(argv: list[str] | None = None) -> int:
     if args.command is None:
         # A bare invocation should introduce the tool, not print an argparse
         # error. This is the first thing a new user sees.
-        _welcome(load_environment(ROOT / ".env"), database=Path(args.database))
+        _welcome(load_environment(config_path()), database=Path(args.database))
         print("\n  常用命令")
-        print("    research.py new              提交一个新的研究委托")
-        print("    research.py list             我的所有任务")
-        print("    research.py show     <任务号>  查看状态 / 重读方案")
-        print("    research.py approve  <任务号>  批准方案并开始研究")
-        print("    research.py continue <任务号>  中断后接着跑")
-        print("    research.py report   <任务号>  取出报告")
-        print("    research.py doctor           环境自检")
+        print("    deep-research init             配置密钥（第一次使用）")
+        print("    deep-research new              提交一个新的研究委托")
+        print("    deep-research list             我的所有任务")
+        print("    deep-research show     <任务号>  查看状态 / 重读方案")
+        print("    deep-research approve  <任务号>  批准方案并开始研究")
+        print("    deep-research continue <任务号>  中断后接着跑")
+        print("    deep-research report   <任务号>  取出报告")
+        print("    deep-research doctor           环境自检")
         print("\n  第一次使用请看 docs/GETTING-STARTED.md")
         return 0
 

@@ -15,6 +15,10 @@ dependencies = [
     "pypdf>=5,<7",
 ]
 
+[project.scripts]
+# One entry point; subcommands are dispatched inside deep_research_agent.cli.
+deep-research = "deep_research_agent.cli:main"
+
 [tool.setuptools.packages.find]
 where = ["src"]
 
