@@ -109,14 +109,17 @@ class Workspace:
         save_settings(settings_file(), self.settings)
 
     def reload_environment(self) -> None:
-        """Re-read credentials and re-project the model assignment onto config."""
+        """Re-read credentials and re-project the model assignment onto config.
+
+        Only *new* studies are affected.  Each existing task keeps the execution
+        configuration frozen when it was created, so the service is told about the
+        credential change and nothing else.
+        """
 
         base = dict(load_environment(config_file()))
         self.environ = runtime_environment(self.settings.defaults, base)
         if self.service is not None:
-            self.service.environ = self.environ
-            self.service.config = load_config(self.environ)
-            self.service._runtimes = None  # noqa: SLF001 - rebind after a change
+            self.service.rebind_credentials(self.environ)
 
     def configured_vendors(self) -> tuple[str, ...]:
         return tuple(
@@ -151,7 +154,7 @@ class Workspace:
 
         if not self.settings.defaults.models_configured or not self.configured_vendors():
             theme.dim(self.console, self.t("ready.not_configured"))
-            return prompts.choose(
+            return await prompts.choose(
                 "",
                 [("setup", self.t("action.configure")), ("exit", self.t("action.exit"))],
             )
@@ -196,13 +199,13 @@ class Workspace:
             # directly rather than make the user pick "new" from a list first.
             self.console.print()
             self.console.print(f"  {self.t('home.prompt')}")
-            typed = prompts.ask_text("", multiline=False)
+            typed = await prompts.ask_text("", multiline=False)
             if typed:
                 self._pending_request = typed
                 return "new"
             if typed is None:
                 return "exit"
-        return prompts.choose("", options)
+        return await prompts.choose("", options)
 
     def _preview(self, task: Task) -> None:
         title = theme.truncate(task.request, 52)
@@ -274,7 +277,7 @@ class Workspace:
             self._pending_request = ""
         else:
             self.console.print()
-            typed = prompts.ask_text(self.t("home.prompt"))
+            typed = await prompts.ask_text(self.t("home.prompt"))
             if not typed:
                 return
             request = typed
@@ -320,7 +323,7 @@ class Workspace:
                 rows.append((self.t("cfg.corpus"), defaults.corpus_root))
             theme.fields(self.console, rows)
 
-            action = prompts.choose(
+            action = await prompts.choose(
                 "",
                 [
                     ("use", self.t("action.use_these")),
@@ -342,7 +345,7 @@ class Workspace:
     async def _edit_defaults(
         self, defaults: ResearchDefaults
     ) -> ResearchDefaults | None:
-        field_key = prompts.choose(
+        field_key = await prompts.choose(
             self.t("action.change"),
             [
                 ("language", self.t("cfg.report_language")),
@@ -355,13 +358,13 @@ class Workspace:
         if field_key is None:
             return None
         if field_key == "language":
-            chosen = prompts.choose(
+            chosen = await prompts.choose(
                 self.t("cfg.report_language"),
                 [*REPORT_LANGUAGES, ("other", self.t("generic.other"))],
                 back_label=self.t("action.back"),
             )
             if chosen == "other":
-                typed = prompts.ask_text(self.t("cfg.report_language"), default="en")
+                typed = await prompts.ask_text(self.t("cfg.report_language"), default="en")
                 chosen = typed or None
             if chosen:
                 from dataclasses import replace
@@ -382,7 +385,7 @@ class Workspace:
     ) -> ResearchDefaults | None:
         from dataclasses import replace
 
-        chosen = prompts.choose(
+        chosen = await prompts.choose(
             self.t("cfg.sources"),
             [(key, self.t(message)) for key, message in ACCESS_OPTIONS],
             back_label=self.t("action.back"),
@@ -399,7 +402,7 @@ class Workspace:
         corpus = defaults.corpus_root
         if chosen in ("user_files", "local_only"):
             while True:
-                typed = prompts.ask_text(self.t("cfg.corpus"), default=corpus)
+                typed = await prompts.ask_text(self.t("cfg.corpus"), default=corpus)
                 if typed is None:
                     return None
                 if typed and Path(typed).expanduser().is_dir():
@@ -423,10 +426,10 @@ class Workspace:
             for name, env_var in sorted(search_credentials().items())
         ]
         options.append(("duckduckgo", "duckduckgo（无需密钥）", True))
-        chosen = prompts.choose_many(self.t("cfg.web_search"), options)
+        chosen = await prompts.choose_many(self.t("cfg.web_search"), options)
         if chosen is None:
             return None
-        academic = prompts.choose_many(
+        academic = await prompts.choose_many(
             self.t("cfg.academic"),
             [
                 (name, name, name in defaults.academic_providers)
@@ -444,7 +447,7 @@ class Workspace:
 
         self.console.print()
         theme.status_line(self.console, theme.GLYPH["warn"], self.t("new.too_vague"))
-        addition = prompts.ask_text(self.t("new.clarify_prompt"))
+        addition = await prompts.ask_text(self.t("new.clarify_prompt"))
         if not addition:
             return
         self._pending_request = f"{original}\n\n{addition}"
@@ -469,7 +472,7 @@ class Workspace:
                 )
                 for task in tasks
             ]
-            chosen = prompts.choose(
+            chosen = await prompts.choose(
                 "", options, back_label=self.t("action.back_workspace")
             )
             if chosen is None:
@@ -488,10 +491,15 @@ class Workspace:
                 )
             if task.materials:
                 rows.append(("", self.t("run.materials", count=task.materials)))
+            # The frozen model, not the current default: a user who has since
+            # changed their settings must be able to see that this study did not.
+            rows.append(
+                (self.t("cfg.model"), await self.service.execution_summary(task_id))
+            )
             rows.append((self.t("detail.task_id"), task.task_id))
             theme.fields(self.console, rows)
 
-            action = prompts.choose("", self._actions_for(task))
+            action = await prompts.choose("", self._actions_for(task))
             if action in (None, "back"):
                 return
             if action == "plan":
@@ -613,11 +621,11 @@ class Workspace:
         if report is None:
             theme.dim(self.console, self.t("generic.no_report"))
             return
-        typed = prompts.ask_text(self.t("generic.export_path"), default="report.md")
+        typed = await prompts.ask_text(self.t("generic.export_path"), default="report.md")
         if not typed:
             return
         path = Path(typed).expanduser()
-        if path.exists() and not prompts.confirm_destructive(
+        if path.exists() and not await prompts.confirm_destructive(
             self.t("generic.overwrite", path=path),
             keep=self.t("action.back"),
             destroy=self.t("generic.yes"),
@@ -634,7 +642,7 @@ class Workspace:
     async def _revise(self, task: Task) -> bool:
         """Revising the brief must return to the approval gate, never skip it."""
 
-        addition = prompts.ask_text(self.t("new.revise_prompt"))
+        addition = await prompts.ask_text(self.t("new.revise_prompt"))
         if not addition:
             return False
         self._pending_request = f"{task.request}\n\n补充：{addition}"
@@ -648,7 +656,7 @@ class Workspace:
             self.console, theme.GLYPH["warn"], self.t("delete.confirm_title")
         )
         theme.dim(self.console, self.t("delete.confirm_body"))
-        if not prompts.confirm_destructive(
+        if not await prompts.confirm_destructive(
             "",
             keep=self.t("delete.keep"),
             destroy=self.t("delete.confirm"),
@@ -663,7 +671,7 @@ class Workspace:
     async def _settings_page(self) -> None:
         while True:
             theme.rule_title(self.console, self.t("settings.title"))
-            action = prompts.choose(
+            action = await prompts.choose(
                 "",
                 [
                     ("language", self.t("settings.cli_language")),
@@ -675,7 +683,7 @@ class Workspace:
             if action is None:
                 return
             if action == "language":
-                chosen = prompts.choose(
+                chosen = await prompts.choose(
                     self.t("setup.choose_cli_language"),
                     list(CLI_LANGUAGES),
                     back_label=self.t("action.back"),
@@ -741,6 +749,10 @@ class Workspace:
                     theme.dim(self.console, f"    {str(finding).splitlines()[0]}")
         elif event.kind in ("paused", "halted"):
             theme.status_line(self.console, theme.GLYPH["pending"], event.message)
+        elif event.kind == "configuration_not_frozen":
+            # A warning, so never behind --verbose: it says this study may
+            # continue on a model that did not produce its existing evidence.
+            theme.status_line(self.console, theme.GLYPH["warn"], event.message)
         elif event.kind == "published":
             theme.status_line(self.console, theme.GLYPH["done"], event.message)
         elif self.args.verbose:
@@ -774,7 +786,7 @@ async def _run(args: argparse.Namespace) -> int:
     # interface they cannot read is not an interface.
     if not settings.language_chosen:
         theme.header(console, name="Deep Research", tagline="Research · 研究")
-        chosen = prompts.choose("Language / 界面语言", list(CLI_LANGUAGES))
+        chosen = await prompts.choose("Language / 界面语言", list(CLI_LANGUAGES))
         if chosen is None:
             return 0
         settings = with_language(settings, chosen)

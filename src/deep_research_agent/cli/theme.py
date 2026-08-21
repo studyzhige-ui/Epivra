@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import sys
 from collections.abc import Mapping, Sequence
+from typing import IO
 
 from rich.console import Console
 from rich.panel import Panel
@@ -45,14 +46,18 @@ STATE_GLYPH: Mapping[str, str] = {
 }
 
 
-def console() -> Console:
-    """One console for the process.
+def console(file: IO[str] | None = None) -> Console:
+    """One console for the process, or one over a given stream.
 
     ``soft_wrap`` is off so Rich wraps to the real terminal width; a fixed width
     would break the narrow-terminal requirement.
+
+    ``file`` exists so tests can exercise the interface without writing to the
+    terminal.  Passing a stream is also the honest way to keep test output clean:
+    a decision test has no business painting a home screen.
     """
 
-    return Console(highlight=False, emoji=False)
+    return Console(highlight=False, emoji=False, file=file)
 
 
 def is_interactive() -> bool:

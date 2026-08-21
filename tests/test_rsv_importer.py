@@ -16,7 +16,15 @@ import tempfile
 import unittest
 from pathlib import Path
 
-import ormsgpack
+try:
+    import ormsgpack
+except ModuleNotFoundError as error:  # pragma: no cover - optional dependency
+    # The RSV importer is a one-time tool, deliberately kept out of the
+    # production dependency graph, so its serialiser is not a package
+    # dependency either.  Skipping is the honest outcome: the suite must be
+    # green after ``pip install -e .``, and reporting a missing optional tool as
+    # a failure would hide real ones.
+    raise unittest.SkipTest("ormsgpack is not installed; RSV importer skipped") from error
 
 ROOT = Path(__file__).resolve().parent.parent
 _spec = importlib.util.spec_from_file_location(

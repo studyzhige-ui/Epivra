@@ -113,7 +113,30 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _use_utf8_output() -> None:
+    """Make the process's output able to carry the characters it prints.
+
+    The interface is Chinese and uses box drawing and status glyphs, and a
+    Windows shell hands us a stdout encoded in the system code page -- cp936 on
+    a Chinese install.  Writing "✓" to it raises UnicodeEncodeError from inside
+    the renderer, which crashes the tool while merely drawing a status line.
+    Deciding the process's own encoding is the entry point's business, and
+    ``errors="replace"`` means an exotic stream degrades a glyph rather than
+    ending the run.
+    """
+
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="replace")
+        except (OSError, ValueError):  # pragma: no cover - exotic streams
+            pass
+
+
 def main(argv: list[str] | None = None) -> int:
+    _use_utf8_output()
     parser = build_parser()
     args = parser.parse_args(argv)
     if not args.database:

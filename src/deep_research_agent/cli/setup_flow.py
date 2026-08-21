@@ -71,7 +71,7 @@ async def _add_model_credential(workspace: Workspace) -> bool:
         ready = bool(spec.api_key(workspace.environ))
         mark = f" {theme.GLYPH['done']}" if ready else ""
         options.append((spec.name, f"{spec.label}{mark}"))
-    chosen = prompts.choose(
+    chosen = await prompts.choose(
         workspace.t("setup.choose_provider"),
         options,
         back_label=workspace.t("action.back"),
@@ -82,7 +82,7 @@ async def _add_model_credential(workspace: Workspace) -> bool:
 
     while True:
         theme.dim(workspace.console, workspace.t("setup.key_hidden"))
-        key = prompts.ask_secret(
+        key = await prompts.ask_secret(
             workspace.t("setup.enter_key", provider=spec.label)
         )
         if not key:
@@ -106,7 +106,7 @@ async def _add_model_credential(workspace: Workspace) -> bool:
             theme.GLYPH["blocked"],
             workspace.t("setup.invalid", provider=spec.label, reason=result.reason),
         )
-        again = prompts.choose(
+        again = await prompts.choose(
             "",
             [
                 ("retry", workspace.t("action.reenter")),
@@ -123,7 +123,7 @@ async def _add_search_credential(workspace: Workspace) -> bool:
     for name, env_var in sorted(variables.items()):
         ready = bool(workspace.environ.get(env_var, "").strip())
         options.append((name, f"{name}{' ' + theme.GLYPH['done'] if ready else ''}"))
-    chosen = prompts.choose(
+    chosen = await prompts.choose(
         workspace.t("setup.configure_search"),
         options,
         back_label=workspace.t("action.skip_for_now"),
@@ -133,7 +133,7 @@ async def _add_search_credential(workspace: Workspace) -> bool:
 
     while True:
         theme.dim(workspace.console, workspace.t("setup.key_hidden"))
-        key = prompts.ask_secret(workspace.t("setup.enter_key", provider=chosen))
+        key = await prompts.ask_secret(workspace.t("setup.enter_key", provider=chosen))
         if not key:
             return False
         with workspace.console.status(
@@ -164,7 +164,7 @@ async def _add_search_credential(workspace: Workspace) -> bool:
             theme.GLYPH["blocked"],
             workspace.t("setup.invalid", provider=chosen, reason=result.reason),
         )
-        again = prompts.choose(
+        again = await prompts.choose(
             "",
             [
                 ("retry", workspace.t("action.reenter")),
@@ -186,7 +186,7 @@ async def _assign_one(
 
     theme.rule_title(workspace.console, workspace.t(title_id))
     theme.dim(workspace.console, workspace.t(hint_id))
-    provider = prompts.choose(
+    provider = await prompts.choose(
         workspace.t("setup.choose_provider"),
         [(spec.name, spec.label) for spec in ready],
         back_label=workspace.t("action.back"),
@@ -200,7 +200,7 @@ async def _assign_one(
     ):
         result = await validate_llm_credentials(spec, spec.api_key(workspace.environ))
     catalogue = suggest_models(spec, result.models, fast=fast)
-    model = prompts.choose(
+    model = await prompts.choose(
         workspace.t(title_id),
         [(name, name) for name in catalogue[:40]],
         back_label=workspace.t("action.back"),
@@ -254,7 +254,7 @@ async def configure_providers(workspace: Workspace) -> bool:
         changed = True
 
     while True:
-        action = prompts.choose(
+        action = await prompts.choose(
             "",
             [
                 ("model", workspace.t("setup.choose_provider")),

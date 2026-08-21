@@ -16,9 +16,12 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import aiosqlite
 
+import deep_research_agent.service as service_module
+from deep_research_agent.config import ROLES
 from deep_research_agent.contract import CommissionBody
 from deep_research_agent.model import ModelReply, ModelToolCall
 from deep_research_agent.operations import ExecutionIdentity
@@ -110,20 +113,29 @@ class ServiceFixture(unittest.IsolatedAsyncioTestCase):
         self._directory.cleanup()
 
     def _use(self, *replies: ModelReply) -> ScriptedModel:
+        """Run the whole service against a scripted model.
+
+        Substituting the composition root rather than a private cache is what
+        keeps this suite provider-free while still exercising the real path: the
+        service resolves each task's frozen configuration and then asks
+        ``build_runtimes`` to bind it, so ``self.bound`` records the configuration
+        every task was actually bound with.
+        """
+
         model = ScriptedModel(*replies)
         execution = ExecutionIdentity(provider="scripted", model_id="test")
-        self.service._runtimes = {  # noqa: SLF001 - injecting a scripted runtime
-            role: RoleRuntime(model=model, execution=execution)
-            for role in (
-                "architect",
-                "lead",
-                "investigator",
-                "curator",
-                "analyst",
-                "author",
-                "reviewer",
-            )
+        runtimes = {
+            role: RoleRuntime(model=model, execution=execution) for role in ROLES
         }
+        self.bound: list[object] = []
+
+        def build(environ, *, config=None, roles=ROLES):  # noqa: ANN001, ANN202
+            self.bound.append(config)
+            return dict(runtimes)
+
+        patcher = mock.patch.object(service_module, "build_runtimes", build)
+        patcher.start()
+        self.addCleanup(patcher.stop)
         return model
 
     async def _open(self, request: str = "比较 CRDT 与 OT。", **kwargs):  # noqa: ANN003, ANN202
@@ -226,34 +238,338 @@ class SourceAccessTest(ServiceFixture):
     """The permission must remove the capability, not request restraint."""
 
     async def test_local_only_builds_no_network_client_at_all(self) -> None:
-        broker, reader = self.service._broker(("local_only",))  # noqa: SLF001
+        broker, reader = self.service._broker(  # noqa: SLF001
+            ("local_only",), self.service.config
+        )
         self.assertIsNone(broker)
         self.assertIsNone(reader)
 
     async def test_public_web_builds_a_broker_and_a_reader(self) -> None:
-        broker, reader = self.service._broker(("public_web",))  # noqa: SLF001
+        broker, reader = self.service._broker(  # noqa: SLF001
+            ("public_web",), self.service.config
+        )
         self.assertIsNotNone(broker)
         self.assertIsNotNone(reader)
 
     async def test_local_access_without_a_corpus_root_is_refused(self) -> None:
         with self.assertRaisesRegex(ValueError, "no corpus root"):
-            self.service._local_reader(("public_web", "user_files"))  # noqa: SLF001
+            self.service._local_reader(("public_web", "user_files"), None)  # noqa: SLF001
 
     async def test_a_corpus_root_yields_a_local_reader(self) -> None:
         with tempfile.TemporaryDirectory() as corpus:
             (Path(corpus) / "note.md").write_text("内容", encoding="utf-8")
-            service = ResearchService(
-                connection=self._connection,
-                environ={"DEEPSEEK_API_KEY": "k"},
-                corpus_root=Path(corpus),
-            )
-            await service.setup()
             self.assertIsNotNone(
-                service._local_reader(("public_web", "user_files"))  # noqa: SLF001
+                self.service._local_reader(  # noqa: SLF001
+                    ("public_web", "user_files"), Path(corpus)
+                )
             )
 
     async def test_public_web_alone_never_builds_a_local_reader(self) -> None:
-        self.assertIsNone(self.service._local_reader(("public_web",)))  # noqa: SLF001
+        self.assertIsNone(
+            self.service._local_reader(("public_web",), Path("."))  # noqa: SLF001
+        )
+
+
+class ExecutionSnapshotTest(ServiceFixture):
+    """A study must keep the configuration it was created with.
+
+    The failure this prevents: a user changes their default model on Tuesday and
+    Monday's half-finished study silently continues on it, so the published report
+    cites evidence gathered by one model and synthesised by another with nothing
+    recording the switch.
+
+    ``self.bound`` collects the RuntimeConfig each task was bound with, which is
+    the only thing that actually answers "which model ran".
+    """
+
+    async def _service_with(self, environ: dict[str, str]) -> ResearchService:
+        """A second service over the same database, as a later run would be."""
+
+        service = ResearchService(connection=self._connection, environ=environ)
+        await service.setup()
+        return service
+
+    def _model(self, index: int, role: str = "lead") -> str:
+        config = self.bound[index]
+        assert config is not None
+        return config.model_for(role).model_id
+
+    async def test_a_task_keeps_configuration_a_after_the_default_becomes_b(
+        self,
+    ) -> None:
+        self._use(_architect_reply(), _architect_reply())
+        # (1) create with configuration A
+        self.service.rebind_credentials(
+            {
+                "DEEPSEEK_API_KEY": "k",
+                "DEEP_RESEARCH_REASONING_MODEL": "model-a",
+            }
+        )
+        task = await self._open()
+        self.assertEqual("model-a", self._model(0))
+
+        # (2) global defaults become B, in a fresh process
+        later = await self._service_with(
+            {"DEEPSEEK_API_KEY": "k", "DEEP_RESEARCH_REASONING_MODEL": "model-b"}
+        )
+        # (3) approve and continue the existing task
+        await later.approve(task.task_id)
+        execution = await later.execution(task.task_id)
+        # (4) still configuration A
+        self.assertTrue(execution.frozen)
+        self.assertEqual("model-a", execution.config.model_for("lead").model_id)
+
+        # (5) a task created now uses B
+        fresh = await later.open_task(
+            "另一个课题。",
+            language="zh",
+            source_access=("public_web",),
+            created_at="2026-08-22T00:00:00+00:00",
+        )
+        self.assertEqual(
+            "model-b",
+            (await later.execution(fresh.task_id)).config.model_for("lead").model_id,
+        )
+
+    async def test_the_investigator_tier_is_frozen_independently(self) -> None:
+        """The two user-facing choices are two tiers; both must be pinned."""
+
+        self._use(_architect_reply())
+        self.service.rebind_credentials(
+            {
+                "DEEPSEEK_API_KEY": "k",
+                "DEEP_RESEARCH_REASONING_MODEL": "slow-a",
+                "DEEP_RESEARCH_INVESTIGATOR_MODEL": "fast-a",
+            }
+        )
+        task = await self._open()
+
+        later = await self._service_with(
+            {
+                "DEEPSEEK_API_KEY": "k",
+                "DEEP_RESEARCH_REASONING_MODEL": "slow-b",
+                "DEEP_RESEARCH_INVESTIGATOR_MODEL": "fast-b",
+            }
+        )
+        config = (await later.execution(task.task_id)).config
+        self.assertEqual("slow-a", config.model_for("lead").model_id)
+        self.assertEqual("fast-a", config.model_for("investigator").model_id)
+
+    async def test_enabled_search_providers_are_frozen_too(self) -> None:
+        """Which sources a study consulted is part of what it is."""
+
+        self._use(_architect_reply())
+        self.service.rebind_credentials(
+            {
+                "DEEPSEEK_API_KEY": "k",
+                "DEEP_RESEARCH_SEARCH_PROVIDERS": "tavily",
+                "DEEP_RESEARCH_PUBMED_SEARCH": "false",
+            }
+        )
+        task = await self._open()
+
+        later = await self._service_with(
+            {
+                "DEEPSEEK_API_KEY": "k",
+                "DEEP_RESEARCH_SEARCH_PROVIDERS": "exa,brave",
+                "DEEP_RESEARCH_PUBMED_SEARCH": "true",
+            }
+        )
+        config = (await later.execution(task.task_id)).config
+        self.assertEqual(("tavily", "duckduckgo"), config.search_providers)
+        self.assertNotIn("pubmed", config.academic_providers)
+
+    async def test_a_rotated_credential_is_not_frozen(self) -> None:
+        """Keys are secrets that rotate; freezing one would strand the task."""
+
+        self._use(_architect_reply())
+        task = await self._open()
+        snapshot_payload = (
+            await self._connection.execute_fetchall(
+                "SELECT payload FROM execution_snapshots WHERE task_id = ?",
+                (task.task_id,),
+            )
+        )[0][0]
+        self.assertNotIn("test-key", str(snapshot_payload))
+
+        later = await self._service_with({"DEEPSEEK_API_KEY": "rotated-key"})
+        self.assertTrue((await later.execution(task.task_id)).frozen)
+
+    async def test_reopening_the_same_commission_does_not_refreeze(self) -> None:
+        """Insert-only: the first run's configuration is the task's for good."""
+
+        self._use(_architect_reply())
+        self.service.rebind_credentials(
+            {
+                "DEEPSEEK_API_KEY": "k",
+                "DEEP_RESEARCH_REASONING_MODEL": "model-a",
+            }
+        )
+        task = await self._open()
+
+        self.service.rebind_credentials(
+            {"DEEPSEEK_API_KEY": "k", "DEEP_RESEARCH_REASONING_MODEL": "model-b"}
+        )
+        again = await self._open()
+        self.assertEqual(task.task_id, again.task_id)
+        self.assertEqual(
+            "model-a",
+            (await self.service.execution(task.task_id)).config.model_for(
+                "lead"
+            ).model_id,
+        )
+
+    async def test_rotating_a_key_does_not_change_a_frozen_model(self) -> None:
+        self._use(_architect_reply())
+        self.service.rebind_credentials(
+            {
+                "DEEPSEEK_API_KEY": "k",
+                "DEEP_RESEARCH_REASONING_MODEL": "model-a",
+            }
+        )
+        task = await self._open()
+        await self.service.execution(task.task_id)
+
+        self.service.rebind_credentials(
+            {"DEEPSEEK_API_KEY": "new", "DEEP_RESEARCH_REASONING_MODEL": "model-b"}
+        )
+        self.assertEqual(
+            "model-a",
+            (await self.service.execution(task.task_id)).config.model_for(
+                "lead"
+            ).model_id,
+        )
+
+    async def test_two_tasks_in_one_database_run_on_their_own_models(self) -> None:
+        """The binding is per task, which is why it cannot be service-wide."""
+
+        self._use(_architect_reply(), _architect_reply())
+        self.service.rebind_credentials(
+            {
+                "DEEPSEEK_API_KEY": "k",
+                "DEEP_RESEARCH_REASONING_MODEL": "model-a",
+            }
+        )
+        first = await self._open("第一个课题。")
+
+        self.service.rebind_credentials(
+            {"DEEPSEEK_API_KEY": "k", "DEEP_RESEARCH_REASONING_MODEL": "model-b"}
+        )
+        second = await self._open(
+            "第二个课题。", created_at="2026-08-21T00:00:00+00:00"
+        )
+
+        self.assertEqual(
+            "model-a",
+            (await self.service.execution(first.task_id)).config.model_for(
+                "lead"
+            ).model_id,
+        )
+        self.assertEqual(
+            "model-b",
+            (await self.service.execution(second.task_id)).config.model_for(
+                "lead"
+            ).model_id,
+        )
+
+    async def test_deleting_a_study_removes_its_snapshot(self) -> None:
+        self._use(_architect_reply())
+        task = await self._open()
+        await self.service.delete_research(task.task_id)
+        rows = await self._connection.execute_fetchall(
+            "SELECT COUNT(*) FROM execution_snapshots WHERE task_id = ?",
+            (task.task_id,),
+        )
+        self.assertEqual(0, int(rows[0][0]))
+
+    async def test_the_interface_can_show_which_models_a_task_is_bound_to(
+        self,
+    ) -> None:
+        self._use(_architect_reply())
+        self.service.rebind_credentials(
+            {
+                "DEEPSEEK_API_KEY": "k",
+                "DEEP_RESEARCH_REASONING_MODEL": "model-a",
+                "DEEP_RESEARCH_INVESTIGATOR_MODEL": "fast-a",
+            }
+        )
+        task = await self._open()
+        summary = await self.service.execution_summary(task.task_id)
+        self.assertIn("model-a", summary)
+        self.assertIn("fast-a", summary)
+
+
+class LegacyTaskTest(ServiceFixture):
+    """A task written before snapshots existed must stay resumable.
+
+    The fallback is the current configuration -- there is nothing else to use --
+    and the service says so rather than presenting it as a restored snapshot,
+    naming any role whose model differs from what the ledger shows it called.
+    """
+
+    async def _legacy(self) -> str:
+        """Create a task and then remove its snapshot, as an old database has."""
+
+        self._use(_architect_reply())
+        self.service.rebind_credentials(
+            {
+                "DEEPSEEK_API_KEY": "k",
+                "DEEP_RESEARCH_REASONING_MODEL": "model-a",
+            }
+        )
+        task = await self._open()
+        await self._connection.execute(
+            "DELETE FROM execution_snapshots WHERE task_id = ?", (task.task_id,)
+        )
+        await self._connection.commit()
+        self.service._executions.clear()  # noqa: SLF001 - simulating a new process
+        return task.task_id
+
+    async def test_a_legacy_task_is_still_readable_and_resumable(self) -> None:
+        task_id = await self._legacy()
+        self.assertEqual("awaiting_approval", (await self.service.task(task_id)).state)
+        execution = await self.service.execution(task_id)
+        self.assertFalse(execution.frozen)
+        self.assertEqual("model-a", execution.config.model_for("lead").model_id)
+
+    async def test_the_fallback_is_announced_not_silent(self) -> None:
+        task_id = await self._legacy()
+        events: list[Event] = []
+        await self.service.execution(task_id, listen=events.append)
+        kinds = [event.kind for event in events]
+        self.assertIn("configuration_not_frozen", kinds)
+
+    async def test_the_warning_names_a_model_that_changed(self) -> None:
+        """The whole risk of the fallback is a model the study never used."""
+
+        task_id = await self._legacy()
+        self.service.rebind_credentials(
+            {"DEEPSEEK_API_KEY": "k", "DEEP_RESEARCH_REASONING_MODEL": "model-b"}
+        )
+        events: list[Event] = []
+        await self.service.execution(task_id, listen=events.append)
+        warning = next(e for e in events if e.kind == "configuration_not_frozen")
+        # The scripted architect ran under model_id "test"; the fallback would
+        # use model-b, so the difference must be reported.
+        self.assertTrue(warning.detail["models_changed"])
+        self.assertIn("architect", " ".join(warning.detail["models_changed"]))
+
+    async def test_a_corrupt_snapshot_degrades_to_the_fallback(self) -> None:
+        """An unreadable row must not make a study permanently unresumable."""
+
+        self._use(_architect_reply())
+        task = await self._open()
+        await self._connection.execute(
+            "UPDATE execution_snapshots SET payload = ? WHERE task_id = ?",
+            ("{ not json", task.task_id),
+        )
+        await self._connection.commit()
+        self.service._executions.clear()  # noqa: SLF001 - simulating a new process
+        self.assertFalse((await self.service.execution(task.task_id)).frozen)
+
+    async def test_the_summary_says_when_nothing_was_frozen(self) -> None:
+        task_id = await self._legacy()
+        self.assertIn("未冻结", await self.service.execution_summary(task_id))
 
 
 class TaskIdentityTest(unittest.TestCase):

@@ -36,6 +36,10 @@ from .config import RuntimeConfig, load_config
 from .content_store import SqliteContentStore
 from .context import RoleContext, latest_body, lead_context, load_evidence
 from .contract import CommissionBody, ResearchContract, SourceAccess
+from .execution_snapshot import capture as capture_execution
+from .execution_snapshot import freeze as freeze_execution
+from .execution_snapshot import load as load_execution
+from .execution_snapshot import setup as setup_executions
 from .operations import SqliteOperationLedger
 from .providers import build_search_providers
 from .providers.local import LocalCorpusReader
@@ -96,6 +100,21 @@ class Task:
     sources: int = 0
 
 
+@dataclass(frozen=True, slots=True)
+class TaskExecution:
+    """What one task runs with, resolved from its frozen snapshot.
+
+    ``frozen`` is False only for a task created before configurations were
+    snapshotted.  Those fall back to the installation's current settings, which
+    the service reports rather than applying silently.
+    """
+
+    config: RuntimeConfig
+    runtimes: dict[str, RoleRuntime]
+    corpus_root: Path | None = None
+    frozen: bool = True
+
+
 def new_task_id(commission: CommissionBody, *, created_at: str) -> str:
     """Runtime-owned task identity.
 
@@ -121,11 +140,13 @@ class ResearchService:
 
     connection: aiosqlite.Connection
     environ: Mapping[str, str]
+    #: The installation's current configuration.  It governs **new** tasks only:
+    #: every existing task runs from the snapshot frozen when it was created.
     config: RuntimeConfig | None = None
     corpus_root: Path | None = None
-    _runtimes: dict[str, RoleRuntime] | None = field(default=None, repr=False)
     _content: SqliteContentStore | None = field(default=None, repr=False)
     _ledger: SqliteOperationLedger | None = field(default=None, repr=False)
+    _executions: dict[str, TaskExecution] = field(default_factory=dict, repr=False)
 
     def __post_init__(self) -> None:
         if self.config is None:
@@ -140,6 +161,7 @@ class ResearchService:
         ledger = SqliteOperationLedger(self.connection, content)
         await ledger.setup()
         self._ledger = ledger
+        await setup_executions(self.connection)
         # The artifacts table is shared by every task and filtered by task_id, so
         # its DDL belongs to service setup.  Leaving it to the first per-task
         # store meant reading the task list on a fresh database failed before any
@@ -159,42 +181,110 @@ class ResearchService:
             raise RuntimeError("call setup() before using the service")
         return SqliteArtifactStore(self.connection, self._content, task_id=task_id)
 
-    def runtimes(self) -> dict[str, RoleRuntime]:
-        """Bind roles to models once per service, not once per call."""
+    def rebind_credentials(self, environ: Mapping[str, str]) -> None:
+        """Re-read credentials and drop the bound transports.
 
-        if self._runtimes is None:
-            self._runtimes = build_runtimes(self.environ, config=self.config)
-        return self._runtimes
+        Frozen per-task configurations are untouched: rotating a key changes how
+        a study authenticates, never which model it runs.
+        """
 
-    def _local_reader(self, access: Sequence[str]) -> LocalCorpusReader | None:
+        self.environ = environ
+        self.config = load_config(environ)
+        self._executions.clear()
+
+    async def execution(
+        self, task_id: str, *, listen: Listener = _ignore
+    ) -> TaskExecution:
+        """Bind this task's roles to the models frozen when it was created.
+
+        Bound once per task per service, because building a runtime constructs a
+        transport per role.  Two tasks in one database may legitimately run on
+        different vendors, so the binding cannot be service-wide -- which it was,
+        and that is what let a later settings change reach an existing study.
+        """
+
+        cached = self._executions.get(task_id)
+        if cached is not None:
+            return cached
+
+        assert self.config is not None
+        snapshot = await load_execution(self.connection, task_id)
+        if snapshot is None:
+            config = self.config
+            corpus_root = self.corpus_root
+            await self._report_unfrozen(task_id, config, listen)
+        else:
+            config = snapshot.to_config(self.config)
+            corpus_root = (
+                Path(snapshot.corpus_root) if snapshot.corpus_root else self.corpus_root
+            )
+        execution = TaskExecution(
+            config=config,
+            runtimes=build_runtimes(self.environ, config=config),
+            corpus_root=corpus_root,
+            frozen=snapshot is not None,
+        )
+        self._executions[task_id] = execution
+        return execution
+
+    async def _report_unfrozen(
+        self, task_id: str, config: RuntimeConfig, listen: Listener
+    ) -> None:
+        """Say plainly that this task has no frozen configuration to restore.
+
+        The ledger knows which models the task actually called, so where the
+        current settings disagree with them the message names the difference.
+        That is the whole risk of the fallback: continuing a study on a model that
+        did not produce its existing evidence.
+        """
+
+        current: dict[str, str] = {
+            name: chosen.model_id for name, chosen in config.role_models.items()
+        }
+        used = await self.ledger.models_used(task_id)
+        differs = sorted(
+            f"{role} {'、'.join(models)} → {current[role]}"
+            for role, models in used.items()
+            if role in current and current[role] not in models
+        )
+        message = (
+            "这项研究创建于「执行配置冻结」之前，没有可恢复的配置，"
+            "将使用当前的全局设置继续。"
+        )
+        if differs:
+            message += "注意：以下角色与它此前实际调用的模型不同：" + "；".join(differs)
+        listen(Event("configuration_not_frozen", message, {"models_changed": differs}))
+
+    def _local_reader(
+        self, access: Sequence[str], corpus_root: Path | None
+    ) -> LocalCorpusReader | None:
         """Built only when the Commission authorises reading local files."""
 
         if not ({"user_files", "local_only"} & set(access)):
             return None
-        if self.corpus_root is None:
+        if corpus_root is None:
             raise ValueError(
                 "this commission authorises local files but no corpus root was given"
             )
         return LocalCorpusReader(
-            root=self.corpus_root, extract_pdf=extract_pdf_in_subprocess
+            root=corpus_root, extract_pdf=extract_pdf_in_subprocess
         )
 
-    def _broker(self, access: Sequence[str]):  # noqa: ANN202
+    def _broker(self, access: Sequence[str], config: RuntimeConfig):  # noqa: ANN202
         """No network client at all when the Commission forbids the network.
 
         Returning None rather than an empty broker keeps the prohibition
         mechanical: there is no object present that could reach a vendor.
         """
 
-        assert self.config is not None
         if "local_only" in access:
             return None, None
         providers = build_search_providers(
-            self.config.search_providers,
-            self.config.academic_providers,
+            config.search_providers,
+            config.academic_providers,
             environ=self.environ,
-            ncbi_api_key=self.config.ncbi_api_key,
-            contact_email=self.config.contact_email,
+            ncbi_api_key=config.ncbi_api_key,
+            contact_email=config.contact_email,
         )
         return TransparentSearchBroker(providers), PublicHttpReader()
 
@@ -225,6 +315,17 @@ class ResearchService:
         task_id = new_task_id(commission, created_at=created_at)
         store = self._store(task_id)
         await store.setup()
+
+        # Freeze before the first model call, so even the Architect runs under the
+        # configuration this task will keep for the rest of its life.
+        assert self.config is not None
+        await freeze_execution(
+            self.connection,
+            task_id,
+            capture_execution(
+                self.config, corpus_root=self.corpus_root, frozen_at=created_at
+            ),
+        )
 
         head = (await store.active_view()).head("commission")
         if head is None:
@@ -269,17 +370,23 @@ class ResearchService:
 
         Safe to call again after any interruption: completed provider calls
         replay from the ledger and committed artifacts are simply read back.
+        Every call runs under the configuration frozen at creation, so resuming
+        next week cannot pick up a model the study never used.
         """
 
+        execution = await self.execution(task_id, listen=listen)
         store = self._store(task_id)
         contract = await self._approved_contract(store)
         commission = await self._commission(store)
-        broker, reader = self._broker(commission.source_access)
-        local_reader = self._local_reader(commission.source_access)
+        broker, reader = self._broker(commission.source_access, execution.config)
+        local_reader = self._local_reader(
+            commission.source_access, execution.corpus_root
+        )
         return await self._govern(
             store,
             contract=contract,
             commission=commission,
+            runtimes=execution.runtimes,
             broker=broker,
             reader=reader,
             local_reader=local_reader,
@@ -353,12 +460,33 @@ class ResearchService:
         )
         if not rows or not int(rows[0][0]):
             return False
-        for table in ("artifacts", "artifact_dispositions", "operations"):
+        for table in (
+            "artifacts",
+            "artifact_dispositions",
+            "operations",
+            "execution_snapshots",
+        ):
             await self.connection.execute(
                 f"DELETE FROM {table} WHERE task_id = ?", (task_id,)
             )
         await self.connection.commit()
+        self._executions.pop(task_id, None)
         return True
+
+    async def execution_summary(self, task_id: str) -> str:
+        """The models this task is bound to, for an interface to show.
+
+        Worth showing because the guarantee is otherwise invisible: a user who
+        changed their default model needs to see that this study did not.
+        """
+
+        snapshot = await load_execution(self.connection, task_id)
+        if snapshot is not None:
+            return snapshot.render()
+        assert self.config is not None
+        # Rendered through the same code path so the two cases cannot disagree
+        # about the format; only the caveat differs.
+        return capture_execution(self.config).render() + "（创建时未冻结，用当前设置）"
 
     async def approval_card(self, task_id: str) -> str:
         """The exact card the user must read before approving."""
@@ -405,7 +533,7 @@ class ResearchService:
         if existing is not None:
             return ResearchContract.decode(await store.body(existing))
 
-        runtimes = self.runtimes()
+        runtimes = (await self.execution(store.task_id, listen=listen)).runtimes
         body = architect_agent.architect_context_body(
             commission.request,
             source_access=commission.source_access,
@@ -457,6 +585,7 @@ class ResearchService:
         *,
         contract: ResearchContract,
         commission: CommissionBody,
+        runtimes: dict[str, RoleRuntime],
         broker: Any,
         reader: Any,
         local_reader: Any,
@@ -481,10 +610,10 @@ class ResearchService:
                         memory=previous.render() if previous else "",
                         latest_outcome=latest_outcome,
                     ),
-                    model=self.runtimes()["lead"].model,
+                    model=runtimes["lead"].model,
                     ledger=self.ledger,
                     task_id=store.task_id,
-                    execution=self.runtimes()["lead"].execution,
+                    execution=runtimes["lead"].execution,
                     validate=lead_agent.make_validator(contract),
                 )
             except AgentProtocolError as error:
@@ -504,7 +633,7 @@ class ResearchService:
             await self._commit_memory(store, action.arguments, previous)
 
             if action.name == "commission_report":
-                return await self._report(store, action.arguments, listen)
+                return await self._report(store, action.arguments, runtimes, listen)
 
             if action.name != "commission_wave":
                 listen(
@@ -547,7 +676,7 @@ class ResearchService:
             wave = await run_wave(
                 store,
                 self.ledger,
-                self.runtimes(),
+                runtimes,
                 contract=contract,
                 wave_intent=str(action.arguments["wave_intent"]),
                 assignments=drafts,
@@ -581,12 +710,16 @@ class ResearchService:
         return "paused"
 
     async def _report(
-        self, store: SqliteArtifactStore, arguments: Mapping[str, Any], listen: Listener
+        self,
+        store: SqliteArtifactStore,
+        arguments: Mapping[str, Any],
+        runtimes: dict[str, RoleRuntime],
+        listen: Listener,
     ) -> TaskState:
         outcome = await run_reporting(
             store,
             self.ledger,
-            self.runtimes(),
+            runtimes,
             report_brief=str(arguments["report_brief"]),
             stop_rationale=str(arguments["stop_rationale"]),
         )
@@ -646,6 +779,7 @@ __all__ = [
     "Listener",
     "ResearchService",
     "Task",
+    "TaskExecution",
     "TaskState",
     "new_task_id",
 ]

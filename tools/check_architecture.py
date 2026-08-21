@@ -56,6 +56,7 @@ LAYERS: tuple[tuple[str, frozenset[str]], ...] = (
                 "config",
                 "content_store",
                 "context",
+                "execution_snapshot",
                 "model",
                 "operations",
                 "packs",

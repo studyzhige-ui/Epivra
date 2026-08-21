@@ -10,11 +10,19 @@ No test in this file touches a terminal or a provider.
 from __future__ import annotations
 
 import argparse
+import contextlib
+import inspect
+import io
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
+from prompt_toolkit.application import create_app_session
+from prompt_toolkit.input import create_pipe_input
+from prompt_toolkit.output import DummyOutput
+
+import deep_research_agent.cli.commands as commands
 import deep_research_agent.cli.main as cli_main
 from deep_research_agent.cli import i18n, theme
 from deep_research_agent.cli import prompts as prompts_module
@@ -26,6 +34,7 @@ from deep_research_agent.cli.settings import (
     runtime_environment,
 )
 from deep_research_agent.cli.workspace import Workspace
+from deep_research_agent.providers import validation
 from deep_research_agent.service import Task
 
 
@@ -205,7 +214,7 @@ class ActionMappingTest(unittest.TestCase):
     def setUp(self) -> None:
         self.workspace = Workspace(
             args=argparse.Namespace(database="", verbose=False),
-            console=theme.console(),
+            console=theme.console(file=io.StringIO()),
             settings=CliSettings(cli_language="zh-CN"),
             translate=i18n.Translator("zh-CN"),
             environ={},
@@ -268,7 +277,7 @@ class ActionMappingTest(unittest.TestCase):
 
 class ThemeTest(unittest.TestCase):
     def test_narrow_terminals_are_clamped_not_broken(self) -> None:
-        console = theme.console()
+        console = theme.console(file=io.StringIO())
         self.assertGreaterEqual(theme.width(console), theme.MIN_WIDTH)
         self.assertLessEqual(theme.width(console), 120)
 
@@ -303,7 +312,7 @@ class HomeSurfaceTest(unittest.IsolatedAsyncioTestCase):
 
         workspace = Workspace(
             args=argparse.Namespace(database="", verbose=False),
-            console=theme.console(),
+            console=theme.console(file=io.StringIO()),
             settings=CliSettings(cli_language="zh-CN", defaults=defaults),
             translate=i18n.Translator("zh-CN"),
             environ={"DEEPSEEK_API_KEY": "k"} if configured else {},
@@ -315,7 +324,7 @@ class HomeSurfaceTest(unittest.IsolatedAsyncioTestCase):
         workspace = self._workspace(tasks, configured=configured)
         captured: list[list[tuple[str, str]]] = []
 
-        def fake_choose(_message, options, **_kwargs):  # noqa: ANN001, ANN202
+        async def fake_choose(_message, options, **_kwargs):  # noqa: ANN001, ANN202
             captured.append(list(options))
             return "exit"
 
@@ -355,13 +364,138 @@ class HomeSurfaceTest(unittest.IsolatedAsyncioTestCase):
         workspace = self._workspace([])
         with (
             mock.patch.object(
-                prompts_module, "ask_text", return_value="调研 AI Agent 行业"
+                prompts_module,
+                "ask_text",
+                mock.AsyncMock(return_value="调研 AI Agent 行业"),
             ),
-            mock.patch.object(prompts_module, "choose", return_value="exit"),
+            mock.patch.object(
+                prompts_module, "choose", mock.AsyncMock(return_value="exit")
+            ),
         ):
             action = await workspace.home()
         self.assertEqual("new", action)
         self.assertEqual("调研 AI Agent 行业", workspace._pending_request)
+
+
+class PromptContractTest(unittest.IsolatedAsyncioTestCase):
+    """Every prompt must be awaitable.
+
+    questionary's synchronous ``ask()`` calls ``asyncio.run()`` internally, so
+    reaching it from the workspace -- which always runs inside a loop -- raises
+    "cannot be called from a running event loop" on the very first screen.  That
+    is exactly what happened on the first real terminal run, and a unit test can
+    only catch it by pinning the shape.
+    """
+
+    async def test_a_real_prompt_survives_a_running_event_loop(self) -> None:
+        """The crash itself, driven end to end with a piped keyboard.
+
+        ``create_app_session`` substitutes the ambient terminal, so this exercises
+        the production prompt -- real questionary, real prompt_toolkit -- from
+        inside a running loop, which is the one condition that broke it.
+        """
+
+        with create_pipe_input() as pipe:
+            pipe.send_text("\r")
+            with create_app_session(input=pipe, output=DummyOutput()):
+                chosen = await prompts_module.choose(
+                    "pick", [("first", "First"), ("second", "Second")]
+                )
+        self.assertEqual("first", chosen)
+
+    def test_every_prompt_is_a_coroutine_function(self) -> None:
+        for name in (
+            "ask_text",
+            "ask_secret",
+            "choose",
+            "choose_many",
+            "confirm_destructive",
+        ):
+            with self.subTest(prompt=name):
+                self.assertTrue(
+                    inspect.iscoroutinefunction(getattr(prompts_module, name))
+                )
+
+    def test_no_caller_invokes_a_prompt_without_awaiting_it(self) -> None:
+        """A missed ``await`` is silent: the coroutine is truthy and never runs."""
+
+        root = Path(cli_main.__file__).parent
+        offenders: list[str] = []
+        for path in sorted(root.glob("*.py")):
+            for number, line in enumerate(
+                path.read_text(encoding="utf-8").splitlines(), start=1
+            ):
+                for name in ("ask_text", "ask_secret", "choose", "confirm_destructive"):
+                    call = f"prompts.{name}("
+                    if call in line and f"await prompts.{name}(" not in line:
+                        offenders.append(f"{path.name}:{number}")
+        self.assertEqual([], offenders)
+
+
+class DoctorLiveTest(unittest.IsolatedAsyncioTestCase):
+    """``doctor --live`` must actually reach the vendors, and cost nothing extra.
+
+    Without ``--live`` no provider is contacted: a diagnostic that spends a search
+    credit every time someone checks their setup is a diagnostic people stop
+    running.
+    """
+
+    def _args(self, *, live: bool) -> argparse.Namespace:
+        return argparse.Namespace(database="unused.sqlite3", live=live)
+
+    def _patched(self, *, ok: bool):  # noqa: ANN202
+        result = validation.ValidationResult(
+            provider="deepseek",
+            ok=ok,
+            reason="" if ok else "密钥无效",
+            models=("m1", "m2"),
+        )
+        return (
+            mock.patch.object(
+                commands, "validate_llm_credentials", mock.AsyncMock(return_value=result)
+            ),
+            mock.patch.object(
+                commands,
+                "validate_search_credentials",
+                mock.AsyncMock(return_value=result),
+            ),
+            mock.patch.object(
+                commands,
+                "load_environment",
+                return_value={"DEEPSEEK_API_KEY": "k", "TAVILY_API_KEY": "t"},
+            ),
+        )
+
+    async def test_without_live_no_vendor_is_contacted(self) -> None:
+        llm, search, environ = self._patched(ok=True)
+        buffer = io.StringIO()
+        with llm as llm_mock, search as search_mock, environ:
+            with contextlib.redirect_stdout(buffer):
+                self.assertEqual(0, await commands.cmd_doctor(self._args(live=False)))
+        llm_mock.assert_not_called()
+        search_mock.assert_not_called()
+        self.assertIn("--live", buffer.getvalue())
+
+    async def test_live_validates_every_configured_vendor(self) -> None:
+        llm, search, environ = self._patched(ok=True)
+        buffer = io.StringIO()
+        with llm as llm_mock, search as search_mock, environ:
+            with contextlib.redirect_stdout(buffer):
+                self.assertEqual(0, await commands.cmd_doctor(self._args(live=True)))
+        llm_mock.assert_awaited_once()
+        search_mock.assert_awaited_once()
+        printed = buffer.getvalue()
+        self.assertIn("deepseek", printed)
+        self.assertIn("tavily", printed)
+
+    async def test_a_failing_credential_makes_doctor_exit_nonzero(self) -> None:
+        """Exit status is what a CI job reads; a broken key must fail the check."""
+
+        llm, search, environ = self._patched(ok=False)
+        buffer = io.StringIO()
+        with llm, search, environ, contextlib.redirect_stdout(buffer):
+            self.assertEqual(1, await commands.cmd_doctor(self._args(live=True)))
+        self.assertIn("密钥无效", buffer.getvalue())
 
 
 if __name__ == "__main__":

@@ -596,6 +596,33 @@ class SqliteOperationLedger:
         records = [await self._require(row[0]) for row in rows]
         return tuple(records)
 
+    async def models_used(self, task_id: str) -> Mapping[str, tuple[str, ...]]:
+        """Which model each role has actually called on this task, from the record.
+
+        The ledger is the only place that knows what a task *did* run, as opposed
+        to what it was configured to run.  That makes it the way to detect the
+        one case a frozen configuration cannot cover: a task created before
+        snapshots existed, whose models would otherwise change without anyone
+        being told.  It is corroboration, not configuration -- it cannot say
+        which search providers were enabled, and says nothing about roles that
+        never ran.
+        """
+
+        rows = await self._connection.execute_fetchall(
+            "SELECT DISTINCT role, execution FROM operations WHERE task_id = ?",
+            (task_id,),
+        )
+        used: dict[str, list[str]] = {}
+        for role, execution in rows:
+            try:
+                model_id = str(json.loads(str(execution)).get("model_id", ""))
+            except (json.JSONDecodeError, TypeError, AttributeError):
+                continue
+            seen = used.setdefault(str(role), [])
+            if model_id and model_id not in seen:
+                seen.append(model_id)
+        return {role: tuple(sorted(models)) for role, models in used.items()}
+
     async def outcome(self, operation_id: str) -> str:
         """Replay the stored outcome of a completed operation."""
 

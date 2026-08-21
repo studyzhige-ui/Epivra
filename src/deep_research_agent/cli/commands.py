@@ -33,6 +33,10 @@ from ..application import load_environment, render_role_models
 from ..config import load_config
 from ..providers import search_credentials
 from ..providers.llm import LLM_PROVIDERS
+from ..providers.validation import (
+    validate_llm_credentials,
+    validate_search_credentials,
+)
 from ..service import Event, ResearchService, Task
 
 #: Where a user's studies and configuration live when the command is installed.
@@ -566,6 +570,41 @@ async def cmd_init(args: argparse.Namespace) -> int:
     return 0
 
 
+async def _revalidate(environ: Mapping[str, str]) -> int:
+    """Prove every configured credential against its vendor.  Costs a little.
+
+    A key that is merely present is not a key that works, and the alternative is
+    finding out an hour into a study the user has already paid for.  Model vendors
+    are checked with a model-listing call, which authenticates without inference;
+    a search vendor has no such endpoint, so it costs one query of its quota --
+    which is why this is a flag and not the default.
+    """
+
+    print("\n  正在验证已配置的厂商（搜索厂商各消耗 1 次查询额度）…")
+    failures = 0
+    for spec in sorted(LLM_PROVIDERS, key=lambda item: item.name):
+        key = spec.api_key(environ)
+        if not key:
+            continue
+        result = await validate_llm_credentials(spec, key)
+        if result.ok:
+            print(f"    ✓ {spec.name}：可用，{len(result.models)} 个模型可选")
+        else:
+            failures += 1
+            print(f"    ✗ {spec.name}：{result.reason}")
+
+    for name, env_var in sorted(search_credentials().items()):
+        if not environ.get(env_var, "").strip():
+            continue
+        result = await validate_search_credentials(name, environ[env_var].strip())
+        if result.ok:
+            print(f"    ✓ {name}：可用")
+        else:
+            failures += 1
+            print(f"    ✗ {name}：{result.reason}")
+    return failures
+
+
 async def cmd_doctor(args: argparse.Namespace) -> int:
 
     environ = load_environment(config_path())
@@ -583,5 +622,15 @@ async def cmd_doctor(args: argparse.Namespace) -> int:
     if any("无法开始" in line for line in missing):
         print("\n  结论：还不能开始研究。补上模型厂商密钥即可。")
         return 1
+
+    if getattr(args, "live", False):
+        failures = await _revalidate(environ)
+        if failures:
+            print(f"\n  结论：{failures} 个厂商验证不通过，上面每一条都写了原因。")
+            return 1
+        print("\n  结论：每个已配置的厂商都验证通过。")
+        return 0
+
     print("\n  结论：可以开始。执行 `deep-research new`")
+    print("  想真的调一次厂商接口确认密钥有效：deep-research doctor --live")
     return 0
