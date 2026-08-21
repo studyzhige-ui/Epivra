@@ -22,6 +22,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from ..config import load_config
 from ..providers.llm import LLM_PROVIDER_BY_NAME, LLM_PROVIDERS
 from ..providers.validation import (
     search_credential_variables,
@@ -29,7 +30,7 @@ from ..providers.validation import (
     validate_llm_credentials,
     validate_search_credentials,
 )
-from . import prompts, theme
+from . import journal, prompts, theme
 from .paths import config_file
 from .settings import ModelChoice, ResearchDefaults
 
@@ -242,18 +243,11 @@ async def _choose_model(
         catalogue = suggest_models(spec, result.models, fast=fast)
 
         if catalogue:
-            theme.dim(
-                workspace.console,
-                workspace.t("setup.models_from_vendor", provider=spec.label),
-            )
-            model = await prompts.choose(
-                workspace.t(title_id),
+            return await prompts.choose(
+                workspace.t("setup.choose_model"),
                 [(name, name) for name in catalogue],
                 back_label=workspace.t("action.back"),
             )
-            if model is not None:
-                return model
-            return None
 
         theme.status_line(
             workspace.console,
@@ -293,7 +287,7 @@ async def _assign_one(
     if not ready:
         return None
 
-    theme.rule_title(workspace.console, workspace.t(title_id))
+    theme.page(workspace.console, title=workspace.t(title_id))
     theme.dim(workspace.console, workspace.t(hint_id))
     provider = await prompts.choose(
         workspace.t("setup.choose_provider"),
@@ -312,7 +306,7 @@ async def _assign_one(
 async def ensure_models_assigned(
     workspace: Workspace, *, force: bool = False
 ) -> ResearchDefaults | None:
-    """Assign the Investigator model and the model for the other six roles."""
+    """Assign both models in one pass, for a first run that has neither."""
 
     defaults = workspace.settings.defaults
     if defaults.models_configured and not force:
@@ -337,52 +331,124 @@ async def ensure_models_assigned(
     return replace(defaults, investigator=investigator, other_roles=other)
 
 
+def _render_state(workspace: Workspace) -> None:
+    """What is configured right now, as the body of the page.
+
+    This is the "state is always visible" half of the contract.  It replaces a
+    menu that only listed verbs: a user arriving to change a model could not see
+    what the model currently was without changing it.
+    """
+
+    defaults = workspace.settings.defaults
+    unset = workspace.t("setup.unset")
+    theme.section(workspace.console, workspace.t("setup.section_models"))
+    theme.fields(
+        workspace.console,
+        [
+            (
+                workspace.t("setup.investigator_model"),
+                defaults.investigator.render() or unset,
+            ),
+            (
+                workspace.t("setup.other_roles_model"),
+                defaults.other_roles.render() or unset,
+            ),
+        ],
+    )
+
+    theme.section(workspace.console, workspace.t("setup.section_search"))
+    enabled = load_config(workspace.environ).search_providers
+    for name in enabled:
+        theme.status_line(workspace.console, theme.GLYPH["done"], name)
+    if not enabled:
+        theme.dim(workspace.console, workspace.t("setup.no_search_keys"))
+
+
 async def configure_providers(workspace: Workspace) -> bool:
-    """The first-run path and the Settings path, which are the same path.
+    """The models-and-search page: current state, then what can be changed.
+
+    One page for the first run and for Settings, because they are the same
+    question.  Each change returns *here* rather than to the workspace home, so
+    adjusting the Investigator model and then the search key is two choices
+    instead of two trips through the top-level menu.
 
     Returns whether anything changed, so the caller knows to persist and rebind.
     """
 
-    theme.rule_title(workspace.console, workspace.t("setup.welcome"))
     changed = False
 
     if not any(spec.api_key(workspace.environ) for spec in LLM_PROVIDERS):
+        theme.page(workspace.console, title=workspace.t("settings.providers"))
         theme.dim(workspace.console, workspace.t("setup.need_model"))
         if not await _add_model_credential(workspace):
             return changed
         changed = True
-
-    while True:
-        action = await prompts.choose(
-            "",
-            [
-                ("model", workspace.t("setup.choose_provider")),
-                ("search", workspace.t("setup.configure_search")),
-                ("assign", workspace.t("cfg.model")),
-            ],
-            back_label=workspace.t("action.back_workspace"),
-        )
-        if action is None:
-            break
-        if action == "model":
-            changed = await _add_model_credential(workspace) or changed
-        elif action == "search":
-            theme.dim(workspace.console, workspace.t("setup.search_optional"))
-            changed = await _add_search_credential(workspace) or changed
-        elif action == "assign":
-            updated = await ensure_models_assigned(workspace, force=True)
-            if updated is not None:
-                workspace.settings = replace(workspace.settings, defaults=updated)
-                changed = True
-
-    if changed:
         updated = await ensure_models_assigned(workspace)
         if updated is not None:
             workspace.settings = replace(workspace.settings, defaults=updated)
-        theme.status_line(
-            workspace.console, theme.GLYPH["done"], workspace.t("setup.done")
+
+    while True:
+        theme.page(workspace.console, title=workspace.t("settings.providers"))
+        workspace.show_receipt()
+        _render_state(workspace)
+        action = await prompts.choose(
+            "",
+            [
+                ("investigator", workspace.t("action.change_investigator")),
+                ("other", workspace.t("action.change_other_roles")),
+                ("vendors", workspace.t("action.manage_vendors")),
+                ("search", workspace.t("action.manage_search")),
+            ],
+            back_label=workspace.t("action.back_settings"),
         )
-    return changed
+        if action is None:
+            return changed
+
+        if action in ("investigator", "other"):
+            fast = action == "investigator"
+            chosen = await _assign_one(
+                workspace,
+                fast=fast,
+                title_id=(
+                    "setup.investigator_model" if fast else "setup.other_roles_model"
+                ),
+                hint_id=(
+                    "setup.investigator_hint" if fast else "setup.other_roles_hint"
+                ),
+            )
+            if chosen is None:
+                continue
+            defaults = workspace.settings.defaults
+            workspace.settings = replace(
+                workspace.settings,
+                defaults=(
+                    replace(defaults, investigator=chosen)
+                    if fast
+                    else replace(defaults, other_roles=chosen)
+                ),
+            )
+            changed = True
+            journal.record(
+                "model_assigned",
+                role="investigator" if fast else "other_roles",
+                provider=chosen.provider,
+                model=chosen.model,
+            )
+            workspace.flash(
+                theme.GLYPH["done"],
+                workspace.t(
+                    "receipt.investigator_updated"
+                    if fast
+                    else "receipt.other_roles_updated"
+                ),
+            )
+        elif action == "vendors":
+            theme.page(workspace.console, title=workspace.t("action.manage_vendors"))
+            changed = await _add_model_credential(workspace) or changed
+        elif action == "search":
+            theme.page(workspace.console, title=workspace.t("action.manage_search"))
+            theme.dim(workspace.console, workspace.t("setup.search_optional"))
+            changed = await _add_search_credential(workspace) or changed
 
 
 __all__ = ["configure_providers", "ensure_models_assigned"]

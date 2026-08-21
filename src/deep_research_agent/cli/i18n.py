@@ -29,10 +29,6 @@ DEFAULT_CLI_LANGUAGE: Final[str] = "zh-CN"
 _CATALOGUE: Final[Mapping[str, Mapping[str, str]]] = {
     # --- brand ------------------------------------------------------------
     "brand.name": {"zh-CN": "Deep Research", "en": "Deep Research"},
-    "brand.tagline": {
-        "zh-CN": "每个重要结论，都能回到证据原文",
-        "en": "Research you can trace back to the evidence",
-    },
     # --- readiness --------------------------------------------------------
     "ready.prefix": {"zh-CN": "已就绪", "en": "Ready"},
     "ready.unconfigured": {
@@ -84,6 +80,17 @@ _CATALOGUE: Final[Mapping[str, Mapping[str, str]]] = {
     "action.use_these": {"zh-CN": "使用这些设置", "en": "Use these settings"},
     "action.change": {"zh-CN": "修改设置", "en": "Change settings"},
     "action.reenter": {"zh-CN": "重新输入", "en": "Re-enter"},
+    "action.change_investigator": {
+        "zh-CN": "修改 Investigator 模型",
+        "en": "Change the Investigator model",
+    },
+    "action.change_other_roles": {
+        "zh-CN": "修改其他角色模型",
+        "en": "Change the model for the other roles",
+    },
+    "action.manage_vendors": {"zh-CN": "管理模型厂商", "en": "Manage model providers"},
+    "action.manage_search": {"zh-CN": "管理网页搜索", "en": "Manage web search"},
+    "action.back_settings": {"zh-CN": "返回设置", "en": "Back to settings"},
     "action.skip_for_now": {"zh-CN": "暂时跳过", "en": "Skip for now"},
     # --- setup ------------------------------------------------------------
     "setup.choose_cli_language": {
@@ -104,8 +111,8 @@ _CATALOGUE: Final[Mapping[str, Mapping[str, str]]] = {
         "en": "Paste the {provider} API key",
     },
     "setup.key_hidden": {
-        "zh-CN": "输入完全不显示，也不会进入 shell 历史。粘贴后按 Enter。",
-        "en": "Nothing is echoed and it never enters shell history. Paste, then Enter.",
+        "zh-CN": "输入不会显示。粘贴后按 Enter。",
+        "en": "Nothing is echoed. Paste, then Enter.",
     },
     "setup.key_empty": {
         "zh-CN": "没有读到任何内容——密钥不能为空。",
@@ -116,10 +123,7 @@ _CATALOGUE: Final[Mapping[str, Mapping[str, str]]] = {
         "zh-CN": "无法从 {provider} 取得模型列表：{reason}",
         "en": "Could not read the model list from {provider}: {reason}",
     },
-    "setup.models_from_vendor": {
-        "zh-CN": "以下模型由 {provider} 的接口实时返回，不是本程序写死的。",
-        "en": "This list comes live from the {provider} API; nothing is hardcoded.",
-    },
+    "setup.choose_model": {"zh-CN": "请选择模型", "en": "Choose a model"},
     "setup.type_model": {"zh-CN": "手动输入模型 id", "en": "Type a model id"},
     "setup.model_id_prompt": {
         "zh-CN": "模型 id（照抄厂商文档里的名字）",
@@ -137,6 +141,13 @@ _CATALOGUE: Final[Mapping[str, Mapping[str, str]]] = {
     },
     "setup.configure_search": {"zh-CN": "配置搜索", "en": "Configure search"},
     "setup.done": {"zh-CN": "配置完成", "en": "Setup complete"},
+    "setup.section_models": {"zh-CN": "模型", "en": "Models"},
+    "setup.section_search": {"zh-CN": "搜索", "en": "Search"},
+    "setup.unset": {"zh-CN": "未设置", "en": "not set"},
+    "setup.no_search_keys": {
+        "zh-CN": "只有 DuckDuckGo（无需密钥）",
+        "en": "DuckDuckGo only (no key needed)",
+    },
     "setup.investigator_hint": {
         "zh-CN": (
             "Investigator 在研究过程中需要处理大量搜索来源并进行初步分析，"
@@ -260,6 +271,31 @@ _CATALOGUE: Final[Mapping[str, Mapping[str, str]]] = {
     "delete.keep": {"zh-CN": "保留研究", "en": "Keep it"},
     "delete.confirm": {"zh-CN": "永久取消并删除", "en": "Delete permanently"},
     "delete.done": {"zh-CN": "研究已删除。", "en": "Research deleted."},
+    # --- receipts ---------------------------------------------------------
+    # One line per completed action, carried onto the page the user lands on.
+    # The selection that produced it is gone; the state it changed is in view.
+    "receipt.investigator_updated": {
+        "zh-CN": "Investigator 模型已更新",
+        "en": "Investigator model updated",
+    },
+    "receipt.other_roles_updated": {
+        "zh-CN": "其他角色模型已更新",
+        "en": "Model for the other roles updated",
+    },
+    "receipt.vendor_added": {
+        "zh-CN": "{provider} 连接成功",
+        "en": "{provider} connected",
+    },
+    "receipt.search_added": {
+        "zh-CN": "{provider} 连接成功",
+        "en": "{provider} connected",
+    },
+    "receipt.defaults_saved": {
+        "zh-CN": "研究默认值已保存",
+        "en": "Research defaults saved",
+    },
+    "receipt.language_saved": {"zh-CN": "界面语言已保存", "en": "Interface language saved"},
+    "receipt.nothing_changed": {"zh-CN": "没有改动", "en": "Nothing changed"},
     # --- settings page ----------------------------------------------------
     "settings.title": {"zh-CN": "设置", "en": "Settings"},
     "settings.cli_language": {"zh-CN": "界面语言", "en": "Interface language"},

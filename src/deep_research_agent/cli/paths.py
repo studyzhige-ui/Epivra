@@ -43,4 +43,16 @@ def default_database() -> Path:
     return HOME / "tasks.sqlite3"
 
 
-__all__ = ["HOME", "config_file", "default_database", "settings_file"]
+def journal_file() -> Path:
+    """Outcomes the interface recorded, for when the screen no longer holds them."""
+
+    return HOME / "journal.jsonl"
+
+
+__all__ = [
+    "HOME",
+    "config_file",
+    "default_database",
+    "journal_file",
+    "settings_file",
+]

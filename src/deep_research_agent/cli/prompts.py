@@ -18,6 +18,13 @@ synchronous ``ask()`` calls ``asyncio.run()`` internally, so it cannot be used
 from inside a running loop -- and the workspace runs inside one, because the
 service it drives is async.  ``ask_async()`` is the same prompt on the loop that
 is already running.
+
+Every prompt also erases itself once answered.  A selection is not a record: the
+first run left a wall of ``? 模型厂商 DeepSeek`` lines behind it that read as a
+debug trace and buried the outcome.  ``erase_when_done`` is prompt_toolkit's own
+mechanism for this -- reachable through questionary because ``select`` forwards
+unknown keyword arguments to ``Application`` and ``text`` forwards them to
+``PromptSession`` -- so nothing here reimplements terminal control.
 """
 
 from __future__ import annotations
@@ -95,6 +102,7 @@ async def ask_text(
         default=default,
         multiline=multiline,
         style=STYLE,
+        erase_when_done=True,
         # Multiline input submits with Esc-then-Enter, so Escape cannot also mean
         # "go back" there.
         **({} if multiline else {"key_bindings": _escape_bindings()}),
@@ -162,6 +170,7 @@ async def choose(
             default=default or None,
             instruction=INSTRUCTION,
             use_shortcuts=False,
+            erase_when_done=True,
         )
     )
     answer = await question.ask_async()
@@ -186,6 +195,7 @@ async def choose_many(
             choices=choices,
             style=STYLE,
             instruction="↑↓ 移动 · 空格 选择 · Enter 确认 · Esc 返回",
+            erase_when_done=True,
         )
     )
     answer = await question.ask_async()
@@ -209,6 +219,7 @@ async def confirm_destructive(message: str, *, keep: str, destroy: str) -> bool:
         ],
         style=STYLE,
         instruction="↑↓ 选择 · Enter 确认",
+        erase_when_done=True,
     ).ask_async()
     return bool(answer)
 

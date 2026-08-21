@@ -13,18 +13,20 @@ import argparse
 import contextlib
 import inspect
 import io
+import json
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
+import questionary
 from prompt_toolkit.application import create_app_session
 from prompt_toolkit.input import create_pipe_input
 from prompt_toolkit.output import DummyOutput
 
 import deep_research_agent.cli.commands as commands
 import deep_research_agent.cli.main as cli_main
-from deep_research_agent.cli import i18n, paths, setup_flow, theme
+from deep_research_agent.cli import i18n, journal, paths, setup_flow, theme
 from deep_research_agent.cli import prompts as prompts_module
 from deep_research_agent.cli import settings as cli_settings
 from deep_research_agent.cli import workspace as workspace_module
@@ -643,6 +645,250 @@ class ModelCatalogueTest(unittest.TestCase):
             self.assertTrue(settings.language_chosen)
             # An install with no model credential says so, and offers the fix.
             self.assertIn("还没有配置模型", buffer.getvalue())
+
+
+class TransientSelectionTest(unittest.IsolatedAsyncioTestCase):
+    """Selection is transient.  Outcome is persistent.  State is always visible.
+
+    The first real session left a wall of ``? 模型厂商 DeepSeek`` lines behind it
+    and buried the one line that mattered.  These pin the three halves of the fix:
+    prompts erase themselves, pages replace rather than append, and an outcome
+    travels to the page the user lands on.
+    """
+
+    async def test_every_prompt_erases_itself_once_answered(self) -> None:
+        captured: dict[str, object] = {}
+        real = questionary.select
+
+        def spy(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+            captured.update(kwargs)
+            return real(*args, **kwargs)
+
+        with (
+            create_pipe_input() as pipe,
+            mock.patch.object(questionary, "select", spy),
+        ):
+            pipe.send_text("\r")
+            with create_app_session(input=pipe, output=DummyOutput()):
+                await prompts_module.choose("pick", [("a", "A")])
+        self.assertIs(True, captured.get("erase_when_done"))
+
+    async def test_a_text_prompt_erases_itself_too(self) -> None:
+        captured: dict[str, object] = {}
+        real = questionary.text
+
+        def spy(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+            captured.update(kwargs)
+            return real(*args, **kwargs)
+
+        with (
+            create_pipe_input() as pipe,
+            mock.patch.object(questionary, "text", spy),
+        ):
+            pipe.send_text("hi\r")
+            with create_app_session(input=pipe, output=DummyOutput()):
+                await prompts_module.ask_text("name")
+        self.assertIs(True, captured.get("erase_when_done"))
+
+    def test_a_page_replaces_the_screen_only_on_a_terminal(self) -> None:
+        """Clearing must never reach a redirect: a pipe wants plain text in order."""
+
+        buffer = io.StringIO()
+        quiet = theme.console(file=buffer)
+        self.assertFalse(quiet.is_terminal)
+        theme.page(quiet, brand="Deep Research", title="Settings")
+        self.assertNotIn("\x1b[2J", buffer.getvalue())
+        self.assertIn("Deep Research", buffer.getvalue())
+
+    def test_the_header_carries_no_tagline(self) -> None:
+        """Rule: the header is the product name.  The welcome lives in the body."""
+
+        self.assertNotIn("tagline", inspect.signature(theme.header).parameters)
+        self.assertNotIn("brand.tagline", i18n.catalogue())
+
+    def test_a_receipt_is_shown_once_and_then_forgotten(self) -> None:
+        buffer = io.StringIO()
+        workspace = Workspace(
+            args=argparse.Namespace(database="", verbose=False),
+            console=theme.console(file=buffer),
+            settings=CliSettings(cli_language="zh-CN"),
+            translate=i18n.Translator("zh-CN"),
+            environ={},
+        )
+        workspace.flash(theme.GLYPH["done"], "研究已删除。")
+        workspace.show_receipt()
+        self.assertIn("研究已删除。", buffer.getvalue())
+
+        buffer.truncate(0)
+        buffer.seek(0)
+        workspace.show_receipt()
+        self.assertEqual("", buffer.getvalue())
+
+    def test_the_journal_refuses_a_field_that_could_carry_a_key(self) -> None:
+        """Re-rendering must never put a credential anywhere it can be read."""
+
+        with self.assertRaises(ValueError):
+            journal.record("credential_added", api_key="sk-secret")
+        with self.assertRaises(ValueError):
+            journal.record("credential_added", token="sk-secret")
+
+    def test_the_journal_records_an_outcome_the_screen_no_longer_holds(self) -> None:
+        with tempfile.TemporaryDirectory() as home:
+            target = Path(home) / "journal.jsonl"
+            with mock.patch.object(journal, "journal_file", lambda: target):
+                journal.record("research_deleted", task_id="t_1", state="paused")
+            entry = json.loads(target.read_text(encoding="utf-8").strip())
+        self.assertEqual("research_deleted", entry["kind"])
+        self.assertEqual("t_1", entry["task_id"])
+        self.assertIn("at", entry)
+
+
+class NavigationTest(unittest.IsolatedAsyncioTestCase):
+    """Esc goes up exactly one level, and a sub-page returns to its parent."""
+
+    def _workspace(self, tasks=()) -> Workspace:  # noqa: ANN001
+        defaults = ResearchDefaults(
+            investigator=ModelChoice("deepseek", "deepseek-v4-flash"),
+            other_roles=ModelChoice("deepseek", "deepseek-v4-pro"),
+        )
+
+        class FakeService:
+            async def tasks(self):  # noqa: ANN202
+                return tuple(tasks)
+
+        workspace = Workspace(
+            args=argparse.Namespace(database="", verbose=False),
+            console=theme.console(file=io.StringIO()),
+            settings=CliSettings(cli_language="zh-CN", defaults=defaults),
+            translate=i18n.Translator("zh-CN"),
+            environ={"DEEPSEEK_API_KEY": "k"},
+        )
+        workspace.service = FakeService()  # type: ignore[assignment]
+        return workspace
+
+    async def test_escape_at_the_typed_question_falls_to_the_menu_not_out(self) -> None:
+        """It used to exit the product, which is two levels, not one."""
+
+        workspace = self._workspace()
+        offered: list[list[tuple[str, str]]] = []
+
+        async def fake_choose(_message, options, **_kwargs):  # noqa: ANN001, ANN202
+            offered.append(list(options))
+            return "exit"
+
+        with (
+            mock.patch.object(
+                prompts_module, "ask_text", mock.AsyncMock(return_value=None)
+            ),
+            mock.patch.object(prompts_module, "choose", fake_choose),
+        ):
+            action = await workspace.home()
+
+        self.assertEqual("exit", action)
+        self.assertEqual(1, len(offered), "the home menu must still be offered")
+        self.assertIn("new", {key for key, _label in offered[0]})
+
+    async def test_escape_in_settings_returns_to_the_workspace_and_stays(self) -> None:
+        """Backing out of Settings must not end the session."""
+
+        workspace = self._workspace()
+        with mock.patch.object(
+            prompts_module, "choose", mock.AsyncMock(return_value=None)
+        ):
+            self.assertIsNone(await workspace._settings_page())
+
+    async def test_escape_in_research_defaults_returns_to_settings(self) -> None:
+        workspace = self._workspace()
+        with mock.patch.object(
+            prompts_module, "choose", mock.AsyncMock(return_value=None)
+        ):
+            self.assertIsNone(await workspace._defaults_page())
+
+    async def test_research_defaults_never_offers_use_these_settings(self) -> None:
+        """That option only makes sense on the way into a new study."""
+
+        workspace = self._workspace()
+        offered: list[list[tuple[str, str]]] = []
+
+        async def fake_choose(_message, options, **_kwargs):  # noqa: ANN001, ANN202
+            offered.append(list(options))
+            return None
+
+        with mock.patch.object(prompts_module, "choose", fake_choose):
+            await workspace._defaults_page()
+
+        keys = {key for options in offered for key, _label in options}
+        self.assertNotIn("use", keys)
+        self.assertEqual({"language", "sources", "models", "search"}, keys)
+
+    async def test_changing_a_model_returns_to_the_models_page_not_the_home(
+        self,
+    ) -> None:
+        """Rule 3: a sub-configuration lands back on its parent page.
+
+        Changing the Investigator model and then a search key must be two choices,
+        not two round trips through the top-level menu.
+        """
+
+        workspace = self._workspace()
+        titles: list[str] = []
+        real_page = theme.page
+
+        def spy_page(target, *, brand="", title=""):  # noqa: ANN001, ANN202
+            titles.append(title or brand)
+            real_page(target, brand=brand, title=title)
+
+        answers = iter(["investigator", "search", None])
+
+        async def fake_choose(_message, _options, **_kwargs):  # noqa: ANN001, ANN202
+            return next(answers, None)
+
+        with (
+            mock.patch.object(theme, "page", spy_page),
+            mock.patch.object(prompts_module, "choose", fake_choose),
+            mock.patch.object(
+                setup_flow,
+                "_assign_one",
+                mock.AsyncMock(return_value=ModelChoice("deepseek", "deepseek-r1")),
+            ),
+            mock.patch.object(
+                setup_flow, "_add_search_credential", mock.AsyncMock(return_value=False)
+            ),
+            mock.patch.object(journal, "record", lambda *_a, **_k: None),
+        ):
+            changed = await setup_flow.configure_providers(workspace)
+
+        self.assertTrue(changed)
+        page_title = i18n.Translator("zh-CN")("settings.providers")
+        self.assertGreaterEqual(
+            titles.count(page_title),
+            3,
+            "the models-and-search page must be repainted after each change",
+        )
+        self.assertEqual(
+            "deepseek-r1",
+            workspace.settings.defaults.investigator.model,
+        )
+        self.assertEqual(
+            "deepseek-v4-pro",
+            workspace.settings.defaults.other_roles.model,
+            "the investigator choice must not overwrite the other-roles slot",
+        )
+
+    async def test_the_models_page_shows_the_current_state_before_asking(self) -> None:
+        """State is always visible: arriving to change a model shows the model."""
+
+        buffer = io.StringIO()
+        workspace = self._workspace()
+        workspace.console = theme.console(file=buffer)
+        with mock.patch.object(
+            prompts_module, "choose", mock.AsyncMock(return_value=None)
+        ):
+            await setup_flow.configure_providers(workspace)
+        printed = buffer.getvalue()
+        self.assertIn("deepseek-v4-flash", printed)
+        self.assertIn("deepseek-v4-pro", printed)
+        self.assertIn("duckduckgo", printed)
 
 
 class DoctorLiveTest(unittest.IsolatedAsyncioTestCase):

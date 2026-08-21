@@ -8,6 +8,17 @@ The style is a professional research instrument: a single brand header, status
 glyphs rather than colour alone, generous whitespace, and dim text for anything
 the reader does not need in order to act.  Colour is never the only carrier of
 meaning, because terminals and colour vision both vary.
+
+One rule governs what stays on screen:
+
+    **Selection is transient.  Outcome is persistent.  State is always visible.**
+
+Navigating is not a record worth keeping.  A first run that configured two models
+and a search key left forty lines of ``? 模型厂商 DeepSeek`` behind it, which read
+as a debug trace rather than a product, and buried the one line that mattered.  So
+:func:`page` *replaces* the screen instead of appending to it, every page repaints
+the state it is about, and an outcome travels to the next page as a receipt.  What
+needs to survive the screen goes to the journal, not the scrollback.
 """
 
 from __future__ import annotations
@@ -74,27 +85,63 @@ def width(target: Console) -> int:
     return max(MIN_WIDTH, min(target.size.width, 120))
 
 
-def header(target: Console, *, name: str, tagline: str) -> None:
-    """The brand header.  Shown by the workspace, never by a subcommand.
+def clear(target: Console) -> None:
+    """Hand the screen back before repainting.
 
-    A subcommand prints its own result; reprinting the product description on
-    every invocation is noise for someone who ran ``doctor`` for the third time.
+    A no-op unless output is a real terminal, so a redirect, a pipe and the test
+    suite all keep receiving plain text in the order it was written.
     """
 
-    body = Text(name, style="bold")
-    body.append("\n")
-    body.append(tagline, style="dim")
+    if target.is_terminal:
+        target.clear()
+
+
+def page(target: Console, *, brand: str = "", title: str = "") -> None:
+    """Begin a page, replacing whatever the last one drew.
+
+    Every screen in the workspace starts here.  That is what makes the terminal
+    show *where the user is* rather than everywhere they have been.
+    """
+
+    clear(target)
+    if brand:
+        header(target, name=brand)
+    if title:
+        rule_title(target, title, spacer=bool(brand))
+
+
+def header(target: Console, *, name: str) -> None:
+    """The brand header.  Shown by the workspace, never by a subcommand.
+
+    Deliberately just the name.  A tagline repeated at the top of every page is
+    an advertisement to someone who has already bought the thing; the welcome
+    belongs in the body of the home screen, once.
+    """
+
     target.print(
-        Panel(body, width=width(target), border_style="dim", padding=(0, 2))
+        Panel(
+            Text(name, style="bold"),
+            width=width(target),
+            border_style="dim",
+            padding=(0, 2),
+        )
     )
 
 
-def rule_title(target: Console, title: str) -> None:
+def rule_title(target: Console, title: str, *, spacer: bool = True) -> None:
     """A page title without a box; used inside the workspace for sub-pages."""
 
-    target.print()
+    if spacer:
+        target.print()
     target.print(Text(title, style="bold"))
     target.print(Text("─" * min(width(target), 60), style="dim"))
+
+
+def section(target: Console, title: str) -> None:
+    """A group label inside a page, for state that has more than one part."""
+
+    target.print()
+    target.print(Text(f"  {title}", style="dim"))
 
 
 def status_line(target: Console, glyph: str, text: str, *, style: str = "") -> None:
@@ -153,12 +200,15 @@ __all__ = [
     "GLYPH",
     "MIN_WIDTH",
     "STATE_GLYPH",
+    "clear",
     "console",
     "dim",
     "fields",
     "header",
     "is_interactive",
+    "page",
     "rule_title",
+    "section",
     "status_line",
     "timeline",
     "truncate",

@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 import aiosqlite
@@ -35,7 +35,7 @@ from ..application import load_environment
 from ..config import load_config
 from ..providers.llm import LLM_PROVIDERS
 from ..service import Event, ResearchService, Task
-from . import prompts, theme
+from . import journal, prompts, theme
 from .i18n import CLI_LANGUAGES, Translator
 from .paths import config_file, settings_file
 from .settings import (
@@ -94,11 +94,14 @@ class Workspace:
     translate: Translator
     environ: dict[str, str]
     service: ResearchService | None = None
-    _log: list[str] = field(default_factory=list)
     #: A question typed on the home screen, or a revised brief, waiting to become
     #: the next study.  Declared because slots=True forbids stray attributes --
     #: the same mistake cost a crash on the first run of the previous CLI.
     _pending_request: str = ""
+    #: The outcome of the last completed action, waiting to be shown once on the
+    #: page the user lands on.  Selection is transient; this is how the outcome
+    #: survives the screen being replaced.
+    _receipt: tuple[str, str] = ("", "")
 
     # ---------------------------------------------------------------- helpers
 
@@ -107,6 +110,37 @@ class Workspace:
 
     def persist(self) -> None:
         save_settings(settings_file(), self.settings)
+
+    def flash(self, glyph: str, message: str) -> None:
+        """Leave one line for the next page to show, then forget it."""
+
+        self._receipt = (glyph, message)
+
+    def show_receipt(self) -> None:
+        """Render a pending outcome at the top of the page, once."""
+
+        glyph, message = self._receipt
+        if not message:
+            return
+        self._receipt = ("", "")
+        self.console.print()
+        theme.status_line(self.console, glyph, message)
+
+    def page(self, *, brand: str = "", title: str = "") -> None:
+        """Begin a page and show any outcome that led the user here."""
+
+        theme.page(self.console, brand=brand, title=title)
+        self.show_receipt()
+
+    async def hold(self) -> None:
+        """Wait before the next page replaces this one.
+
+        For anything the user has to actually read: an approval card, a finished
+        run's log.  Without it, a repaint would wipe forty minutes of progress the
+        instant the study ended.
+        """
+
+        await prompts.choose("", [("back", self.t("action.back"))])
 
     def reload_environment(self) -> None:
         """Re-read credentials and re-project the model assignment onto config.
@@ -173,11 +207,7 @@ class Workspace:
         """
 
         assert self.service is not None
-        theme.header(
-            self.console,
-            name=self.t("brand.name"),
-            tagline=self.t("brand.tagline"),
-        )
+        self.page(brand=self.t("brand.name"))
         self.show_configuration()
 
         configured = self.is_configured()
@@ -238,8 +268,9 @@ class Workspace:
             if typed:
                 self._pending_request = typed
                 return "new"
-            if typed is None:
-                return "exit"
+            # Escape here means "I did not want to type"; it drops to the menu
+            # below rather than leaving the product.  Only the menu's own exit --
+            # chosen or by Escape -- ends the session.
         return await prompts.choose("", options, disabled=disabled)
 
     def _preview(self, task: Task) -> None:
@@ -305,7 +336,7 @@ class Workspace:
 
     async def _new_research(self) -> None:
         assert self.service is not None
-        theme.rule_title(self.console, self.t("new.title"))
+        self.page(title=self.t("new.title"))
 
         request = self._pending_request
         if request:
@@ -337,26 +368,39 @@ class Workspace:
             return
         await self._task_detail(task.task_id)
 
+    def _render_defaults(self, defaults: ResearchDefaults) -> None:
+        """The research settings a study would inherit, as page body."""
+
+        config = load_config(self.environ)
+        rows = [
+            (self.t("cfg.report_language"), _language_label(defaults.report_language)),
+            (self.t("cfg.sources"), self.t(_access_message(defaults.source_access))),
+            (
+                self.t("cfg.model"),
+                f"{defaults.other_roles.render()} / {defaults.investigator.render()}",
+            ),
+            (self.t("cfg.web_search"), " · ".join(config.search_providers) or "—"),
+            (self.t("cfg.academic"), " · ".join(config.academic_providers) or "—"),
+        ]
+        if defaults.corpus_root:
+            rows.append((self.t("cfg.corpus"), defaults.corpus_root))
+        theme.fields(self.console, rows)
+
+    def _defaults_fields(self) -> list[tuple[str, str]]:
+        return [
+            ("language", self.t("cfg.report_language")),
+            ("sources", self.t("cfg.sources")),
+            ("models", self.t("cfg.model")),
+            ("search", self.t("cfg.web_search")),
+        ]
+
     async def _confirm_settings(self) -> ResearchDefaults | None:
         """Show inherited settings; let them be changed without re-asking all."""
 
         defaults = self.settings.defaults
         while True:
-            theme.rule_title(self.console, self.t("cfg.title"))
-            config = load_config(self.environ)
-            rows = [
-                (self.t("cfg.report_language"), _language_label(defaults.report_language)),
-                (self.t("cfg.sources"), self.t(_access_message(defaults.source_access))),
-                (
-                    self.t("cfg.model"),
-                    f"{defaults.other_roles.render()} / {defaults.investigator.render()}",
-                ),
-                (self.t("cfg.web_search"), " · ".join(config.search_providers) or "—"),
-                (self.t("cfg.academic"), " · ".join(config.academic_providers) or "—"),
-            ]
-            if defaults.corpus_root:
-                rows.append((self.t("cfg.corpus"), defaults.corpus_root))
-            theme.fields(self.console, rows)
+            self.page(title=self.t("cfg.title"))
+            self._render_defaults(defaults)
 
             action = await prompts.choose(
                 "",
@@ -370,28 +414,26 @@ class Workspace:
                 return None
             if action == "use":
                 return defaults
-            updated = await self._edit_defaults(defaults)
+            field_key = await prompts.choose(
+                self.t("action.change"),
+                self._defaults_fields(),
+                back_label=self.t("action.back"),
+            )
+            if field_key is None:
+                continue
+            updated = await self._edit_field(defaults, field_key)
             if updated is not None:
                 defaults = updated
                 self.settings = with_defaults(self.settings, defaults)
                 self.persist()
                 self.reload_environment()
+                self.flash(theme.GLYPH["done"], self.t("receipt.defaults_saved"))
 
-    async def _edit_defaults(
-        self, defaults: ResearchDefaults
+    async def _edit_field(
+        self, defaults: ResearchDefaults, field_key: str
     ) -> ResearchDefaults | None:
-        field_key = await prompts.choose(
-            self.t("action.change"),
-            [
-                ("language", self.t("cfg.report_language")),
-                ("sources", self.t("cfg.sources")),
-                ("models", self.t("cfg.model")),
-                ("search", self.t("cfg.web_search")),
-            ],
-            back_label=self.t("action.back"),
-        )
-        if field_key is None:
-            return None
+        """Change one research default.  ``None`` means the user backed out."""
+
         if field_key == "language":
             chosen = await prompts.choose(
                 self.t("cfg.report_language"),
@@ -409,8 +451,7 @@ class Workspace:
         if field_key == "sources":
             return await self._edit_source_access(defaults)
         if field_key == "models":
-            updated = await ensure_models_assigned(self, force=True)
-            return updated
+            return await ensure_models_assigned(self, force=True)
         if field_key == "search":
             return await self._edit_search(defaults)
         return None
@@ -494,7 +535,7 @@ class Workspace:
         assert self.service is not None
         while True:
             tasks = await self.service.tasks()
-            theme.rule_title(self.console, self.t("list.title"))
+            self.page(title=self.t("list.title"))
             if not tasks:
                 theme.dim(self.console, self.t("list.empty"))
                 return
@@ -518,7 +559,7 @@ class Workspace:
         assert self.service is not None
         while True:
             task = await self.service.task(task_id)
-            theme.rule_title(self.console, theme.truncate(task.request, 56))
+            self.page(title=theme.truncate(task.request, 56))
             rows = [(self.t("detail.status"), self.t(f"state.{task.state}"))]
             if task.sources:
                 rows.append(
@@ -595,21 +636,26 @@ class Workspace:
     async def _show_plan(self, task_id: str) -> None:
         assert self.service is not None
         card = await self.service.approval_card(task_id)
-        self.console.print()
+        self.page(title=self.t("action.view_plan"))
         self.console.print(Markdown(card))
         theme.dim(self.console, self.t("plan.read_these"))
         theme.dim(self.console, self.t("new.not_started"))
+        # The card is long and the user has to read it before deciding, so this
+        # page waits for them rather than being replaced by the next menu.
+        await self.hold()
 
     async def _approve_and_run(self, task_id: str) -> None:
         assert self.service is not None
+        # From here the screen is a live log, not a page: a run's own history is
+        # what the user is watching, so nothing below clears it.
+        self.page(title=self.t("plan.approved"))
         theme.dim(self.console, self.t("new.after_approve_costs"))
         await self.service.approve(task_id)
-        theme.status_line(self.console, theme.GLYPH["done"], self.t("plan.approved"))
+        journal.record("research_approved", task_id=task_id)
         await self._run_research(task_id)
 
     async def _run_research(self, task_id: str) -> None:
         assert self.service is not None
-        self._log.clear()
         try:
             state = await self.service.advance(task_id, listen=self._render_progress)
         except KeyboardInterrupt:
@@ -618,9 +664,11 @@ class Workspace:
                 self.console, theme.GLYPH["pending"], self.t("interrupt.paused")
             )
             theme.dim(self.console, self.t("interrupt.explain"))
+            await self.hold()
             return
         if state == "published":
             await self._completion(task_id)
+        await self.hold()
 
     async def _completion(self, task_id: str) -> None:
         assert self.service is not None
@@ -668,8 +716,8 @@ class Workspace:
             return
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(report, encoding="utf-8")
-        theme.status_line(
-            self.console,
+        journal.record("report_exported", task_id=task_id, characters=len(report))
+        self.flash(
             theme.GLYPH["done"],
             self.t("generic.exported", path=path, count=len(report)),
         )
@@ -698,14 +746,15 @@ class Workspace:
         ):
             return False
         await self.service.delete_research(task.task_id)
-        theme.status_line(self.console, theme.GLYPH["done"], self.t("delete.done"))
+        journal.record("research_deleted", task_id=task.task_id, state=task.state)
+        self.flash(theme.GLYPH["done"], self.t("delete.done"))
         return True
 
     # ---------------------------------------------------------- settings page
 
     async def _settings_page(self) -> None:
         while True:
-            theme.rule_title(self.console, self.t("settings.title"))
+            self.page(title=self.t("settings.title"))
             action = await prompts.choose(
                 "",
                 [
@@ -727,26 +776,45 @@ class Workspace:
                     self.settings = with_language(self.settings, chosen)
                     self.translate = Translator(chosen)
                     self.persist()
-                    theme.status_line(
-                        self.console, theme.GLYPH["done"], self.t("settings.saved")
-                    )
+                    journal.record("cli_language_changed", language=chosen)
+                    self.flash(theme.GLYPH["done"], self.t("receipt.language_saved"))
             elif action == "providers":
                 await self._run_setup()
             elif action == "defaults":
-                updated = await self._confirm_settings()
-                if updated is not None:
-                    self.settings = with_defaults(self.settings, updated)
-                    self.persist()
+                await self._defaults_page()
+
+    async def _defaults_page(self) -> None:
+        """Research defaults: current values, and the one to change.
+
+        Not the new-research confirmation screen, which this used to reuse.  That
+        screen's first option is "use these settings", which means nothing when a
+        user opened Settings to *change* something.
+        """
+
+        while True:
+            self.page(title=self.t("cfg.title"))
+            self._render_defaults(self.settings.defaults)
+            field_key = await prompts.choose(
+                "",
+                self._defaults_fields(),
+                back_label=self.t("action.back_settings"),
+            )
+            if field_key is None:
+                return
+            updated = await self._edit_field(self.settings.defaults, field_key)
+            if updated is None:
+                continue
+            self.settings = with_defaults(self.settings, updated)
+            self.persist()
+            self.reload_environment()
+            self.flash(theme.GLYPH["done"], self.t("receipt.defaults_saved"))
 
     # ------------------------------------------------------------- rendering
 
     def _collect(self, event: Event) -> None:
-        """Capture plan-stage events without printing raw text over the UI."""
-
-        self._log.append(f"{event.kind}: {event.message}")
+        """Swallow plan-stage chatter; the page that follows shows the outcome."""
 
     def _render_progress(self, event: Event) -> None:
-        self._log.append(f"{event.kind}: {event.message}")
         if event.kind == "wave_started":
             round_index = event.detail.get("round", 0)
             stage = "breadth" if round_index == 1 else "focus"
@@ -784,12 +852,14 @@ class Workspace:
                     theme.dim(self.console, f"    {str(finding).splitlines()[0]}")
         elif event.kind in ("paused", "halted"):
             theme.status_line(self.console, theme.GLYPH["pending"], event.message)
+            journal.record("research_" + event.kind, message=event.message)
         elif event.kind == "configuration_not_frozen":
             # A warning, so never behind --verbose: it says this study may
             # continue on a model that did not produce its existing evidence.
             theme.status_line(self.console, theme.GLYPH["warn"], event.message)
         elif event.kind == "published":
             theme.status_line(self.console, theme.GLYPH["done"], event.message)
+            journal.record("research_published", message=event.message)
         elif self.args.verbose:
             theme.dim(self.console, event.message)
 
@@ -820,7 +890,7 @@ async def _run(args: argparse.Namespace) -> int:
     # The very first thing a new user is asked, before any other screen: an
     # interface they cannot read is not an interface.
     if not settings.language_chosen:
-        theme.header(console, name="Deep Research", tagline="Research · 研究")
+        theme.page(console, brand="Deep Research")
         chosen = await prompts.choose("Language / 界面语言", list(CLI_LANGUAGES))
         if chosen is None:
             return 0
