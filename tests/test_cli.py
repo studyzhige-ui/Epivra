@@ -24,9 +24,10 @@ from prompt_toolkit.output import DummyOutput
 
 import deep_research_agent.cli.commands as commands
 import deep_research_agent.cli.main as cli_main
-from deep_research_agent.cli import i18n, theme
+from deep_research_agent.cli import i18n, paths, theme
 from deep_research_agent.cli import prompts as prompts_module
 from deep_research_agent.cli import settings as cli_settings
+from deep_research_agent.cli import workspace as workspace_module
 from deep_research_agent.cli.settings import (
     CliSettings,
     ModelChoice,
@@ -430,6 +431,41 @@ class PromptContractTest(unittest.IsolatedAsyncioTestCase):
                     if call in line and f"await prompts.{name}(" not in line:
                         offenders.append(f"{path.name}:{number}")
         self.assertEqual([], offenders)
+
+
+class FirstRunTest(unittest.TestCase):
+    """The product's front door, driven end to end with a piped keyboard.
+
+    Every other test here mocks the prompts away, which is why the first real
+    terminal run still crashed on screen one.  This drives the actual workspace
+    -- real questionary, real settings file, real database -- through the first
+    two screens a new user sees, in a throwaway home directory.
+    """
+
+    def test_a_new_user_can_choose_a_language_and_reach_the_home_screen(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            buffer = io.StringIO()
+            with (
+                mock.patch.object(paths, "HOME", home),
+                contextlib.redirect_stdout(buffer),
+            ):
+                args = argparse.Namespace(
+                    database=str(home / "tasks.sqlite3"), verbose=False
+                )
+                with create_pipe_input() as pipe:
+                    pipe.send_text("\r")  # language: the first entry
+                    pipe.send_text("\x1b[B\r")  # home: down to exit, then Enter
+                    with create_app_session(input=pipe, output=DummyOutput()):
+                        code = workspace_module.run_workspace(args)
+
+            self.assertEqual(0, code)
+            settings = cli_settings.load(home / "settings.json")
+            self.assertEqual("zh-CN", settings.cli_language)
+            self.assertTrue(settings.language_chosen)
+            # An install with no model credential must be offered setup, not a
+            # research prompt it cannot honour.
+            self.assertIn("还差一步", buffer.getvalue())
 
 
 class DoctorLiveTest(unittest.IsolatedAsyncioTestCase):
