@@ -1,17 +1,23 @@
 """Entry point and dispatch.
 
-The rule this module exists to enforce:
+The surface is deliberately two things:
 
-* ``deep-research`` with no command, on a terminal, **enters the workspace**.
-  The product is a place you work, not a set of commands you remember.
-* ``deep-research <command>`` keeps working exactly as before, so scripts, CI and
-  MCP are unaffected.
-* ``deep-research`` with no command and **no terminal** prints help instead of
-  blocking on a prompt that will never be answered.
+* ``deep-research`` -- the interactive workspace.  This is the product, and the
+  only interface a person needs.
+* ``deep-research doctor`` -- diagnostics.  A different job from using the
+  product: one shot, no navigation, output meant to be read or pasted.
 
-``--help`` owns the command list now.  A bare invocation used to print a welcome
-screen plus every command; that made the front door a menu rather than a place to
-start.
+There used to be a third: a full research workflow as subcommands (``new``,
+``approve``, ``continue``, ``report`` …).  It is gone.  Two human-facing
+interfaces over one service meant every feature had to be built, translated and
+tested twice, and the command path always lagged -- its ``init`` wrote
+credentials without validating them, which is how a placeholder key ended up
+looking configured everywhere.  Machine access is a real need, but a shell
+wrapper is a poor way to serve it; that belongs to MCP, over the same
+:class:`deep_research_agent.service.ResearchService` the workspace uses.
+
+Without a terminal there is no workspace to enter, so a bare invocation prints
+help and exits successfully rather than blocking on a prompt nobody can answer.
 """
 
 from __future__ import annotations
@@ -20,123 +26,72 @@ import argparse
 import asyncio
 import sys
 
-from . import commands, theme
-from .paths import default_database, settings_file
-from .settings import load as load_settings
+from .. import __version__
+from . import doctor, theme
+from .paths import default_database
 
-USAGE = """\
-Usage:
-  deep-research
-  deep-research <command> [options]
+DESCRIPTION = """\
+Deep Research
 
-Without a command, starts the interactive Deep Research workspace.
+直接运行 deep-research 进入交互式研究工作区。
 
-Commands:
-  new        Start a new research
-  list       List research tasks
-  show       Show research details
-  approve    Approve a research plan
-  continue   Continue a paused research
-  report     Read or export a report
-  delete     Delete a research and everything it produced
-  init       Configure providers
-  doctor     Check the environment
+commands:
+  doctor       检查 Deep Research 环境与服务连接\
 """
 
 
 def build_parser() -> argparse.ArgumentParser:
+    """The whole public surface, in one place.
+
+    With a single subcommand, argparse's own rendering prints the name twice --
+    once as the group's metavar and once as the choice.  The command list is in
+    the description instead, and the subparser group is suppressed from help.  A
+    test asserts every registered command appears in that text, so the two cannot
+    drift apart.
+    """
+
     parser = argparse.ArgumentParser(
         prog="deep-research",
-        usage=USAGE,
-        description="Deep Research — research you can trace back to the evidence.",
-        add_help=True,
+        usage="deep-research [options] [doctor]",
+        description=DESCRIPTION,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        add_help=False,
     )
-    parser.add_argument("--database", default="", help="任务库路径 / database path")
+    parser.add_argument(
+        "-h",
+        "--help",
+        action="help",
+        default=argparse.SUPPRESS,
+        help="显示帮助 / show this help",
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"deep-research {__version__}",
+        help="显示版本 / show the version",
+    )
+    parser.add_argument(
+        "--database", default="", help="任务库路径 / path to the task database"
+    )
     parser.add_argument(
         "--verbose",
         action="store_true",
         help="显示详细日志 / show the detailed provider log",
     )
-    sub = parser.add_subparsers(dest="command")
+    sub = parser.add_subparsers(dest="command", help=argparse.SUPPRESS)
 
-    new = sub.add_parser("new", help="Start a new research")
-    new.add_argument("request", nargs="?", default="")
-    new.add_argument("--corpus", default="")
-    new.set_defaults(run=commands.cmd_new)
-
-    init = sub.add_parser("init", help="Configure providers")
-    init.add_argument("--config", default="")
-    init.add_argument("--force", action="store_true")
-    init.set_defaults(run=commands.cmd_init)
-
-    doctor = sub.add_parser("doctor", help="Check the environment")
-    doctor.add_argument(
+    diagnose = sub.add_parser("doctor", help=argparse.SUPPRESS)
+    diagnose.add_argument(
         "--live",
         action="store_true",
-        help="重新验证每个已配置厂商 / re-validate every configured provider",
+        help="真的调用每个已配置厂商一次 / call every configured provider once",
     )
-    doctor.set_defaults(run=commands.cmd_doctor)
-
-    listing = sub.add_parser("list", help="List research tasks")
-    listing.set_defaults(run=commands.cmd_list)
-
-    show = sub.add_parser("show", help="Show research details")
-    show.add_argument("task_id")
-    show.set_defaults(run=commands.cmd_show)
-
-    approve = sub.add_parser("approve", help="Approve a research plan")
-    approve.add_argument("task_id")
-    approve.add_argument("--note", default="")
-    approve.add_argument("--corpus", default="")
-    approve.add_argument("--no-run", action="store_true")
-    approve.set_defaults(run=commands.cmd_approve)
-
-    resume = sub.add_parser("continue", help="Continue a paused research")
-    resume.add_argument("task_id")
-    resume.add_argument("--corpus", default="")
-    resume.set_defaults(run=commands.cmd_continue)
-
-    report = sub.add_parser("report", help="Read or export a report")
-    report.add_argument("task_id")
-    report.add_argument("-o", "--output", default="")
-    report.set_defaults(run=commands.cmd_report)
-
-    delete = sub.add_parser(
-        "delete", help="Delete a research and everything it produced"
-    )
-    delete.add_argument("task_id")
-    delete.add_argument(
-        "--yes", action="store_true", help="跳过确认 / skip the confirmation"
-    )
-    delete.set_defaults(run=commands.cmd_delete)
+    diagnose.set_defaults(run=doctor.run)
 
     return parser
 
 
-def _use_utf8_output() -> None:
-    """Make the process's output able to carry the characters it prints.
-
-    The interface is Chinese and uses box drawing and status glyphs, and a
-    Windows shell hands us a stdout encoded in the system code page -- cp936 on
-    a Chinese install.  Writing "✓" to it raises UnicodeEncodeError from inside
-    the renderer, which crashes the tool while merely drawing a status line.
-    Deciding the process's own encoding is the entry point's business, and
-    ``errors="replace"`` means an exotic stream degrades a glyph rather than
-    ending the run.
-    """
-
-    for stream in (sys.stdout, sys.stderr):
-        reconfigure = getattr(stream, "reconfigure", None)
-        if reconfigure is None:
-            continue
-        try:
-            reconfigure(encoding="utf-8", errors="replace")
-        except (OSError, ValueError):  # pragma: no cover - exotic streams
-            pass
-
-
 def main(argv: list[str] | None = None) -> int:
-    _use_utf8_output()
     parser = build_parser()
     args = parser.parse_args(argv)
     if not args.database:
@@ -144,34 +99,16 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command is None:
         if not theme.is_interactive():
-            # A pipe or a redirect gets help, never a prompt: blocking forever on
-            # stdin that no human will type into is the worst failure available.
-            settings = load_settings(settings_file())
-            from .i18n import Translator
-
-            print(Translator(settings.language)("generic.needs_tty"))
-            print()
-            print(USAGE)
+            # No terminal means no workspace to enter.  Help and a success exit,
+            # never a prompt that will not be answered -- machine callers get MCP.
+            parser.print_help()
             return 0
         from .workspace import run_workspace
 
         return run_workspace(args)
 
-    try:
-        return asyncio.run(args.run(args))
-    except KeyboardInterrupt:
-        # Command mode is scriptable, so an interrupt reports and exits rather
-        # than offering a menu; the artifacts are already durable either way.
-        print()
-        settings = load_settings(settings_file())
-        from .i18n import Translator
-
-        print(Translator(settings.language)("interrupt.on_exit"))
-        return 130
-    except ValueError as error:
-        print(f"\n{error}", file=sys.stderr)
-        return 2
+    return asyncio.run(args.run(args))
 
 
-if __name__ == "__main__":
-    raise SystemExit(main())
+if __name__ == "__main__":  # pragma: no cover - console script entry
+    sys.exit(main())

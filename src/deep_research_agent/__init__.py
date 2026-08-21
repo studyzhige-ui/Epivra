@@ -5,6 +5,9 @@ exposes the domain model and trust-plane primitives that the artifact-based
 runtime (docs/ARCHITECTURE.md) is being rebuilt on.
 """
 
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _version
+
 from .artifact_store import ArtifactStore, SqliteArtifactStore
 from .artifacts import (
     ArtifactDisposition,
@@ -27,9 +30,13 @@ from .sources import (
     validate_anchor,
 )
 
-__version__ = "0.1.0"
+try:
+    __version__ = _version("deep-research-agent")
+except PackageNotFoundError:  # a source tree that was never installed
+    __version__ = "0+unknown"
 
 __all__ = [
+    "__version__",
     "ArtifactDisposition",
     "ArtifactEnvelope",
     "ArtifactStore",

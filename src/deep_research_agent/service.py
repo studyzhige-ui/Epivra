@@ -2,7 +2,23 @@
 
 A CLI, an MCP server and a web UI must not each reimplement governance.  They
 differ only in how they collect a request and render progress, so this module
-owns the whole lifecycle and they stay thin adapters over it.
+owns the whole lifecycle and they stay thin adapters over it::
+
+                        ResearchService
+                              │
+                  ┌───────────┴───────────┐
+                  ▼                       ▼
+        Interactive workspace         MCP (future)
+
+Every capability a caller could need is a method here, not something only the
+workspace knows how to do: :meth:`~ResearchService.open_task`,
+:meth:`~ResearchService.approve`, :meth:`~ResearchService.advance`,
+:meth:`~ResearchService.task`, :meth:`~ResearchService.tasks`,
+:meth:`~ResearchService.report`, :meth:`~ResearchService.delete_research`,
+:meth:`~ResearchService.approval_card` and
+:meth:`~ResearchService.execution_summary`.  Pausing is deliberately not a method
+-- it is what happens when a caller stops awaiting ``advance``, and the state is
+derived from the store afterwards.
 
 **No interface holds state.**  Everything durable lives in the artifact store and
 the operation ledger, so "resume" is opening the same database again -- proven in

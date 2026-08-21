@@ -139,10 +139,12 @@ async def _add_model_credential(workspace: Workspace) -> bool:
         if result.ok:
             _write_credential(config_file(), spec.key_env_var, key)
             workspace.reload_environment()
-            theme.status_line(
-                workspace.console,
+            journal.record("vendor_validated", provider=spec.name, models=len(result.models))
+            # A receipt, not an inline line: the page the user lands on repaints,
+            # and an inline success would be wiped by it.
+            workspace.flash(
                 theme.GLYPH["done"],
-                workspace.t("setup.valid", provider=spec.label),
+                workspace.t("receipt.vendor_added", provider=spec.label),
             )
             return True
 
@@ -199,10 +201,10 @@ async def _add_search_credential(workspace: Workspace) -> bool:
                         search_providers=(*defaults.search_providers, chosen),
                     ),
                 )
-            theme.status_line(
-                workspace.console,
+            journal.record("search_validated", provider=chosen)
+            workspace.flash(
                 theme.GLYPH["done"],
-                workspace.t("setup.valid", provider=chosen),
+                workspace.t("receipt.search_added", provider=chosen),
             )
             return True
 

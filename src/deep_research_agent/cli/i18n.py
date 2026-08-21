@@ -97,10 +97,6 @@ _CATALOGUE: Final[Mapping[str, Mapping[str, str]]] = {
         "zh-CN": "界面语言 / Interface language",
         "en": "Interface language / 界面语言",
     },
-    "setup.welcome": {
-        "zh-CN": "欢迎使用 Deep Research",
-        "en": "Welcome to Deep Research",
-    },
     "setup.need_model": {
         "zh-CN": "开始之前需要配置一个模型。",
         "en": "Configure one model provider before you begin.",
@@ -130,7 +126,6 @@ _CATALOGUE: Final[Mapping[str, Mapping[str, str]]] = {
         "en": "Model id (exactly as the vendor documents it)",
     },
     "setup.validating": {"zh-CN": "正在验证密钥…", "en": "Validating the key…"},
-    "setup.valid": {"zh-CN": "{provider} 已配置", "en": "{provider} configured"},
     "setup.invalid": {
         "zh-CN": "{provider} 验证失败：{reason}",
         "en": "{provider} validation failed: {reason}",
@@ -140,7 +135,6 @@ _CATALOGUE: Final[Mapping[str, Mapping[str, str]]] = {
         "en": "Web search improves quality but is not required.",
     },
     "setup.configure_search": {"zh-CN": "配置搜索", "en": "Configure search"},
-    "setup.done": {"zh-CN": "配置完成", "en": "Setup complete"},
     "setup.section_models": {"zh-CN": "模型", "en": "Models"},
     "setup.section_search": {"zh-CN": "搜索", "en": "Search"},
     "setup.unset": {"zh-CN": "未设置", "en": "not set"},
@@ -295,13 +289,11 @@ _CATALOGUE: Final[Mapping[str, Mapping[str, str]]] = {
         "en": "Research defaults saved",
     },
     "receipt.language_saved": {"zh-CN": "界面语言已保存", "en": "Interface language saved"},
-    "receipt.nothing_changed": {"zh-CN": "没有改动", "en": "Nothing changed"},
     # --- settings page ----------------------------------------------------
     "settings.title": {"zh-CN": "设置", "en": "Settings"},
     "settings.cli_language": {"zh-CN": "界面语言", "en": "Interface language"},
     "settings.providers": {"zh-CN": "模型与搜索", "en": "Models and search"},
     "settings.defaults": {"zh-CN": "研究默认值", "en": "Research defaults"},
-    "settings.saved": {"zh-CN": "已保存。", "en": "Saved."},
     # --- doctor -----------------------------------------------------------
     # --- generic ----------------------------------------------------------
     "generic.goodbye": {"zh-CN": "再见。", "en": "Goodbye."},
@@ -323,10 +315,6 @@ _CATALOGUE: Final[Mapping[str, Mapping[str, str]]] = {
     "generic.no_report": {
         "zh-CN": "这项研究还没有报告。",
         "en": "This research has no report yet.",
-    },
-    "generic.needs_tty": {
-        "zh-CN": "交互式界面需要终端。用 deep-research --help 查看子命令。",
-        "en": "The interactive workspace needs a terminal. See deep-research --help.",
     },
 }
 

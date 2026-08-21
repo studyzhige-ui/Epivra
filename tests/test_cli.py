@@ -24,9 +24,8 @@ from prompt_toolkit.application import create_app_session
 from prompt_toolkit.input import create_pipe_input
 from prompt_toolkit.output import DummyOutput
 
-import deep_research_agent.cli.commands as commands
 import deep_research_agent.cli.main as cli_main
-from deep_research_agent.cli import i18n, journal, paths, setup_flow, theme
+from deep_research_agent.cli import doctor, i18n, journal, paths, setup_flow, theme
 from deep_research_agent.cli import prompts as prompts_module
 from deep_research_agent.cli import settings as cli_settings
 from deep_research_agent.cli import workspace as workspace_module
@@ -69,13 +68,41 @@ class TranslationTest(unittest.TestCase):
     def test_an_unknown_language_falls_back_rather_than_crashing(self) -> None:
         self.assertEqual("zh-CN", i18n.Translator("kl-KL").language)
 
+    def test_no_message_is_left_in_the_catalogue_with_no_caller(self) -> None:
+        """A retired screen leaves its strings behind unless something checks.
 
-class DispatchTest(unittest.TestCase):
-    """Which surface an invocation reaches.
+        Retiring the command interface orphaned seven ids, two of which were
+        receipts that should have been wired instead -- both directions of the
+        same drift, and neither was visible.
+        """
 
-    ``deep-research`` is the product; ``deep-research <command>`` is the shell
-    interface.  Conflating them was the change this refactor exists to make, so
-    it is pinned in both directions.
+        package = Path(i18n.__file__).parent.parent
+        sources = "\n".join(
+            path.read_text(encoding="utf-8")
+            for path in package.rglob("*.py")
+            if path.name != "i18n.py"
+        )
+        # Some ids are assembled at runtime from a task state or an access mode.
+        dynamic = ("state.", "access.", "run.stage.")
+        orphaned = [
+            message_id
+            for message_id in i18n.message_ids()
+            if not message_id.startswith(dynamic)
+            and f'"{message_id}"' not in sources
+            and f"'{message_id}'" not in sources
+        ]
+        self.assertEqual([], orphaned)
+
+
+class SurfaceTest(unittest.TestCase):
+    """What the CLI publicly is, in both directions.
+
+    The research workflow used to be reachable as subcommands (``new``,
+    ``approve``, ``continue``, ``report`` …) as well as through the workspace.
+    Two human-facing interfaces over one service meant building, translating and
+    testing everything twice, and the command path always lagged.  It is retired:
+    people use the workspace, machines will use MCP, and both go through
+    ``ResearchService``.  These pin the surface so it cannot creep back.
     """
 
     def _args(self, argv: list[str]) -> argparse.Namespace:
@@ -91,50 +118,80 @@ class DispatchTest(unittest.TestCase):
             self.assertEqual(0, cli_main.main([]))
         workspace.assert_called_once()
 
-    def test_a_bare_invocation_without_a_terminal_prints_help(self) -> None:
+    def test_a_bare_invocation_without_a_terminal_prints_help_and_succeeds(
+        self,
+    ) -> None:
         """A pipe must never reach a prompt nobody can answer."""
 
+        buffer = io.StringIO()
         with (
             mock.patch.object(theme, "is_interactive", return_value=False),
             mock.patch(
                 "deep_research_agent.cli.workspace.run_workspace"
             ) as workspace,
+            contextlib.redirect_stdout(buffer),
         ):
             self.assertEqual(0, cli_main.main([]))
         workspace.assert_not_called()
+        self.assertIn("deep-research", buffer.getvalue())
 
-    def test_doctor_runs_doctor_and_not_the_workspace(self) -> None:
-        self.assertIs(self._args(["doctor"]).run, cli_main.commands.cmd_doctor)
+    def test_doctor_is_the_only_subcommand(self) -> None:
+        self.assertIs(self._args(["doctor"]).run, doctor.run)
+        self.assertEqual({"doctor"}, _registered_commands())
 
-    def test_list_runs_list_and_not_the_workspace(self) -> None:
-        self.assertIs(self._args(["list"]).run, cli_main.commands.cmd_list)
+    def test_the_retired_research_commands_are_gone(self) -> None:
+        """A retired command must be rejected, not silently accepted."""
 
-    def test_every_documented_command_still_dispatches(self) -> None:
-        """Backwards compatibility: the shell interface must not regress."""
+        for command in (
+            "new",
+            "init",
+            "list",
+            "show",
+            "approve",
+            "continue",
+            "report",
+            "delete",
+        ):
+            with self.subTest(command=command), self.assertRaises(SystemExit):
+                self._args([command, "t_test"])
 
-        expected = {
-            "new": "cmd_new",
-            "list": "cmd_list",
-            "show": "cmd_show",
-            "approve": "cmd_approve",
-            "continue": "cmd_continue",
-            "report": "cmd_report",
-            "init": "cmd_init",
-            "doctor": "cmd_doctor",
-            "delete": "cmd_delete",
-        }
-        for command, handler in expected.items():
-            with self.subTest(command=command):
-                argv = [command]
-                if command in ("show", "approve", "continue", "report", "delete"):
-                    argv.append("t_test")
-                args = self._args(argv)
-                self.assertEqual(handler, args.run.__name__)
+    def test_help_names_every_registered_command(self) -> None:
+        """The command list is hand-written; this is what stops it drifting."""
 
-    def test_help_lists_the_commands_and_explains_the_bare_form(self) -> None:
-        self.assertIn("Without a command", cli_main.USAGE)
-        for command in ("new", "list", "show", "approve", "continue", "report"):
-            self.assertIn(command, cli_main.USAGE)
+        rendered = cli_main.build_parser().format_help()
+        for command in _registered_commands():
+            self.assertIn(command, rendered)
+        self.assertIn("commands:", rendered)
+        self.assertIn("交互式研究工作区", rendered)
+
+    def test_help_no_longer_advertises_a_research_workflow(self) -> None:
+        rendered = cli_main.build_parser().format_help()
+        for retired in ("approve", "continue", "report", "new "):
+            self.assertNotIn(retired, rendered)
+
+    def test_version_comes_from_package_metadata(self) -> None:
+        """One source for the version; a second copy is a second thing to forget."""
+
+        import deep_research_agent
+
+        buffer = io.StringIO()
+        with (
+            contextlib.redirect_stdout(buffer),
+            self.assertRaises(SystemExit) as exit_code,
+        ):
+            cli_main.main(["--version"])
+        self.assertEqual(0, exit_code.exception.code)
+        self.assertIn(deep_research_agent.__version__, buffer.getvalue())
+        self.assertNotIn("0+unknown", buffer.getvalue())
+
+
+def _registered_commands() -> set[str]:
+    """Command names the parser actually accepts."""
+
+    for action in cli_main.build_parser()._actions:  # noqa: SLF001
+        if isinstance(action, argparse._SubParsersAction):  # noqa: SLF001
+            return set(action.choices)
+    return set()
 
 
 class SettingsTest(unittest.TestCase):
@@ -911,15 +968,15 @@ class DoctorLiveTest(unittest.IsolatedAsyncioTestCase):
         )
         return (
             mock.patch.object(
-                commands, "validate_llm_credentials", mock.AsyncMock(return_value=result)
+                doctor, "validate_llm_credentials", mock.AsyncMock(return_value=result)
             ),
             mock.patch.object(
-                commands,
+                doctor,
                 "validate_search_credentials",
                 mock.AsyncMock(return_value=result),
             ),
             mock.patch.object(
-                commands,
+                doctor,
                 "load_environment",
                 return_value={"DEEPSEEK_API_KEY": "k", "TAVILY_API_KEY": "t"},
             ),
@@ -930,7 +987,7 @@ class DoctorLiveTest(unittest.IsolatedAsyncioTestCase):
         buffer = io.StringIO()
         with llm as llm_mock, search as search_mock, environ:
             with contextlib.redirect_stdout(buffer):
-                self.assertEqual(0, await commands.cmd_doctor(self._args(live=False)))
+                self.assertEqual(0, await doctor.run(self._args(live=False)))
         llm_mock.assert_not_called()
         search_mock.assert_not_called()
         self.assertIn("--live", buffer.getvalue())
@@ -940,7 +997,7 @@ class DoctorLiveTest(unittest.IsolatedAsyncioTestCase):
         buffer = io.StringIO()
         with llm as llm_mock, search as search_mock, environ:
             with contextlib.redirect_stdout(buffer):
-                self.assertEqual(0, await commands.cmd_doctor(self._args(live=True)))
+                self.assertEqual(0, await doctor.run(self._args(live=True)))
         llm_mock.assert_awaited_once()
         search_mock.assert_awaited_once()
         printed = buffer.getvalue()
@@ -953,7 +1010,7 @@ class DoctorLiveTest(unittest.IsolatedAsyncioTestCase):
         llm, search, environ = self._patched(ok=False)
         buffer = io.StringIO()
         with llm, search, environ, contextlib.redirect_stdout(buffer):
-            self.assertEqual(1, await commands.cmd_doctor(self._args(live=True)))
+            self.assertEqual(1, await doctor.run(self._args(live=True)))
         self.assertIn("密钥无效", buffer.getvalue())
 
 

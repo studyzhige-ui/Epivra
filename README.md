@@ -54,24 +54,24 @@ pip install -e .
 deep-research
 ```
 
-裸命令 `deep-research` **进入交互式工作区**：第一次会先问界面语言，再引导配置模型与
-搜索厂商（每个密钥都会真实验证），然后就可以直接说出研究问题。方案生成后留在工作区
-批准、跑研究、读报告，全程不回 shell。第一次使用见
+**`deep-research` 就是产品。** 进入交互式工作区：第一次会先问界面语言，再引导配置模型与
+搜索厂商（每个密钥都会真实验证），然后直接说出研究问题。配置、新建、审批、跑研究、暂停、
+恢复、读报告、删除，全程都在工作区里，不回 shell。第一次使用见
 [docs/GETTING-STARTED.md](docs/GETTING-STARTED.md)。
 
-`deep-research --help` 列出命令。子命令是给脚本、CI 与自动化的另一个入口，与工作区
-共用同一套业务层：
+只有一个子命令，因为诊断和使用是两件事：
 
 ```bash
-deep-research doctor               # 环境诊断（--live 重新验证厂商）
-deep-research new                  # 提交新委托
-deep-research list
-deep-research show     <任务号>
-deep-research approve  <任务号>
-deep-research continue <任务号>
-deep-research report   <任务号> -o 报告.md
-deep-research delete   <任务号> --yes
+deep-research doctor          # 环境与厂商诊断
+deep-research doctor --live   # 真的调用每个已配置厂商一次
+deep-research --version
+deep-research --help
 ```
+
+**接口收敛。** 人用工作区，机器用 MCP（尚未实现），两者共用同一个
+`ResearchService`——研究流程不再有第二套 CLI 子命令。这不是能力下线：`open_task`、
+`approve`、`advance`、`task`、`tasks`、`report`、`delete_research`、`approval_card`
+仍然是稳定的 Python API。
 
 凭据从 `.env` 读取，可同时保存多家：模型厂商至少一个（`DEEPSEEK_API_KEY`、
 `ANTHROPIC_API_KEY`、`OPENAI_API_KEY`、`DASHSCOPE_API_KEY`、`ZHIPU_API_KEY`、
@@ -81,7 +81,7 @@ arXiv / Crossref / PubMed 无需密钥。
 
 运行状态全部由 artifact heads 与 operation ledger 推导，所以中断后**对同一个数据库
 重跑即可继续**——已完成的付费调用只回放不重发，已提交的产物不会重做。Ctrl-C 是安全
-暂停，不是取消。
+暂停，不是取消。每个任务在创建时冻结自己的执行配置，之后改全局设置只影响新任务。
 
 压测矩阵仍由独立的 harness 驱动，不走产品入口：
 
