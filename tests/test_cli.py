@@ -24,7 +24,7 @@ from prompt_toolkit.output import DummyOutput
 
 import deep_research_agent.cli.commands as commands
 import deep_research_agent.cli.main as cli_main
-from deep_research_agent.cli import i18n, paths, theme
+from deep_research_agent.cli import i18n, paths, setup_flow, theme
 from deep_research_agent.cli import prompts as prompts_module
 from deep_research_agent.cli import settings as cli_settings
 from deep_research_agent.cli import workspace as workspace_module
@@ -313,7 +313,7 @@ class HomeSurfaceTest(unittest.IsolatedAsyncioTestCase):
 
         workspace = Workspace(
             args=argparse.Namespace(database="", verbose=False),
-            console=theme.console(file=io.StringIO()),
+            console=theme.console(file=self.output),
             settings=CliSettings(cli_language="zh-CN", defaults=defaults),
             translate=i18n.Translator("zh-CN"),
             environ={"DEEPSEEK_API_KEY": "k"} if configured else {},
@@ -321,22 +321,55 @@ class HomeSurfaceTest(unittest.IsolatedAsyncioTestCase):
         workspace.service = FakeService()  # type: ignore[assignment]
         return workspace
 
+    def setUp(self) -> None:
+        self.output = io.StringIO()
+        self.blocked: dict[str, str] = {}
+
     async def _offered(self, tasks, *, configured=True) -> set[str]:  # noqa: ANN001
         workspace = self._workspace(tasks, configured=configured)
         captured: list[list[tuple[str, str]]] = []
 
-        async def fake_choose(_message, options, **_kwargs):  # noqa: ANN001, ANN202
+        async def fake_choose(_message, options, **kwargs):  # noqa: ANN001, ANN202
             captured.append(list(options))
+            self.blocked.update(kwargs.get("disabled") or {})
             return "exit"
 
-        with mock.patch.object(prompts_module, "choose", fake_choose):
+        with (
+            mock.patch.object(prompts_module, "choose", fake_choose),
+            # An empty answer at the research prompt falls through to the menu,
+            # which is what this helper is here to inspect.
+            mock.patch.object(prompts_module, "ask_text", mock.AsyncMock(return_value="")),
+        ):
             await workspace.home()
         return {key for options in captured for key, _label in options}
 
-    async def test_an_unconfigured_install_offers_setup_and_nothing_else(self) -> None:
+    async def test_an_unconfigured_install_shows_the_same_page_with_research_blocked(
+        self,
+    ) -> None:
+        """One page in every state; what is missing greys out what it blocks.
+
+        A separate, smaller screen for an unconfigured install meant a new user's
+        first sight of the product was a two-item menu.  The action stays visible
+        with the reason attached, so they learn it exists and what unlocks it.
+        """
+
         offered = await self._offered([], configured=False)
+        self.assertIn("new", offered)
         self.assertIn("setup", offered)
-        self.assertNotIn("new", offered)
+        self.assertIn("new", self.blocked)
+        self.assertTrue(self.blocked["new"])
+        # And no research question is asked when none could be answered.
+        self.assertNotIn("今天想研究点什么", self.output.getvalue())
+
+    async def test_a_configured_install_shows_what_it_will_use(self) -> None:
+        """The two model choices and the search sources, before anything is asked."""
+
+        await self._offered([])
+        printed = self.output.getvalue()
+        self.assertIn("deepseek/deepseek-v4-flash", printed)
+        self.assertIn("deepseek/deepseek-v4-pro", printed)
+        self.assertIn("duckduckgo", printed)
+        self.assertEqual({}, self.blocked)
 
     async def test_a_waiting_plan_is_surfaced_for_approval(self) -> None:
         offered = await self._offered([_task("awaiting_approval")])
@@ -376,6 +409,8 @@ class HomeSurfaceTest(unittest.IsolatedAsyncioTestCase):
             action = await workspace.home()
         self.assertEqual("new", action)
         self.assertEqual("调研 AI Agent 行业", workspace._pending_request)
+        self.assertIn("今天想研究点什么", self.output.getvalue())
+        self.assertIn("给我一个主题", self.output.getvalue())
 
 
 class PromptContractTest(unittest.IsolatedAsyncioTestCase):
@@ -433,7 +468,150 @@ class PromptContractTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([], offenders)
 
 
-class FirstRunTest(unittest.TestCase):
+class SetupFlowTest(unittest.IsolatedAsyncioTestCase):
+    """Configuring a vendor: what is offered, in what order, and what is saved."""
+
+    def _workspace(self, environ: dict[str, str]) -> Workspace:
+        return Workspace(
+            args=argparse.Namespace(database="", verbose=False),
+            console=theme.console(file=io.StringIO()),
+            settings=CliSettings(cli_language="zh-CN"),
+            translate=i18n.Translator("zh-CN"),
+            environ=environ,
+        )
+
+    def test_a_vendor_with_a_saved_key_is_listed_first(self) -> None:
+        """A returning user is looking for the one they already configured.
+
+        Alphabetical order buried DeepSeek below Anthropic on an install where
+        only DeepSeek had a key, which makes the list actively unhelpful.
+        """
+
+        workspace = self._workspace({"DEEPSEEK_API_KEY": "k"})
+        options = setup_flow._model_provider_options(workspace)
+        self.assertEqual("deepseek", options[0][0])
+        self.assertIn("已保存密钥", options[0][1])
+        self.assertNotIn("已保存密钥", options[1][1])
+
+    def test_the_mark_claims_a_saved_key_not_a_working_one(self) -> None:
+        """A saved key is not a proven key; only asking the vendor settles that."""
+
+        workspace = self._workspace({"DEEPSEEK_API_KEY": "not-a-real-key"})
+        label = dict(setup_flow._model_provider_options(workspace))["deepseek"]
+        self.assertIn("已保存密钥", label)
+        self.assertNotIn("验证", label)
+
+    async def test_an_empty_key_is_refused_rather_than_silently_backing_out(
+        self,
+    ) -> None:
+        """Enter on an empty prompt used to drop a screen with no explanation."""
+
+        workspace = self._workspace({})
+        # ask_secret's contract is "stripped, or None", so an all-blank paste
+        # arrives here as the empty string.
+        answers = iter(["", "", "sk-real"])
+        with (
+            mock.patch.object(
+                prompts_module,
+                "ask_secret",
+                mock.AsyncMock(side_effect=lambda *_a, **_k: next(answers)),
+            ),
+            mock.patch.object(
+                prompts_module, "choose", mock.AsyncMock(return_value="retry")
+            ),
+        ):
+            key = await setup_flow._ask_key(workspace, "DeepSeek")
+        self.assertEqual("sk-real", key)
+        self.assertIn("密钥不能为空", workspace.console.file.getvalue())
+
+    async def test_choosing_back_after_an_empty_key_gives_up(self) -> None:
+        workspace = self._workspace({})
+        with (
+            mock.patch.object(
+                prompts_module, "ask_secret", mock.AsyncMock(return_value="")
+            ),
+            mock.patch.object(
+                prompts_module, "choose", mock.AsyncMock(return_value="back")
+            ),
+        ):
+            self.assertIsNone(await setup_flow._ask_key(workspace, "DeepSeek"))
+
+
+class ModelCatalogueTest(unittest.TestCase):
+    """The model list must come from the vendor, or be admitted as missing."""
+
+    def _spec(self):  # noqa: ANN202
+        return validation.LlmProviderSpec(
+            name="deepseek",
+            label="DeepSeek",
+            api_base="https://api.deepseek.com",
+            key_env_var="DEEPSEEK_API_KEY",
+            reasoning_model="deepseek-v4-pro",
+            fast_model="deepseek-v4-flash",
+        )
+
+    def test_an_unreachable_vendor_yields_no_models_rather_than_an_invented_one(
+        self,
+    ) -> None:
+        """The defect this fixes made a 401 look like a one-model catalogue.
+
+        A dead key failed the listing call, the catalogue came back empty, and the
+        interface substituted the registry's suggestion -- so the user was shown
+        exactly one model and told it was what their subscription offered.
+        """
+
+        self.assertEqual(
+            (), validation.suggest_models(self._spec(), (), fast=True)
+        )
+
+    def test_the_registry_suggestion_leads_only_when_the_vendor_lists_it(self) -> None:
+        catalogue = ("deepseek-v4-pro", "deepseek-v4-flash")
+        self.assertEqual(
+            "deepseek-v4-flash",
+            validation.suggest_models(self._spec(), catalogue, fast=True)[0],
+        )
+        self.assertEqual(
+            "deepseek-v4-pro",
+            validation.suggest_models(self._spec(), catalogue, fast=False)[0],
+        )
+
+    def test_nothing_offered_by_the_vendor_is_dropped_from_the_list(self) -> None:
+        """Ordering is a recommendation; it must never narrow the choice."""
+
+        catalogue = ("some-other-model", "deepseek-v4-pro")
+        self.assertEqual(
+            set(catalogue),
+            set(validation.suggest_models(self._spec(), catalogue, fast=False)),
+        )
+
+    def test_non_text_models_are_filtered_out_of_a_listing(self) -> None:
+        """A /models listing mixes in embeddings, speech and image models."""
+
+        payload = {
+            "data": [
+                {"id": "deepseek-v4-pro"},
+                {"id": "text-embedding-3-large"},
+                {"id": "whisper-1"},
+                {"id": "dall-e-3"},
+                {"id": "tts-1-hd"},
+                {"id": "omni-moderation-latest"},
+                {"id": "models/gemini-3-pro"},
+            ]
+        }
+        self.assertEqual(
+            ("deepseek-v4-pro", "gemini-3-pro"),
+            validation._extract_models(payload),
+        )
+
+    def test_a_reasoner_is_not_mistaken_for_a_realtime_model(self) -> None:
+        """Prefix matching runs on word tokens, not raw substrings."""
+
+        self.assertTrue(validation.is_text_model("deepseek-reasoner"))
+        self.assertTrue(validation.is_text_model("glm-5-air"))
+        self.assertFalse(validation.is_text_model("gpt-4o-realtime-preview"))
+
+
+
     """The product's front door, driven end to end with a piped keyboard.
 
     Every other test here mocks the prompts away, which is why the first real
@@ -463,9 +641,8 @@ class FirstRunTest(unittest.TestCase):
             settings = cli_settings.load(home / "settings.json")
             self.assertEqual("zh-CN", settings.cli_language)
             self.assertTrue(settings.language_chosen)
-            # An install with no model credential must be offered setup, not a
-            # research prompt it cannot honour.
-            self.assertIn("还差一步", buffer.getvalue())
+            # An install with no model credential says so, and offers the fix.
+            self.assertIn("还没有配置模型", buffer.getvalue())
 
 
 class DoctorLiveTest(unittest.IsolatedAsyncioTestCase):

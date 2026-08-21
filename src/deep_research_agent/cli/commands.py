@@ -506,7 +506,14 @@ async def cmd_delete(args: argparse.Namespace) -> int:
 
 
 async def cmd_init(args: argparse.Namespace) -> int:
-    """交互式写出配置文件，不需要用户手改 .env。"""
+    """交互式写出配置文件，不需要用户手改 .env。
+
+    Every key is proven against the vendor before it is written.  This command
+    used to save whatever was typed, which is how a placeholder ended up in a
+    real ``.env`` and then read as "DeepSeek is configured" everywhere -- the
+    workspace validated and this did not, so the weaker of two paths decided what
+    landed on disk.
+    """
 
     print(BANNER)
     target = Path(args.config) if args.config else config_path()
@@ -528,9 +535,18 @@ async def cmd_init(args: argparse.Namespace) -> int:
     spec = next(item for item in LLM_PROVIDERS if item.name == vendor)
     while True:
         key = _secret(f"粘贴 {vendor} 的 API 密钥")
-        if key:
+        if not key:
+            print("  密钥不能为空——没有它无法开始研究。")
+            continue
+        print("  正在向厂商验证这个密钥…")
+        result = await validate_llm_credentials(spec, key)
+        if result.ok:
+            print(f"  ✓ 可用，{len(result.models)} 个模型可选")
             break
-        print("  密钥不能为空——没有它无法开始研究。")
+        print(f"  ✗ {result.reason}")
+        if _ask("再试一次吗？(y/n)", "y").casefold() not in ("y", "yes", "是"):
+            print("  没有写入任何配置。")
+            return 2
 
     lines = [
         "# Deep Research Agent 配置。这个文件包含密钥，不要提交到 git。",
@@ -551,11 +567,17 @@ async def cmd_init(args: argparse.Namespace) -> int:
     if search:
         env_var = dict(credentials)[search]
         value = _secret(f"粘贴 {search} 的 API 密钥")
-        if value:
-            lines.append(f"{env_var}={value}")
-            lines.append(f"DEEP_RESEARCH_SEARCH_PROVIDERS={search}")
-        else:
+        if not value:
             print("  没有输入，跳过。")
+        else:
+            print("  正在验证（消耗 1 次查询额度）…")
+            probe = await validate_search_credentials(search, value)
+            if probe.ok:
+                lines.append(f"{env_var}={value}")
+                lines.append(f"DEEP_RESEARCH_SEARCH_PROVIDERS={search}")
+                print("  ✓ 可用")
+            else:
+                print(f"  ✗ {probe.reason}——没有保存这个搜索密钥。")
 
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -566,7 +588,7 @@ async def cmd_init(args: argparse.Namespace) -> int:
         pass
 
     print(f"\n  ✓ 已写入 {target}")
-    print("  下一步：deep-research doctor  确认环境，然后 deep-research new 开始。")
+    print("  下一步：deep-research  进入工作区，选择模型。")
     return 0
 
 

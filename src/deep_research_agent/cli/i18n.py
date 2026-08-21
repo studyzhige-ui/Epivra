@@ -35,16 +35,22 @@ _CATALOGUE: Final[Mapping[str, Mapping[str, str]]] = {
     },
     # --- readiness --------------------------------------------------------
     "ready.prefix": {"zh-CN": "已就绪", "en": "Ready"},
-    "ready.academic_count": {
-        "zh-CN": "{count} 个学术索引",
-        "en": "{count} academic indexes",
+    "ready.unconfigured": {
+        "zh-CN": "还没有配置模型，配置之后才能开始研究",
+        "en": "No model configured yet; research cannot start until one is",
     },
-    "ready.not_configured": {
-        "zh-CN": "还差一步即可开始研究。",
-        "en": "One step left before you can start researching.",
-    },
+    "ready.investigator": {"zh-CN": "调查模型", "en": "Investigator model"},
+    "ready.other_roles": {"zh-CN": "其他角色", "en": "Other roles"},
     # --- home -------------------------------------------------------------
-    "home.prompt": {"zh-CN": "你想研究什么？", "en": "What do you want to research?"},
+    "home.prompt": {
+        "zh-CN": "今天想研究点什么？",
+        "en": "What would you like to research today?",
+    },
+    "home.prompt_hint": {
+        "zh-CN": "给我一个主题，我们开始。",
+        "en": "Give me a topic and we'll begin.",
+    },
+    "home.configure_first": {"zh-CN": "先配置模型", "en": "configure a model first"},
     "home.awaiting_one": {
         "zh-CN": "1 项研究正在等待你的决定",
         "en": "1 research plan is waiting for your decision",
@@ -52,10 +58,6 @@ _CATALOGUE: Final[Mapping[str, Mapping[str, str]]] = {
     "home.awaiting_many": {
         "zh-CN": "{count} 项研究正在等待你的决定",
         "en": "{count} research plans are waiting for your decision",
-    },
-    "home.in_progress": {
-        "zh-CN": "你有 {count} 项进行中的研究",
-        "en": "You have {count} research tasks in progress",
     },
     "home.recent_done": {"zh-CN": "最近完成", "en": "Recently completed"},
     # --- actions ----------------------------------------------------------
@@ -68,28 +70,21 @@ _CATALOGUE: Final[Mapping[str, Mapping[str, str]]] = {
     "action.back": {"zh-CN": "返回", "en": "Back"},
     "action.back_workspace": {"zh-CN": "返回 Workspace", "en": "Back to workspace"},
     "action.resume": {"zh-CN": "继续研究", "en": "Resume research"},
-    "action.view_current": {"zh-CN": "查看当前结果", "en": "View current results"},
     "action.read_report": {"zh-CN": "阅读报告", "en": "Read the report"},
     "action.export_report": {"zh-CN": "导出 Markdown", "en": "Export Markdown"},
-    "action.view_sources": {"zh-CN": "查看来源", "en": "View sources"},
     "action.view_plan": {"zh-CN": "查看研究方案", "en": "View the research plan"},
     "action.approve_start": {"zh-CN": "批准并开始研究", "en": "Approve and start"},
     "action.revise_brief": {"zh-CN": "修改研究委托", "en": "Revise the brief"},
     "action.save_for_later": {"zh-CN": "保存以后处理", "en": "Save for later"},
-    "action.pause": {"zh-CN": "暂停研究", "en": "Pause research"},
     "action.delete_running": {
         "zh-CN": "取消并删除研究",
         "en": "Cancel and delete this research",
     },
     "action.delete_done": {"zh-CN": "删除研究", "en": "Delete this research"},
-    "action.details": {"zh-CN": "查看研究详情", "en": "Research details"},
     "action.use_these": {"zh-CN": "使用这些设置", "en": "Use these settings"},
     "action.change": {"zh-CN": "修改设置", "en": "Change settings"},
-    "action.retry": {"zh-CN": "重试", "en": "Retry"},
     "action.reenter": {"zh-CN": "重新输入", "en": "Re-enter"},
     "action.skip_for_now": {"zh-CN": "暂时跳过", "en": "Skip for now"},
-    "action.pause_reason": {"zh-CN": "查看暂停原因", "en": "Why it paused"},
-    "action.view_progress": {"zh-CN": "查看进度", "en": "View progress"},
     # --- setup ------------------------------------------------------------
     "setup.choose_cli_language": {
         "zh-CN": "界面语言 / Interface language",
@@ -109,8 +104,26 @@ _CATALOGUE: Final[Mapping[str, Mapping[str, str]]] = {
         "en": "Paste the {provider} API key",
     },
     "setup.key_hidden": {
-        "zh-CN": "输入不会显示，也不会进入 shell 历史。",
-        "en": "Input is hidden and never enters shell history.",
+        "zh-CN": "输入完全不显示，也不会进入 shell 历史。粘贴后按 Enter。",
+        "en": "Nothing is echoed and it never enters shell history. Paste, then Enter.",
+    },
+    "setup.key_empty": {
+        "zh-CN": "没有读到任何内容——密钥不能为空。",
+        "en": "Nothing was entered; the key cannot be empty.",
+    },
+    "setup.has_key": {"zh-CN": "已保存密钥", "en": "key saved"},
+    "setup.no_catalogue": {
+        "zh-CN": "无法从 {provider} 取得模型列表：{reason}",
+        "en": "Could not read the model list from {provider}: {reason}",
+    },
+    "setup.models_from_vendor": {
+        "zh-CN": "以下模型由 {provider} 的接口实时返回，不是本程序写死的。",
+        "en": "This list comes live from the {provider} API; nothing is hardcoded.",
+    },
+    "setup.type_model": {"zh-CN": "手动输入模型 id", "en": "Type a model id"},
+    "setup.model_id_prompt": {
+        "zh-CN": "模型 id（照抄厂商文档里的名字）",
+        "en": "Model id (exactly as the vendor documents it)",
     },
     "setup.validating": {"zh-CN": "正在验证密钥…", "en": "Validating the key…"},
     "setup.valid": {"zh-CN": "{provider} 已配置", "en": "{provider} configured"},
@@ -158,7 +171,6 @@ _CATALOGUE: Final[Mapping[str, Mapping[str, str]]] = {
     "cfg.web_search": {"zh-CN": "网页搜索", "en": "Web search"},
     "cfg.academic": {"zh-CN": "学术索引", "en": "Academic indexes"},
     "cfg.corpus": {"zh-CN": "本地资料目录", "en": "Local corpus directory"},
-    "cfg.role_assignment": {"zh-CN": "查看角色分配", "en": "Show role assignment"},
     # --- source access ----------------------------------------------------
     "access.public_web": {"zh-CN": "公开网络", "en": "Public web"},
     "access.user_files": {
@@ -180,10 +192,6 @@ _CATALOGUE: Final[Mapping[str, Mapping[str, str]]] = {
         "zh-CN": "批准后将开始模型和搜索调用。",
         "en": "Approving starts model and search calls.",
     },
-    "new.empty_request": {
-        "zh-CN": "没有收到研究问题。",
-        "en": "No research question was given.",
-    },
     "new.too_vague": {
         "zh-CN": "这个委托太模糊，无法定出一个方案。",
         "en": "This brief is too broad to plan from.",
@@ -197,14 +205,12 @@ _CATALOGUE: Final[Mapping[str, Mapping[str, str]]] = {
         "en": "How should the research change?",
     },
     # --- plan -------------------------------------------------------------
-    "plan.title": {"zh-CN": "研究方案", "en": "Research plan"},
     "plan.read_these": {
         "zh-CN": "重点看：核心问题 Q1、默认假设、不支持的用途。",
         "en": "Look closely at: the core question Q1, the default assumptions, and the excluded uses.",
     },
     "plan.approved": {"zh-CN": "研究方案已批准", "en": "Research plan approved"},
     # --- run --------------------------------------------------------------
-    "run.researching": {"zh-CN": "研究中", "en": "Researching"},
     "run.stage.baseline": {"zh-CN": "建立研究基线", "en": "Establish the baseline"},
     "run.stage.breadth": {"zh-CN": "广度检索", "en": "Breadth search"},
     "run.stage.focus": {"zh-CN": "针对性调查", "en": "Focused investigation"},
@@ -215,8 +221,6 @@ _CATALOGUE: Final[Mapping[str, Mapping[str, str]]] = {
     "run.collected": {"zh-CN": "已收集", "en": "Collected"},
     "run.materials": {"zh-CN": "{count} 份素材", "en": "{count} materials"},
     "run.sources": {"zh-CN": "{count} 个来源", "en": "{count} sources"},
-    "run.recent_findings": {"zh-CN": "最近发现", "en": "Latest"},
-    "run.verbose_hint": {"zh-CN": "查看详细日志", "en": "Show detailed log"},
     # --- interrupt --------------------------------------------------------
     "interrupt.paused": {"zh-CN": "研究已安全暂停。", "en": "Research paused safely."},
     "interrupt.explain": {
@@ -230,10 +234,7 @@ _CATALOGUE: Final[Mapping[str, Mapping[str, str]]] = {
     # --- completion -------------------------------------------------------
     "done.title": {"zh-CN": "研究完成", "en": "Research complete"},
     "done.report_chars": {"zh-CN": "报告", "en": "Report"},
-    "done.references": {"zh-CN": "参考来源", "en": "References"},
     "done.cited": {"zh-CN": "引用素材", "en": "Cited materials"},
-    "done.review": {"zh-CN": "独立审查", "en": "Review"},
-    "done.review_passed": {"zh-CN": "通过", "en": "passed"},
     "done.chars": {"zh-CN": "{count:,} 字符", "en": "{count:,} characters"},
     # --- task states ------------------------------------------------------
     "state.clarification_requested": {"zh-CN": "待澄清", "en": "Needs clarification"},
@@ -247,7 +248,6 @@ _CATALOGUE: Final[Mapping[str, Mapping[str, str]]] = {
     "list.empty": {"zh-CN": "还没有任何研究。", "en": "No research yet."},
     "detail.status": {"zh-CN": "状态", "en": "Status"},
     "detail.task_id": {"zh-CN": "任务标识", "en": "Task ID"},
-    "detail.batches": {"zh-CN": "研究批次", "en": "Rounds"},
     # --- destructive ------------------------------------------------------
     "delete.confirm_title": {
         "zh-CN": "永久取消这项研究？",
@@ -267,28 +267,9 @@ _CATALOGUE: Final[Mapping[str, Mapping[str, str]]] = {
     "settings.defaults": {"zh-CN": "研究默认值", "en": "Research defaults"},
     "settings.saved": {"zh-CN": "已保存。", "en": "Saved."},
     # --- doctor -----------------------------------------------------------
-    "doctor.title": {"zh-CN": "Deep Research · 环境诊断", "en": "Deep Research · Doctor"},
-    "doctor.config": {"zh-CN": "配置文件", "en": "Config"},
-    "doctor.model": {"zh-CN": "模型", "en": "Model"},
-    "doctor.search": {"zh-CN": "网页搜索", "en": "Search"},
-    "doctor.database": {"zh-CN": "任务库", "en": "Database"},
-    "doctor.academic": {"zh-CN": "学术索引", "en": "Academic"},
-    "doctor.ok": {"zh-CN": "结论：可以开始研究。", "en": "Verdict: ready to research."},
-    "doctor.blocked": {
-        "zh-CN": "结论：还不能开始。执行 deep-research init 配置密钥。",
-        "en": "Verdict: not ready. Run deep-research init to configure a key.",
-    },
-    "doctor.none_configured": {"zh-CN": "未配置", "en": "not configured"},
-    "doctor.ready_db": {"zh-CN": "就绪", "en": "Ready"},
-    "doctor.db_missing": {
-        "zh-CN": "尚未创建（首次提交时自动创建）",
-        "en": "not created yet (created on first submission)",
-    },
     # --- generic ----------------------------------------------------------
     "generic.goodbye": {"zh-CN": "再见。", "en": "Goodbye."},
-    "generic.cancelled": {"zh-CN": "已取消。", "en": "Cancelled."},
     "generic.yes": {"zh-CN": "是", "en": "Yes"},
-    "generic.no": {"zh-CN": "否", "en": "No"},
     "generic.other": {"zh-CN": "其他（手动输入）", "en": "Other (type it)"},
     "generic.path_not_dir": {
         "zh-CN": "这个路径不是一个存在的目录。",

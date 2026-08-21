@@ -303,6 +303,35 @@ class TransparentSearchBrokerTest(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(secret, repr(response))
         self.assertNotIn("token=", repr(response))
 
+    async def test_an_exhausted_quota_is_named_and_not_retried(self) -> None:
+        """An out-of-credit key is a resource fact, not a transient error.
+
+        Tavily answers 432 when a plan's usage is spent.  Unmapped, that arrived
+        as a bare RuntimeError classified "provider_error", so a run that had
+        quietly stopped searching looked the same as one hitting a bad URL --
+        and retrying it spends wall-clock to be refused again.
+        """
+
+        from deep_research_agent.providers._http import (
+            ProviderQuotaError,
+            raise_provider_status,
+        )
+
+        for status in (402, 432, 433):
+            with self.subTest(status=status):
+                with self.assertRaises(ProviderQuotaError):
+                    raise_provider_status("tavily", status)
+
+        exhausted = FakeProvider(
+            "tavily", failures=(ProviderQuotaError("tavily HTTP 432（额度或余额不足）"),)
+        )
+        response = await TransparentSearchBroker(
+            [exhausted], transient_retries=3
+        ).search(SearchRequest(query="evidence", intent="discover"))
+
+        self.assertEqual(1, len(response.attempts), "must not retry a spent quota")
+        self.assertEqual("quota_exhausted", response.attempts[0].error_type)
+
     async def test_only_and_exclude_route_to_exact_provider_sets(self) -> None:
         only_log: list[str] = []
         only_providers = [

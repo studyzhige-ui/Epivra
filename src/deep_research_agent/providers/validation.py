@@ -18,6 +18,7 @@ new model the tool silently cannot use it.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 
@@ -31,6 +32,29 @@ VALIDATION_TIMEOUT_SECONDS = 20.0
 
 #: Anthropic requires this header on every request, listing included.
 ANTHROPIC_VERSION = "2023-06-01"
+
+#: Token prefixes that mark a listed model as something other than a text model.
+#: A ``/models`` listing mixes embeddings, image, speech and moderation models in
+#: with the chat models, and offering those in a "which model should write the
+#: report" list is noise the user has to filter by hand.
+_NON_TEXT_MARKERS: tuple[str, ...] = (
+    "audio",
+    "dall",
+    "embed",
+    "image",
+    "moderation",
+    "realtime",
+    "rerank",
+    "search",
+    "sora",
+    "speech",
+    "transcri",
+    "tts",
+    "video",
+    "whisper",
+)
+
+_TOKENS = re.compile(r"[a-z0-9]+")
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,8 +87,27 @@ def _reason_for_status(status: int) -> str:
     return f"请求被拒绝（HTTP {status}）"
 
 
+def is_text_model(model_id: str) -> bool:
+    """Whether a listed model id plausibly generates text.
+
+    Prefix matching on word tokens rather than substring matching: ``search``
+    must not disqualify ``re-search-er`` by accident, and a token boundary is the
+    only place a vendor's suffix convention is reliable.
+    """
+
+    tokens = _TOKENS.findall(model_id.casefold())
+    return not any(
+        token.startswith(marker) for token in tokens for marker in _NON_TEXT_MARKERS
+    )
+
+
 def _extract_models(payload: object) -> tuple[str, ...]:
-    """Pull model ids out of either vendor's listing shape."""
+    """Pull text-model ids out of either vendor's listing shape.
+
+    Filtered here rather than at the point of display so that every caller --
+    the setup flow, ``doctor --live``, a future web UI -- agrees on what "the
+    models this key can reach" means.
+    """
 
     if not isinstance(payload, dict):
         return ()
@@ -73,12 +116,17 @@ def _extract_models(payload: object) -> tuple[str, ...]:
         return ()
     found: list[str] = []
     for row in rows:
+        identifier: object = None
         if isinstance(row, dict):
             identifier = row.get("id") or row.get("name")
-            if isinstance(identifier, str) and identifier.strip():
-                found.append(identifier.strip())
-        elif isinstance(row, str) and row.strip():
-            found.append(row.strip())
+        elif isinstance(row, str):
+            identifier = row
+        if not isinstance(identifier, str):
+            continue
+        # Gemini-style listings prefix ids with "models/"; nothing else does.
+        model = identifier.strip().removeprefix("models/")
+        if model and is_text_model(model):
+            found.append(model)
     return tuple(dict.fromkeys(found))
 
 
@@ -105,9 +153,9 @@ async def validate_llm_credentials(
     """Authenticate against the vendor's model listing.  Never runs inference.
 
     A vendor that authenticates but exposes no listing is still reported ``ok``
-    with an empty catalogue: the credential is proven, and the interface can fall
-    back to the registry's default model pair rather than blocking the user over
-    a missing convenience.
+    with an empty catalogue: the credential is proven, and an empty catalogue is
+    the honest answer -- the interface then asks the user for a model id rather
+    than inventing one on the vendor's behalf.
     """
 
     if not api_key.strip():
@@ -140,20 +188,22 @@ async def validate_llm_credentials(
 def suggest_models(
     spec: LlmProviderSpec, catalogue: Sequence[str], *, fast: bool
 ) -> tuple[str, ...]:
-    """Order a catalogue so the likely-right model is first, without filtering.
+    """Order the vendor's catalogue so the likely-right model is first.
 
-    The registry's own default for the tier is surfaced first when the vendor
-    still lists it.  Everything else stays selectable -- the tier split is a
-    recommendation about cost and speed, not a restriction, and a user who wants
+    The registry's own suggestion for the tier is surfaced first **only when the
+    vendor still lists it**.  Everything else stays selectable: the tier split is
+    a recommendation about cost and speed, not a restriction, and a user who wants
     a strong model doing investigation is allowed to have one.
+
+    An empty catalogue returns empty.  Falling back to the registry's suggestion
+    was worse than useless -- a dead key made the listing call fail, and the user
+    was then offered one model id as though the vendor had named it.  If the
+    vendor did not answer, the interface has to say so.
     """
 
     preferred = spec.fast_model if fast else spec.reasoning_model
     ordered = [name for name in catalogue if name == preferred]
     ordered += [name for name in catalogue if name != preferred]
-    if not ordered:
-        # No catalogue: offer the registry pair so setup can still complete.
-        ordered = [preferred]
     return tuple(ordered)
 
 
@@ -178,6 +228,7 @@ async def validate_search_credentials(
     from . import build_search_providers
     from ._http import (
         ProviderAuthError,
+        ProviderQuotaError,
         ProviderRateLimitError,
         ProviderUnavailableError,
     )
@@ -203,6 +254,12 @@ async def validate_search_credentials(
         )
     except ProviderAuthError:
         return ValidationResult(provider_id, False, "密钥被拒绝——检查是否复制完整")
+    except ProviderQuotaError:
+        return ValidationResult(
+            provider_id,
+            False,
+            "密钥有效，但账户额度已用尽——需要充值或换一个密钥",
+        )
     except ProviderRateLimitError:
         return ValidationResult(provider_id, False, "被限流，稍后重试")
     except ProviderUnavailableError as error:
@@ -231,6 +288,7 @@ __all__ = [
     "ANTHROPIC_VERSION",
     "VALIDATION_TIMEOUT_SECONDS",
     "ValidationResult",
+    "is_text_model",
     "search_credential_variables",
     "suggest_models",
     "validate_llm_credentials",

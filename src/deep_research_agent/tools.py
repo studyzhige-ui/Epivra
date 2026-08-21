@@ -160,6 +160,10 @@ def _error_type(error: BaseException) -> str:
     message = str(error).lower()
     if isinstance(error, TimeoutError) or "timeout" in name or "timed out" in message:
         return "timeout"
+    # Before the rate-limit check: an exhausted quota is not throttling, and
+    # retrying it spends nothing but wall-clock.
+    if "quota" in name:
+        return "quota_exhausted"
     if "rate" in name or "rate limit" in message or "429" in message:
         return "rate_limited"
     if "auth" in name or "unauthorized" in message or "401" in message:

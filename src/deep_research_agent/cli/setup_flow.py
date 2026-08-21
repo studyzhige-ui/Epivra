@@ -63,17 +63,64 @@ def _write_credential(path: Path, env_var: str, value: str) -> None:
         pass
 
 
+def _model_provider_options(workspace: Workspace) -> list[tuple[str, str]]:
+    """Vendors that already have a saved key first, then the rest.
+
+    Ordering is the whole point: a returning user is looking for the vendor they
+    already configured, and burying it alphabetically among six they have never
+    used makes the list actively unhelpful.  The mark says "已保存密钥" rather than
+    "验证通过", because a saved key is not a working key -- that is only known
+    after the vendor is asked, which happens when one is chosen.
+    """
+
+    keyed: list[tuple[str, str]] = []
+    rest: list[tuple[str, str]] = []
+    for spec in sorted(LLM_PROVIDERS, key=lambda item: item.name):
+        if spec.api_key(workspace.environ):
+            mark = workspace.t("setup.has_key")
+            keyed.append((spec.name, f"{spec.label}（{mark}）"))
+        else:
+            rest.append((spec.name, spec.label))
+    return keyed + rest
+
+
+async def _ask_key(workspace: Workspace, label: str) -> str | None:
+    """Read one credential, refusing silence rather than backing out on it.
+
+    Pressing Enter on an empty prompt used to drop the user back a screen with no
+    explanation, which reads as the tool ignoring them.  An empty entry now says
+    what was wrong and offers the two moves that make sense.
+    """
+
+    while True:
+        theme.dim(workspace.console, workspace.t("setup.key_hidden"))
+        key = await prompts.ask_secret(
+            workspace.t("setup.enter_key", provider=label)
+        )
+        if key is None:
+            return None
+        if key:
+            return key
+        theme.status_line(
+            workspace.console, theme.GLYPH["warn"], workspace.t("setup.key_empty")
+        )
+        again = await prompts.choose(
+            "",
+            [
+                ("retry", workspace.t("action.reenter")),
+                ("back", workspace.t("action.back")),
+            ],
+        )
+        if again != "retry":
+            return None
+
+
 async def _add_model_credential(workspace: Workspace) -> bool:
     """Collect and prove one model vendor's key.  Returns whether one was saved."""
 
-    options = []
-    for spec in sorted(LLM_PROVIDERS, key=lambda item: item.name):
-        ready = bool(spec.api_key(workspace.environ))
-        mark = f" {theme.GLYPH['done']}" if ready else ""
-        options.append((spec.name, f"{spec.label}{mark}"))
     chosen = await prompts.choose(
         workspace.t("setup.choose_provider"),
-        options,
+        _model_provider_options(workspace),
         back_label=workspace.t("action.back"),
     )
     if chosen is None:
@@ -81,10 +128,7 @@ async def _add_model_credential(workspace: Workspace) -> bool:
     spec = LLM_PROVIDER_BY_NAME[chosen]
 
     while True:
-        theme.dim(workspace.console, workspace.t("setup.key_hidden"))
-        key = await prompts.ask_secret(
-            workspace.t("setup.enter_key", provider=spec.label)
-        )
+        key = await _ask_key(workspace, spec.label)
         if not key:
             return False
         with workspace.console.status(
@@ -119,21 +163,23 @@ async def _add_model_credential(workspace: Workspace) -> bool:
 
 async def _add_search_credential(workspace: Workspace) -> bool:
     variables = search_credential_variables()
-    options = []
+    keyed: list[tuple[str, str]] = []
+    rest: list[tuple[str, str]] = []
     for name, env_var in sorted(variables.items()):
-        ready = bool(workspace.environ.get(env_var, "").strip())
-        options.append((name, f"{name}{' ' + theme.GLYPH['done'] if ready else ''}"))
+        if workspace.environ.get(env_var, "").strip():
+            keyed.append((name, f"{name}（{workspace.t('setup.has_key')}）"))
+        else:
+            rest.append((name, name))
     chosen = await prompts.choose(
         workspace.t("setup.configure_search"),
-        options,
+        keyed + rest,
         back_label=workspace.t("action.skip_for_now"),
     )
     if chosen is None:
         return False
 
     while True:
-        theme.dim(workspace.console, workspace.t("setup.key_hidden"))
-        key = await prompts.ask_secret(workspace.t("setup.enter_key", provider=chosen))
+        key = await _ask_key(workspace, chosen)
         if not key:
             return False
         with workspace.console.status(
@@ -175,10 +221,73 @@ async def _add_search_credential(workspace: Workspace) -> bool:
             return False
 
 
+async def _choose_model(
+    workspace: Workspace, spec, *, fast: bool, title_id: str
+) -> str | None:  # noqa: ANN001
+    """Pick one model from the list this key can actually reach.
+
+    The catalogue comes from the vendor's ``/models`` endpoint every time.  When
+    that call fails -- a dead key, a rotated key, a network without egress -- the
+    failure is reported and the user is offered a manual model id.  It must never
+    fall back to a name this program made up: that is what made a 401 look like
+    "your vendor offers exactly one model", which is the opposite of informative.
+    """
+
+    while True:
+        with workspace.console.status(
+            f"  {workspace.t('setup.loading_models', provider=spec.label)}",
+            spinner="dots",
+        ):
+            result = await validate_llm_credentials(spec, spec.api_key(workspace.environ))
+        catalogue = suggest_models(spec, result.models, fast=fast)
+
+        if catalogue:
+            theme.dim(
+                workspace.console,
+                workspace.t("setup.models_from_vendor", provider=spec.label),
+            )
+            model = await prompts.choose(
+                workspace.t(title_id),
+                [(name, name) for name in catalogue],
+                back_label=workspace.t("action.back"),
+            )
+            if model is not None:
+                return model
+            return None
+
+        theme.status_line(
+            workspace.console,
+            theme.GLYPH["blocked"],
+            workspace.t(
+                "setup.no_catalogue",
+                provider=spec.label,
+                reason=result.reason or workspace.t("setup.key_empty"),
+            ),
+        )
+        action = await prompts.choose(
+            "",
+            [
+                ("key", workspace.t("action.reenter")),
+                ("manual", workspace.t("setup.type_model")),
+                ("back", workspace.t("action.back")),
+            ],
+        )
+        if action == "key":
+            if not await _add_model_credential(workspace):
+                return None
+        elif action == "manual":
+            typed = await prompts.ask_text(workspace.t("setup.model_id_prompt"))
+            if typed:
+                return typed
+            return None
+        else:
+            return None
+
+
 async def _assign_one(
     workspace: Workspace, *, fast: bool, title_id: str, hint_id: str
 ) -> ModelChoice | None:
-    """Pick a provider that has *already validated*, then a model it lists."""
+    """Pick a vendor that has a saved key, then a model that vendor lists."""
 
     ready = [spec for spec in LLM_PROVIDERS if spec.api_key(workspace.environ)]
     if not ready:
@@ -194,17 +303,7 @@ async def _assign_one(
     if provider is None:
         return None
     spec = LLM_PROVIDER_BY_NAME[provider]
-
-    with workspace.console.status(
-        f"  {workspace.t('setup.loading_models', provider=spec.label)}", spinner="dots"
-    ):
-        result = await validate_llm_credentials(spec, spec.api_key(workspace.environ))
-    catalogue = suggest_models(spec, result.models, fast=fast)
-    model = await prompts.choose(
-        workspace.t(title_id),
-        [(name, name) for name in catalogue[:40]],
-        back_label=workspace.t("action.back"),
-    )
+    model = await _choose_model(workspace, spec, fast=fast, title_id=title_id)
     if model is None:
         return None
     return ModelChoice(provider=provider, model=model)

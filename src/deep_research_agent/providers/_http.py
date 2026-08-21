@@ -22,6 +22,16 @@ class ProviderRateLimitError(RuntimeError):
     """The provider throttled this call; a bounded backoff may succeed."""
 
 
+class ProviderQuotaError(RuntimeError):
+    """The account cannot pay for this call; no amount of retrying helps.
+
+    Distinct from auth (the key is fine) and from throttling (waiting will not
+    restore credit).  Worth its own class because an exhausted key is a resource
+    fact the user has to act on, and reporting it as a generic error is how "we
+    silently stopped searching" hides in a run.
+    """
+
+
 class ProviderUnavailableError(RuntimeError):
     """The provider could not serve the request; other providers may still."""
 
@@ -40,6 +50,12 @@ def raise_provider_status(provider_id: str, status_code: int) -> None:
     message = f"{provider_id} request failed with HTTP {status_code}"
     if status_code in {401, 403}:
         raise ProviderAuthError(message)
+    # 402 is the HTTP-standard "payment required" that DeepSeek and others use for
+    # an empty balance; Tavily answers 432/433 for a plan or account usage limit.
+    # Left unmapped, an out-of-credit key surfaced as a bare RuntimeError, which
+    # reads like a crash instead of "top up".
+    if status_code in {402, 432, 433}:
+        raise ProviderQuotaError(f"{message}（额度或余额不足）")
     if status_code == 429:
         raise ProviderRateLimitError(message)
     if status_code >= 500:
@@ -127,6 +143,7 @@ async def request_provider_text(
 
 __all__ = [
     "ProviderAuthError",
+    "ProviderQuotaError",
     "ProviderRateLimitError",
     "ProviderUnavailableError",
     "SourceReadError",

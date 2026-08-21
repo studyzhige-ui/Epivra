@@ -126,24 +126,51 @@ class Workspace:
             spec.name for spec in LLM_PROVIDERS if spec.api_key(self.environ)
         )
 
+    def is_configured(self) -> bool:
+        """Whether a study could actually run: a model chosen and a key for it."""
+
+        return bool(
+            self.settings.defaults.models_configured and self.configured_vendors()
+        )
+
     # ------------------------------------------------------------------- home
 
-    def ready_line(self) -> str:
-        config = load_config(self.environ)
-        parts = [self.t("ready.prefix")]
-        vendors = self.configured_vendors()
-        if vendors:
-            parts.append(vendors[0])
-        web = [name for name in config.search_providers if name != "duckduckgo"]
-        parts.append(web[0] if web else "DuckDuckGo")
-        if config.academic_providers:
-            parts.append(
-                self.t("ready.academic_count", count=len(config.academic_providers))
+    def show_configuration(self) -> None:
+        """The current configuration, on the way in, before anything is asked.
+
+        A returning user's first question is "what is this going to use", and the
+        answer is two models and a set of search sources.  Showing it here means
+        nobody has to open Settings to find out, and anyone who wants to change it
+        knows there is something to change.
+        """
+
+        defaults = self.settings.defaults
+        if not self.is_configured():
+            theme.status_line(
+                self.console, theme.GLYPH["warn"], self.t("ready.unconfigured")
             )
-        return " · ".join(parts)
+            return
+
+        config = load_config(self.environ)
+        theme.status_line(self.console, theme.GLYPH["done"], self.t("ready.prefix"))
+        theme.fields(
+            self.console,
+            [
+                (self.t("ready.investigator"), defaults.investigator.render()),
+                (self.t("ready.other_roles"), defaults.other_roles.render()),
+                (self.t("cfg.web_search"), " · ".join(config.search_providers) or "—"),
+                (self.t("cfg.academic"), " · ".join(config.academic_providers) or "—"),
+            ],
+        )
 
     async def home(self) -> str | None:
-        """Render the state-driven home screen and return the chosen action."""
+        """Render the state-driven home screen and return the chosen action.
+
+        One screen in every state.  An unconfigured install used to get a
+        different, smaller screen, which meant the first thing a new user saw was
+        not the product but a two-item menu; now the same page says what is
+        missing and greys out what that blocks.
+        """
 
         assert self.service is not None
         theme.header(
@@ -151,15 +178,9 @@ class Workspace:
             name=self.t("brand.name"),
             tagline=self.t("brand.tagline"),
         )
+        self.show_configuration()
 
-        if not self.settings.defaults.models_configured or not self.configured_vendors():
-            theme.dim(self.console, self.t("ready.not_configured"))
-            return await prompts.choose(
-                "",
-                [("setup", self.t("action.configure")), ("exit", self.t("action.exit"))],
-            )
-
-        theme.status_line(self.console, theme.GLYPH["done"], self.ready_line())
+        configured = self.is_configured()
         tasks = await self.service.tasks()
         awaiting = [item for item in tasks if item.state == "awaiting_approval"]
         paused = [
@@ -191,21 +212,35 @@ class Workspace:
         options.append(("new", self.t("action.new_research")))
         if tasks:
             options.append(("tasks", self.t("action.all_research")))
-        options.append(("settings", self.t("action.settings")))
+        if configured:
+            options.append(("settings", self.t("action.settings")))
+        else:
+            # Directive rather than generic: the one thing this user must do is
+            # name a model, so the entry says that instead of "Settings".
+            options.append(("setup", self.t("action.configure")))
         options.append(("exit", self.t("action.exit")))
 
-        if not tasks:
+        # Research is offered but not selectable without a model: the user learns
+        # the action exists and what unlocks it, rather than finding it missing.
+        disabled = (
+            {}
+            if configured
+            else {key: self.t("home.configure_first") for key in ("new", "approve", "resume")}
+        )
+
+        if configured and not tasks:
             # Nothing pending: the fastest useful thing is to accept a question
             # directly rather than make the user pick "new" from a list first.
             self.console.print()
             self.console.print(f"  {self.t('home.prompt')}")
+            theme.dim(self.console, self.t("home.prompt_hint"))
             typed = await prompts.ask_text("", multiline=False)
             if typed:
                 self._pending_request = typed
                 return "new"
             if typed is None:
                 return "exit"
-        return await prompts.choose("", options)
+        return await prompts.choose("", options, disabled=disabled)
 
     def _preview(self, task: Task) -> None:
         title = theme.truncate(task.request, 52)
