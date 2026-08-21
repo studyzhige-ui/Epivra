@@ -1,0 +1,821 @@
+"""The interactive workspace: a place to do research, not a menu of commands.
+
+The shape follows from what the product is.  A study takes tens of minutes and
+needs a human decision in the middle, so the interface cannot be "run a command,
+get a result, exit".  It has to be somewhere the user stays while work happens,
+and somewhere they can leave and come back to.
+
+Three rules hold this together:
+
+* **The home screen is derived from state, not fixed.**  A user with a plan
+  waiting sees that plan; a user with nothing sees a question.  Showing everyone
+  the same menu forces them to work out what to do next.
+* **The session holds no state.**  Everything durable is in the artifact store
+  and the ledger, so closing the terminal loses nothing and the next run picks up
+  where this one stopped.
+* **The approval gate is never bypassed.**  Nothing expensive starts until the
+  user has read the plan and said yes.
+
+Task IDs exist and are shown in details, but they are infrastructure identifiers.
+Nobody should have to read one to navigate.
+"""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+from dataclasses import dataclass, field
+from pathlib import Path
+
+import aiosqlite
+from rich.console import Console
+from rich.markdown import Markdown
+
+from ..application import load_environment
+from ..config import load_config
+from ..providers.llm import LLM_PROVIDERS
+from ..service import Event, ResearchService, Task
+from . import prompts, theme
+from .i18n import CLI_LANGUAGES, Translator
+from .paths import config_file, settings_file
+from .settings import (
+    CliSettings,
+    ResearchDefaults,
+    runtime_environment,
+    with_defaults,
+    with_language,
+)
+from .settings import (
+    load as load_settings,
+)
+from .settings import (
+    save as save_settings,
+)
+from .setup_flow import configure_providers, ensure_models_assigned
+
+#: Report languages offered by name.  Anything else is typed in; the runtime
+#: passes the value through, so the list is convenience rather than a limit.
+REPORT_LANGUAGES: tuple[tuple[str, str], ...] = (
+    ("zh", "中文"),
+    ("en", "English"),
+    ("ja", "日本語"),
+    ("ko", "한국어"),
+    ("de", "Deutsch"),
+    ("fr", "Français"),
+    ("es", "Español"),
+)
+
+ACCESS_OPTIONS: tuple[tuple[str, str], ...] = (
+    ("public_web", "access.public_web"),
+    ("user_files", "access.user_files"),
+    ("local_only", "access.local_only"),
+)
+
+#: What the research pipeline actually does, in order, for the progress view.
+#: Mapped from service events rather than guessed, so the timeline cannot claim
+#: a stage the run never reached.
+STAGES: tuple[tuple[str, str], ...] = (
+    ("baseline", "run.stage.baseline"),
+    ("breadth", "run.stage.breadth"),
+    ("focus", "run.stage.focus"),
+    ("analysis", "run.stage.analysis"),
+    ("writing", "run.stage.writing"),
+    ("review", "run.stage.review"),
+)
+
+
+@dataclass(slots=True)
+class Workspace:
+    """One interactive session over one database."""
+
+    args: argparse.Namespace
+    console: Console
+    settings: CliSettings
+    translate: Translator
+    environ: dict[str, str]
+    service: ResearchService | None = None
+    _log: list[str] = field(default_factory=list)
+    #: A question typed on the home screen, or a revised brief, waiting to become
+    #: the next study.  Declared because slots=True forbids stray attributes --
+    #: the same mistake cost a crash on the first run of the previous CLI.
+    _pending_request: str = ""
+
+    # ---------------------------------------------------------------- helpers
+
+    def t(self, message_id: str, **values: object) -> str:
+        return self.translate(message_id, **values)
+
+    def persist(self) -> None:
+        save_settings(settings_file(), self.settings)
+
+    def reload_environment(self) -> None:
+        """Re-read credentials and re-project the model assignment onto config."""
+
+        base = dict(load_environment(config_file()))
+        self.environ = runtime_environment(self.settings.defaults, base)
+        if self.service is not None:
+            self.service.environ = self.environ
+            self.service.config = load_config(self.environ)
+            self.service._runtimes = None  # noqa: SLF001 - rebind after a change
+
+    def configured_vendors(self) -> tuple[str, ...]:
+        return tuple(
+            spec.name for spec in LLM_PROVIDERS if spec.api_key(self.environ)
+        )
+
+    # ------------------------------------------------------------------- home
+
+    def ready_line(self) -> str:
+        config = load_config(self.environ)
+        parts = [self.t("ready.prefix")]
+        vendors = self.configured_vendors()
+        if vendors:
+            parts.append(vendors[0])
+        web = [name for name in config.search_providers if name != "duckduckgo"]
+        parts.append(web[0] if web else "DuckDuckGo")
+        if config.academic_providers:
+            parts.append(
+                self.t("ready.academic_count", count=len(config.academic_providers))
+            )
+        return " · ".join(parts)
+
+    async def home(self) -> str | None:
+        """Render the state-driven home screen and return the chosen action."""
+
+        assert self.service is not None
+        theme.header(
+            self.console,
+            name=self.t("brand.name"),
+            tagline=self.t("brand.tagline"),
+        )
+
+        if not self.settings.defaults.models_configured or not self.configured_vendors():
+            theme.dim(self.console, self.t("ready.not_configured"))
+            return prompts.choose(
+                "",
+                [("setup", self.t("action.configure")), ("exit", self.t("action.exit"))],
+            )
+
+        theme.status_line(self.console, theme.GLYPH["done"], self.ready_line())
+        tasks = await self.service.tasks()
+        awaiting = [item for item in tasks if item.state == "awaiting_approval"]
+        paused = [
+            item for item in tasks if item.state in ("paused", "halted", "researching")
+        ]
+        done = [item for item in tasks if item.state == "published"]
+
+        options: list[tuple[str, str]] = []
+        if awaiting:
+            self.console.print()
+            message = (
+                self.t("home.awaiting_one")
+                if len(awaiting) == 1
+                else self.t("home.awaiting_many", count=len(awaiting))
+            )
+            self.console.print(f"  {message}")
+            self._preview(awaiting[0])
+            options.append(("approve", self.t("action.review_approve")))
+        elif paused:
+            self.console.print()
+            self._preview(paused[0])
+            options.append(("resume", self.t("action.resume")))
+        elif done:
+            self.console.print()
+            theme.dim(self.console, self.t("home.recent_done"))
+            self._preview(done[0])
+            options.append(("report", self.t("action.read_report")))
+
+        options.append(("new", self.t("action.new_research")))
+        if tasks:
+            options.append(("tasks", self.t("action.all_research")))
+        options.append(("settings", self.t("action.settings")))
+        options.append(("exit", self.t("action.exit")))
+
+        if not tasks:
+            # Nothing pending: the fastest useful thing is to accept a question
+            # directly rather than make the user pick "new" from a list first.
+            self.console.print()
+            self.console.print(f"  {self.t('home.prompt')}")
+            typed = prompts.ask_text("", multiline=False)
+            if typed:
+                self._pending_request = typed
+                return "new"
+            if typed is None:
+                return "exit"
+        return prompts.choose("", options)
+
+    def _preview(self, task: Task) -> None:
+        title = theme.truncate(task.request, 52)
+        glyph = theme.STATE_GLYPH.get(task.state, theme.GLYPH["info"])
+        state = self.t(f"state.{task.state}")
+        detail = state
+        if task.materials:
+            detail = f"{state} · {self.t('run.materials', count=task.materials)}"
+        theme.status_line(self.console, glyph, title)
+        theme.dim(self.console, f"  {detail}")
+
+    # ------------------------------------------------------------------- loop
+
+    async def loop(self) -> int:
+        assert self.service is not None
+        while True:
+            action = await self.home()
+            if action in (None, "exit"):
+                self.console.print()
+                theme.dim(self.console, self.t("generic.goodbye"))
+                return 0
+            try:
+                if action == "setup":
+                    await self._run_setup()
+                elif action == "new":
+                    await self._new_research()
+                elif action == "approve":
+                    await self._first_of("awaiting_approval")
+                elif action == "resume":
+                    await self._first_of("paused", "halted", "researching")
+                elif action == "report":
+                    await self._first_of("published")
+                elif action == "tasks":
+                    await self._task_browser()
+                elif action == "settings":
+                    await self._settings_page()
+            except KeyboardInterrupt:
+                # An interrupt inside a page returns to the workspace; only the
+                # home screen's exit choice leaves the product.
+                self.console.print()
+                theme.status_line(
+                    self.console, theme.GLYPH["pending"], self.t("interrupt.paused")
+                )
+                theme.dim(self.console, self.t("interrupt.explain"))
+
+    async def _first_of(self, *states: str) -> None:
+        assert self.service is not None
+        for task in await self.service.tasks():
+            if task.state in states:
+                await self._task_detail(task.task_id)
+                return
+
+    # --------------------------------------------------------------- setup
+
+    async def _run_setup(self) -> None:
+        changed = await configure_providers(self)
+        if changed:
+            self.reload_environment()
+            self.persist()
+
+    # ------------------------------------------------------- research flows
+
+    async def _new_research(self) -> None:
+        assert self.service is not None
+        theme.rule_title(self.console, self.t("new.title"))
+
+        request = self._pending_request
+        if request:
+            self._pending_request = ""
+        else:
+            self.console.print()
+            typed = prompts.ask_text(self.t("home.prompt"))
+            if not typed:
+                return
+            request = typed
+
+        defaults = await self._confirm_settings()
+        if defaults is None:
+            return
+
+        self.console.print()
+        with self.console.status(f"  {self.t('new.generating')}", spinner="dots"):
+            task = await self.service.open_task(
+                request,
+                language=defaults.report_language,
+                source_access=defaults.source_access,  # type: ignore[arg-type]
+                created_at=_stamp(),
+                listen=self._collect,
+            )
+        theme.dim(self.console, self.t("new.not_started"))
+
+        if task.state == "clarification_requested":
+            await self._handle_clarification(request)
+            return
+        await self._task_detail(task.task_id)
+
+    async def _confirm_settings(self) -> ResearchDefaults | None:
+        """Show inherited settings; let them be changed without re-asking all."""
+
+        defaults = self.settings.defaults
+        while True:
+            theme.rule_title(self.console, self.t("cfg.title"))
+            config = load_config(self.environ)
+            rows = [
+                (self.t("cfg.report_language"), _language_label(defaults.report_language)),
+                (self.t("cfg.sources"), self.t(_access_message(defaults.source_access))),
+                (
+                    self.t("cfg.model"),
+                    f"{defaults.other_roles.render()} / {defaults.investigator.render()}",
+                ),
+                (self.t("cfg.web_search"), " · ".join(config.search_providers) or "—"),
+                (self.t("cfg.academic"), " · ".join(config.academic_providers) or "—"),
+            ]
+            if defaults.corpus_root:
+                rows.append((self.t("cfg.corpus"), defaults.corpus_root))
+            theme.fields(self.console, rows)
+
+            action = prompts.choose(
+                "",
+                [
+                    ("use", self.t("action.use_these")),
+                    ("change", self.t("action.change")),
+                ],
+                back_label=self.t("action.back"),
+            )
+            if action is None:
+                return None
+            if action == "use":
+                return defaults
+            updated = await self._edit_defaults(defaults)
+            if updated is not None:
+                defaults = updated
+                self.settings = with_defaults(self.settings, defaults)
+                self.persist()
+                self.reload_environment()
+
+    async def _edit_defaults(
+        self, defaults: ResearchDefaults
+    ) -> ResearchDefaults | None:
+        field_key = prompts.choose(
+            self.t("action.change"),
+            [
+                ("language", self.t("cfg.report_language")),
+                ("sources", self.t("cfg.sources")),
+                ("models", self.t("cfg.model")),
+                ("search", self.t("cfg.web_search")),
+            ],
+            back_label=self.t("action.back"),
+        )
+        if field_key is None:
+            return None
+        if field_key == "language":
+            chosen = prompts.choose(
+                self.t("cfg.report_language"),
+                [*REPORT_LANGUAGES, ("other", self.t("generic.other"))],
+                back_label=self.t("action.back"),
+            )
+            if chosen == "other":
+                typed = prompts.ask_text(self.t("cfg.report_language"), default="en")
+                chosen = typed or None
+            if chosen:
+                from dataclasses import replace
+
+                return replace(defaults, report_language=chosen)
+            return None
+        if field_key == "sources":
+            return await self._edit_source_access(defaults)
+        if field_key == "models":
+            updated = await ensure_models_assigned(self, force=True)
+            return updated
+        if field_key == "search":
+            return await self._edit_search(defaults)
+        return None
+
+    async def _edit_source_access(
+        self, defaults: ResearchDefaults
+    ) -> ResearchDefaults | None:
+        from dataclasses import replace
+
+        chosen = prompts.choose(
+            self.t("cfg.sources"),
+            [(key, self.t(message)) for key, message in ACCESS_OPTIONS],
+            back_label=self.t("action.back"),
+        )
+        if chosen is None:
+            return None
+        access = (
+            ("public_web",)
+            if chosen == "public_web"
+            else ("public_web", "user_files")
+            if chosen == "user_files"
+            else ("local_only",)
+        )
+        corpus = defaults.corpus_root
+        if chosen in ("user_files", "local_only"):
+            while True:
+                typed = prompts.ask_text(self.t("cfg.corpus"), default=corpus)
+                if typed is None:
+                    return None
+                if typed and Path(typed).expanduser().is_dir():
+                    corpus = typed
+                    break
+                theme.dim(self.console, self.t("generic.path_not_dir"))
+        return replace(defaults, source_access=access, corpus_root=corpus)
+
+    async def _edit_search(self, defaults: ResearchDefaults) -> ResearchDefaults | None:
+        from dataclasses import replace
+
+        from ..providers import search_credentials
+
+        options = [
+            (
+                name,
+                f"{name}"
+                + ("" if self.environ.get(env_var, "").strip() else "（未配置密钥）"),
+                name in defaults.search_providers,
+            )
+            for name, env_var in sorted(search_credentials().items())
+        ]
+        options.append(("duckduckgo", "duckduckgo（无需密钥）", True))
+        chosen = prompts.choose_many(self.t("cfg.web_search"), options)
+        if chosen is None:
+            return None
+        academic = prompts.choose_many(
+            self.t("cfg.academic"),
+            [
+                (name, name, name in defaults.academic_providers)
+                for name in ("arxiv", "crossref", "pubmed")
+            ],
+        )
+        return replace(
+            defaults,
+            search_providers=chosen,
+            academic_providers=academic if academic is not None else defaults.academic_providers,
+        )
+
+    async def _handle_clarification(self, original: str) -> None:
+        """Stay in the workspace: take the answer and re-plan, never exit."""
+
+        self.console.print()
+        theme.status_line(self.console, theme.GLYPH["warn"], self.t("new.too_vague"))
+        addition = prompts.ask_text(self.t("new.clarify_prompt"))
+        if not addition:
+            return
+        self._pending_request = f"{original}\n\n{addition}"
+        await self._new_research()
+
+    # ------------------------------------------------------- task navigation
+
+    async def _task_browser(self) -> None:
+        assert self.service is not None
+        while True:
+            tasks = await self.service.tasks()
+            theme.rule_title(self.console, self.t("list.title"))
+            if not tasks:
+                theme.dim(self.console, self.t("list.empty"))
+                return
+            options = [
+                (
+                    task.task_id,
+                    f"{theme.STATE_GLYPH.get(task.state, '·')} "
+                    f"{theme.truncate(task.request, 44)} · "
+                    f"{self.t(f'state.{task.state}')}",
+                )
+                for task in tasks
+            ]
+            chosen = prompts.choose(
+                "", options, back_label=self.t("action.back_workspace")
+            )
+            if chosen is None:
+                return
+            await self._task_detail(chosen)
+
+    async def _task_detail(self, task_id: str) -> None:
+        assert self.service is not None
+        while True:
+            task = await self.service.task(task_id)
+            theme.rule_title(self.console, theme.truncate(task.request, 56))
+            rows = [(self.t("detail.status"), self.t(f"state.{task.state}"))]
+            if task.sources:
+                rows.append(
+                    (self.t("run.collected"), self.t("run.sources", count=task.sources))
+                )
+            if task.materials:
+                rows.append(("", self.t("run.materials", count=task.materials)))
+            rows.append((self.t("detail.task_id"), task.task_id))
+            theme.fields(self.console, rows)
+
+            action = prompts.choose("", self._actions_for(task))
+            if action in (None, "back"):
+                return
+            if action == "plan":
+                await self._show_plan(task_id)
+            elif action == "approve":
+                await self._approve_and_run(task_id)
+            elif action == "resume":
+                await self._run_research(task_id)
+            elif action == "report":
+                await self._read_report(task_id)
+            elif action == "export":
+                await self._export_report(task_id)
+            elif action == "revise":
+                if await self._revise(task):
+                    return
+            elif action == "delete":
+                if await self._delete(task):
+                    return
+
+    def _actions_for(self, task: Task) -> list[tuple[str, str]]:
+        """Allowed actions come from the task's state, never from a fixed menu.
+
+        This is the mapping the spec calls for: an awaiting-approval study cannot
+        be resumed, a completed one cannot be approved, and a running one offers
+        pause and delete as clearly different things.
+        """
+
+        options: list[tuple[str, str]] = []
+        if task.state == "awaiting_approval":
+            options += [
+                ("plan", self.t("action.view_plan")),
+                ("approve", self.t("action.approve_start")),
+                ("revise", self.t("action.revise_brief")),
+                ("back", self.t("action.save_for_later")),
+                ("delete", self.t("action.delete_running")),
+            ]
+        elif task.state in ("paused", "halted", "researching"):
+            options += [
+                ("resume", self.t("action.resume")),
+                ("plan", self.t("action.view_plan")),
+                ("delete", self.t("action.delete_running")),
+                ("back", self.t("action.back_workspace")),
+            ]
+        elif task.state == "published":
+            options += [
+                ("report", self.t("action.read_report")),
+                ("export", self.t("action.export_report")),
+                ("delete", self.t("action.delete_done")),
+                ("back", self.t("action.back_workspace")),
+            ]
+        else:
+            options += [
+                ("delete", self.t("action.delete_done")),
+                ("back", self.t("action.back_workspace")),
+            ]
+        return options
+
+    async def _show_plan(self, task_id: str) -> None:
+        assert self.service is not None
+        card = await self.service.approval_card(task_id)
+        self.console.print()
+        self.console.print(Markdown(card))
+        theme.dim(self.console, self.t("plan.read_these"))
+        theme.dim(self.console, self.t("new.not_started"))
+
+    async def _approve_and_run(self, task_id: str) -> None:
+        assert self.service is not None
+        theme.dim(self.console, self.t("new.after_approve_costs"))
+        await self.service.approve(task_id)
+        theme.status_line(self.console, theme.GLYPH["done"], self.t("plan.approved"))
+        await self._run_research(task_id)
+
+    async def _run_research(self, task_id: str) -> None:
+        assert self.service is not None
+        self._log.clear()
+        try:
+            state = await self.service.advance(task_id, listen=self._render_progress)
+        except KeyboardInterrupt:
+            self.console.print()
+            theme.status_line(
+                self.console, theme.GLYPH["pending"], self.t("interrupt.paused")
+            )
+            theme.dim(self.console, self.t("interrupt.explain"))
+            return
+        if state == "published":
+            await self._completion(task_id)
+
+    async def _completion(self, task_id: str) -> None:
+        assert self.service is not None
+        task = await self.service.task(task_id)
+        report = await self.service.report(task_id)
+        theme.rule_title(self.console, self.t("done.title"))
+        theme.fields(
+            self.console,
+            [
+                (
+                    self.t("done.report_chars"),
+                    self.t("done.chars", count=len(report or "")),
+                ),
+                (self.t("run.collected"), self.t("run.sources", count=task.sources)),
+                (self.t("done.cited"), self.t("run.materials", count=task.materials)),
+            ],
+        )
+
+    async def _read_report(self, task_id: str) -> None:
+        assert self.service is not None
+        report = await self.service.report(task_id)
+        if report is None:
+            theme.dim(self.console, self.t("generic.no_report"))
+            return
+        # A pager keeps a 20,000-character report navigable; q returns, which is
+        # the one place q is used.
+        with self.console.pager(styles=True):
+            self.console.print(Markdown(report))
+
+    async def _export_report(self, task_id: str) -> None:
+        assert self.service is not None
+        report = await self.service.report(task_id)
+        if report is None:
+            theme.dim(self.console, self.t("generic.no_report"))
+            return
+        typed = prompts.ask_text(self.t("generic.export_path"), default="report.md")
+        if not typed:
+            return
+        path = Path(typed).expanduser()
+        if path.exists() and not prompts.confirm_destructive(
+            self.t("generic.overwrite", path=path),
+            keep=self.t("action.back"),
+            destroy=self.t("generic.yes"),
+        ):
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(report, encoding="utf-8")
+        theme.status_line(
+            self.console,
+            theme.GLYPH["done"],
+            self.t("generic.exported", path=path, count=len(report)),
+        )
+
+    async def _revise(self, task: Task) -> bool:
+        """Revising the brief must return to the approval gate, never skip it."""
+
+        addition = prompts.ask_text(self.t("new.revise_prompt"))
+        if not addition:
+            return False
+        self._pending_request = f"{task.request}\n\n补充：{addition}"
+        await self._new_research()
+        return True
+
+    async def _delete(self, task: Task) -> bool:
+        assert self.service is not None
+        self.console.print()
+        theme.status_line(
+            self.console, theme.GLYPH["warn"], self.t("delete.confirm_title")
+        )
+        theme.dim(self.console, self.t("delete.confirm_body"))
+        if not prompts.confirm_destructive(
+            "",
+            keep=self.t("delete.keep"),
+            destroy=self.t("delete.confirm"),
+        ):
+            return False
+        await self.service.delete_research(task.task_id)
+        theme.status_line(self.console, theme.GLYPH["done"], self.t("delete.done"))
+        return True
+
+    # ---------------------------------------------------------- settings page
+
+    async def _settings_page(self) -> None:
+        while True:
+            theme.rule_title(self.console, self.t("settings.title"))
+            action = prompts.choose(
+                "",
+                [
+                    ("language", self.t("settings.cli_language")),
+                    ("providers", self.t("settings.providers")),
+                    ("defaults", self.t("settings.defaults")),
+                ],
+                back_label=self.t("action.back_workspace"),
+            )
+            if action is None:
+                return
+            if action == "language":
+                chosen = prompts.choose(
+                    self.t("setup.choose_cli_language"),
+                    list(CLI_LANGUAGES),
+                    back_label=self.t("action.back"),
+                )
+                if chosen:
+                    self.settings = with_language(self.settings, chosen)
+                    self.translate = Translator(chosen)
+                    self.persist()
+                    theme.status_line(
+                        self.console, theme.GLYPH["done"], self.t("settings.saved")
+                    )
+            elif action == "providers":
+                await self._run_setup()
+            elif action == "defaults":
+                updated = await self._confirm_settings()
+                if updated is not None:
+                    self.settings = with_defaults(self.settings, updated)
+                    self.persist()
+
+    # ------------------------------------------------------------- rendering
+
+    def _collect(self, event: Event) -> None:
+        """Capture plan-stage events without printing raw text over the UI."""
+
+        self._log.append(f"{event.kind}: {event.message}")
+
+    def _render_progress(self, event: Event) -> None:
+        self._log.append(f"{event.kind}: {event.message}")
+        if event.kind == "wave_started":
+            round_index = event.detail.get("round", 0)
+            stage = "breadth" if round_index == 1 else "focus"
+            self.console.print()
+            theme.timeline(
+                self.console,
+                [
+                    ("done", self.t("run.stage.baseline")),
+                    (
+                        "done" if stage == "focus" else "active",
+                        self.t("run.stage.breadth"),
+                    ),
+                    (
+                        "active" if stage == "focus" else "pending",
+                        self.t("run.stage.focus"),
+                    ),
+                    ("pending", self.t("run.stage.analysis")),
+                    ("pending", self.t("run.stage.writing")),
+                    ("pending", self.t("run.stage.review")),
+                ],
+            )
+            self.console.print()
+            theme.dim(self.console, f"{self.t('run.current')}: {event.message}")
+            for focus in event.detail.get("assignments", ()):
+                theme.dim(self.console, f"  · {theme.truncate(str(focus), 62)}")
+        elif event.kind == "wave_finished":
+            theme.status_line(self.console, theme.GLYPH["done"], event.message)
+        elif event.kind == "review":
+            glyph = theme.GLYPH["done"] if event.detail.get("approved") else theme.GLYPH["warn"]
+            theme.status_line(
+                self.console, glyph, f"{self.t('run.stage.review')} · {event.message}"
+            )
+            if self.args.verbose:
+                for finding in event.detail.get("findings", ()):
+                    theme.dim(self.console, f"    {str(finding).splitlines()[0]}")
+        elif event.kind in ("paused", "halted"):
+            theme.status_line(self.console, theme.GLYPH["pending"], event.message)
+        elif event.kind == "published":
+            theme.status_line(self.console, theme.GLYPH["done"], event.message)
+        elif self.args.verbose:
+            theme.dim(self.console, event.message)
+
+
+def _language_label(code: str) -> str:
+    return dict(REPORT_LANGUAGES).get(code, code)
+
+
+def _access_message(access: tuple[str, ...]) -> str:
+    if "local_only" in access:
+        return "access.local_only"
+    if "user_files" in access:
+        return "access.user_files"
+    return "access.public_web"
+
+
+def _stamp() -> str:
+    from datetime import UTC, datetime
+
+    return datetime.now(UTC).isoformat(timespec="seconds")
+
+
+async def _run(args: argparse.Namespace) -> int:
+    console = theme.console()
+    settings = load_settings(settings_file())
+    translate = Translator(settings.language)
+
+    # The very first thing a new user is asked, before any other screen: an
+    # interface they cannot read is not an interface.
+    if not settings.language_chosen:
+        theme.header(console, name="Deep Research", tagline="Research · 研究")
+        chosen = prompts.choose("Language / 界面语言", list(CLI_LANGUAGES))
+        if chosen is None:
+            return 0
+        settings = with_language(settings, chosen)
+        save_settings(settings_file(), settings)
+        translate = Translator(chosen)
+
+    base = dict(load_environment(config_file()))
+    workspace = Workspace(
+        args=args,
+        console=console,
+        settings=settings,
+        translate=translate,
+        environ=runtime_environment(settings.defaults, base),
+    )
+
+    database = Path(args.database)
+    database.parent.mkdir(parents=True, exist_ok=True)
+    connection = await aiosqlite.connect(database)
+    try:
+        workspace.service = ResearchService(
+            connection=connection,
+            environ=workspace.environ,
+            corpus_root=(
+                Path(settings.defaults.corpus_root)
+                if settings.defaults.corpus_root
+                else None
+            ),
+        )
+        await workspace.service.setup()
+        return await workspace.loop()
+    finally:
+        await connection.close()
+
+
+def run_workspace(args: argparse.Namespace) -> int:
+    try:
+        return asyncio.run(_run(args))
+    except KeyboardInterrupt:
+        print()
+        print(Translator(load_settings(settings_file()).language)("interrupt.on_exit"))
+        return 130
+
+
+__all__ = ["ACCESS_OPTIONS", "REPORT_LANGUAGES", "STAGES", "Workspace", "run_workspace"]

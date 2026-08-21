@@ -21,7 +21,6 @@
 from __future__ import annotations
 
 import argparse
-import asyncio
 import getpass
 import sys
 from collections.abc import Mapping, Sequence
@@ -30,27 +29,14 @@ from pathlib import Path
 
 import aiosqlite
 
-from .application import load_environment, render_role_models
-from .config import load_config
-from .providers import search_credentials
-from .providers.llm import LLM_PROVIDERS
-from .service import Event, ResearchService, Task
+from ..application import load_environment, render_role_models
+from ..config import load_config
+from ..providers import search_credentials
+from ..providers.llm import LLM_PROVIDERS
+from ..service import Event, ResearchService, Task
 
 #: Where a user's studies and configuration live when the command is installed.
-HOME = Path.home() / ".deep-research-agent"
-DEFAULT_DATABASE = HOME / "tasks.sqlite3"
-
-
-def config_path() -> Path:
-    """Prefer a project-local .env, fall back to the user's home directory.
-
-    Running inside a checkout should pick up that checkout's configuration; an
-    installed command run from anywhere should still find the user's own.
-    """
-
-    local = Path.cwd() / ".env"
-    return local if local.is_file() else HOME / ".env"
-
+from .paths import config_file as config_path
 
 LANGUAGES: tuple[tuple[str, str], ...] = (
     ("zh", "中文"),
@@ -485,6 +471,36 @@ def _secret(prompt: str) -> str:
     return value.strip()
 
 
+async def cmd_delete(args: argparse.Namespace) -> int:
+    """Delete a study and everything it produced.  Irreversible.
+
+    Command mode is scriptable, so the confirmation reads from stdin only when a
+    terminal is attached; ``--yes`` is the way an automated caller opts in. A
+    destructive default would make `deep-research delete` in a loop catastrophic.
+    """
+
+    connection, service = await _service(args, load_environment(config_path()))
+    try:
+        task = await service.task(args.task_id)
+        if not args.yes:
+            if not sys.stdin.isatty():
+                print(
+                    "拒绝在非交互环境下删除。加 --yes 明确确认。",
+                    file=sys.stderr,
+                )
+                return 2
+            print(f"\n将要永久删除：{task.request[:60]}")
+            print("已经完成的研究工作和收集的素材都会被删除。删除后无法继续。")
+            if input("输入 delete 确认：").strip().casefold() != "delete":
+                print("已取消，什么都没有删除。")
+                return 1
+        removed = await service.delete_research(args.task_id)
+        print("研究已删除。" if removed else "没有找到这项研究。")
+        return 0 if removed else 1
+    finally:
+        await connection.close()
+
+
 async def cmd_init(args: argparse.Namespace) -> int:
     """交互式写出配置文件，不需要用户手改 .env。"""
 
@@ -569,80 +585,3 @@ async def cmd_doctor(args: argparse.Namespace) -> int:
         return 1
     print("\n  结论：可以开始。执行 `deep-research new`")
     return 0
-
-
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(
-        description="Deep Research Agent 命令行", add_help=True
-    )
-    parser.add_argument("--database", default=str(DEFAULT_DATABASE))
-    sub = parser.add_subparsers(dest="command")
-
-    new = sub.add_parser("new", help="提交一个新的研究委托（交互式）")
-    new.add_argument("request", nargs="?", default="")
-    new.add_argument("--corpus", default="")
-    new.set_defaults(run=cmd_new)
-
-    init = sub.add_parser("init", help="交互式配置密钥（第一次使用先跑这个）")
-    init.add_argument("--config", default="", help="写到指定文件而不是默认位置")
-    init.add_argument("--force", action="store_true", help="覆盖已有配置")
-    init.set_defaults(run=cmd_init)
-
-    doctor = sub.add_parser("doctor", help="检查环境是否可以开始研究")
-    doctor.set_defaults(run=cmd_doctor)
-
-    listing = sub.add_parser("list", help="列出所有任务")
-    listing.set_defaults(run=cmd_list)
-
-    show = sub.add_parser("show", help="查看任务状态，待审批时打印方案")
-    show.add_argument("task_id")
-    show.set_defaults(run=cmd_show)
-
-    approve = sub.add_parser("approve", help="批准方案并开始研究")
-    approve.add_argument("task_id")
-    approve.add_argument("--note", default="")
-    approve.add_argument("--corpus", default="")
-    approve.add_argument("--no-run", action="store_true", help="只批准，不立即开始")
-    approve.set_defaults(run=cmd_approve)
-
-    resume = sub.add_parser("continue", help="继续一个已批准的任务")
-    resume.add_argument("task_id")
-    resume.add_argument("--corpus", default="")
-    resume.set_defaults(run=cmd_continue)
-
-    report = sub.add_parser("report", help="取出已发布的报告")
-    report.add_argument("task_id")
-    report.add_argument("-o", "--output", default="")
-    report.set_defaults(run=cmd_report)
-
-    args = parser.parse_args(argv)
-    if args.command is None:
-        # A bare invocation should introduce the tool, not print an argparse
-        # error. This is the first thing a new user sees.
-        _welcome(load_environment(config_path()), database=Path(args.database))
-        print("\n  常用命令")
-        print("    deep-research init             配置密钥（第一次使用）")
-        print("    deep-research new              提交一个新的研究委托")
-        print("    deep-research list             我的所有任务")
-        print("    deep-research show     <任务号>  查看状态 / 重读方案")
-        print("    deep-research approve  <任务号>  批准方案并开始研究")
-        print("    deep-research continue <任务号>  中断后接着跑")
-        print("    deep-research report   <任务号>  取出报告")
-        print("    deep-research doctor           环境自检")
-        print("\n  第一次使用请看 docs/GETTING-STARTED.md")
-        return 0
-
-    try:
-        return asyncio.run(args.run(args))
-    except KeyboardInterrupt:
-        print("\n已中断。产物都已落库，用 continue 接着跑即可。")
-        return 130
-    except ValueError as error:
-        # Wrong task number, unapproved task, missing corpus root: all things the
-        # user can fix, so they get a sentence rather than a traceback.
-        print(f"\n无法执行：{error}")
-        return 2
-
-
-if __name__ == "__main__":
-    sys.exit(main())

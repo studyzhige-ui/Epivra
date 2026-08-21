@@ -329,6 +329,37 @@ class ResearchService:
         published = await latest_body(self._store(task_id), "publication_receipt")
         return None if published is None else published[1]
 
+    async def delete_research(self, task_id: str) -> bool:
+        """Remove a study and everything it produced.  Irreversible.
+
+        One operation serves both "cancel this unfinished research" and "delete
+        this finished research" -- they differ only in what the interface calls
+        them, because in both cases the user is saying the study should stop
+        existing.  Keeping them as separate mechanisms would invite one of them to
+        leave data behind.
+
+        Valid from **any** state, including mid-research: a user who no longer
+        wants a study must not have to wait for it to finish first.  What it is
+        not is a pause -- pausing keeps everything and can be resumed, and the
+        interface must never offer these two as if they were the same choice.
+
+        Content blobs are left alone. They are content-addressed and shared
+        between tasks, so deleting them by task would corrupt whatever else
+        referenced the same bytes; an unreferenced blob is inert.
+        """
+
+        rows = await self.connection.execute_fetchall(
+            "SELECT COUNT(*) FROM artifacts WHERE task_id = ?", (task_id,)
+        )
+        if not rows or not int(rows[0][0]):
+            return False
+        for table in ("artifacts", "artifact_dispositions", "operations"):
+            await self.connection.execute(
+                f"DELETE FROM {table} WHERE task_id = ?", (task_id,)
+            )
+        await self.connection.commit()
+        return True
+
     async def approval_card(self, task_id: str) -> str:
         """The exact card the user must read before approving."""
 

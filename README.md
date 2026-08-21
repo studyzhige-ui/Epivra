@@ -47,22 +47,45 @@ python tools/check_architecture.py
 
 静态门检查依赖方向、分层完整性、被禁的遗留符号与能力包边界，每次提交都要通过。
 
-## 真实运行（会产生外部 API 费用）
+## 使用（会产生外部 API 费用）
 
-凭据从 `.env` 读取：`DEEPSEEK_API_KEY` 必需；搜索 provider（`TAVILY_API_KEY`、
-`EXA_API_KEY`、`BRAVE_SEARCH_API_KEY`、`BOCHA_API_KEY`）至少配置一个，缺失的 provider
-跳过而不是失败。DuckDuckGo 与 arXiv / Crossref / PubMed 无需密钥。
+```bash
+pip install -e .
+deep-research
+```
 
-跑一条压测 fixture 的完整路径（委托 → 合同 → 审批 → Wave → 写作 → 审查 → 发布）：
+裸命令 `deep-research` **进入交互式工作区**：第一次会先问界面语言，再引导配置模型与
+搜索厂商（每个密钥都会真实验证），然后就可以直接说出研究问题。方案生成后留在工作区
+批准、跑研究、读报告，全程不回 shell。第一次使用见
+[docs/GETTING-STARTED.md](docs/GETTING-STARTED.md)。
+
+`deep-research --help` 列出命令。子命令是给脚本、CI 与自动化的另一个入口，与工作区
+共用同一套业务层：
+
+```bash
+deep-research doctor               # 环境诊断（--live 重新验证厂商）
+deep-research new                  # 提交新委托
+deep-research list
+deep-research show     <任务号>
+deep-research approve  <任务号>
+deep-research continue <任务号>
+deep-research report   <任务号> -o 报告.md
+deep-research delete   <任务号> --yes
+```
+
+凭据从 `.env` 读取，可同时保存多家：模型厂商至少一个（`DEEPSEEK_API_KEY`、
+`ANTHROPIC_API_KEY`、`OPENAI_API_KEY`、`DASHSCOPE_API_KEY`、`ZHIPU_API_KEY`、
+`MOONSHOT_API_KEY`、`OPENROUTER_API_KEY`）；搜索厂商（`TAVILY_API_KEY`、`EXA_API_KEY`、
+`BRAVE_SEARCH_API_KEY`、`BOCHA_API_KEY`）可选，缺失的跳过而不是失败。DuckDuckGo 与
+arXiv / Crossref / PubMed 无需密钥。
+
+运行状态全部由 artifact heads 与 operation ledger 推导，所以中断后**对同一个数据库
+重跑即可继续**——已完成的付费调用只回放不重发，已提交的产物不会重做。Ctrl-C 是安全
+暂停，不是取消。
+
+压测矩阵仍由独立的 harness 驱动，不走产品入口：
 
 ```bash
 python tools/run_research.py --list
-```
-
-```bash
 python tools/run_research.py --fixture sparse-evidence --database .deep-research-agent/run.sqlite3 --approve
 ```
-
-不传 `--approve` 会停在审批卡，只花一次 Architect 调用。运行状态全部由 artifact heads
-与 operation ledger 推导，所以中断后**对同一个数据库重跑即可继续**——已完成的付费调用
-只回放不重发，已提交的产物不会重做。

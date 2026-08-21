@@ -13,11 +13,17 @@ dependencies = [
     "aiosqlite>=0.20,<1",
     "httpx>=0.27,<1",
     "pypdf>=5,<7",
+    # Interactive workspace only.  Rich renders the plan and the report; questionary
+    # (over prompt_toolkit) provides arrow-key selection and hidden credential
+    # entry.  Both are confined to deep_research_agent.cli -- the research engine
+    # imports neither, so a headless deployment is unaffected by them.
+    "rich>=13,<15",
+    "questionary>=2,<3",
 ]
 
 [project.scripts]
 # One entry point; subcommands are dispatched inside deep_research_agent.cli.
-deep-research = "deep_research_agent.cli:main"
+deep-research = "deep_research_agent.cli.main:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
