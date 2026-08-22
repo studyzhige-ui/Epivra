@@ -362,6 +362,69 @@ class CommissionBody:
 
 
 @dataclass(frozen=True, slots=True)
+class ClarificationBody:
+    """One question the Architect must have answered before it can plan.
+
+    Asking is a legitimate outcome of scoping, not a failure: a commission whose
+    two readings would lead to two different studies cannot be planned honestly,
+    and guessing which was meant is worse than asking.
+
+    ``why_it_changes_the_plan`` is required because it is what makes the question
+    answerable.  "Tell me more" wastes the user's time; "are you choosing a
+    technology or explaining one, because the evidence differs entirely" can be
+    answered in a sentence.
+    """
+
+    question: str
+    why_it_changes_the_plan: str
+
+    def __post_init__(self) -> None:
+        _require_text(self.question, "clarification question")
+        _require_text(
+            self.why_it_changes_the_plan, "clarification rationale"
+        )
+
+    def encode(self) -> str:
+        return _canonical_json(
+            {
+                "question": self.question,
+                "why_it_changes_the_plan": self.why_it_changes_the_plan,
+            }
+        )
+
+    @classmethod
+    def decode(cls, body: str) -> ClarificationBody:
+        value = json.loads(body)
+        return cls(
+            question=str(value["question"]),
+            why_it_changes_the_plan=str(value["why_it_changes_the_plan"]),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ClarificationReplyBody:
+    """The user's answer to one exact question.
+
+    Deliberately not merged into the Commission.  The Commission is the one
+    artifact no rewrite may touch, and appending answers to the request string
+    would both destroy that guarantee and hand the Architect an ever-longer brief
+    instead of "here is what you asked, and here is what they said".
+    """
+
+    answer: str
+
+    def __post_init__(self) -> None:
+        _require_text(self.answer, "clarification answer")
+
+    def encode(self) -> str:
+        return _canonical_json({"answer": self.answer})
+
+    @classmethod
+    def decode(cls, body: str) -> ClarificationReplyBody:
+        return cls(answer=str(json.loads(body)["answer"]))
+
+
+@dataclass(frozen=True, slots=True)
 class ResearchContract:
     """The approved research agreement: prose the user read, plus its questions.
 
@@ -540,6 +603,8 @@ def section_title(section: str) -> str:
 
 
 __all__ = [
+    "ClarificationBody",
+    "ClarificationReplyBody",
     "CONTRACT_SECTIONS",
     "SOURCE_ACCESS",
     "CommissionBody",

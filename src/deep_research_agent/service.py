@@ -60,6 +60,7 @@ from .application import build_runtimes
 from .approval import (
     ApprovalBody,
     ApprovalError,
+    StaleClarificationError,
     StalePlanError,
     approval_card,
     decision_for,
@@ -71,7 +72,13 @@ from .artifacts import ArtifactDisposition, Provenance
 from .config import RuntimeConfig, load_config
 from .content_store import SqliteContentStore
 from .context import RoleContext, latest_body, lead_context, load_evidence
-from .contract import CommissionBody, ResearchContract, SourceAccess
+from .contract import (
+    ClarificationBody,
+    ClarificationReplyBody,
+    CommissionBody,
+    ResearchContract,
+    SourceAccess,
+)
 from .execution_snapshot import capture as capture_execution
 from .execution_snapshot import freeze as freeze_execution
 from .execution_snapshot import load as load_execution
@@ -143,6 +150,32 @@ class Task:
     sources: int = 0
     plan_id: str = ""
     plan_version: int = 0
+    #: The clarification still waiting for an answer, when the state is
+    #: ``clarification_requested``.  Carried on the task so the question survives
+    #: closing the terminal: it is a committed artifact, not a line that scrolled
+    #: past in one session.
+    clarification_id: str = ""
+    clarification_question: str = ""
+    clarification_why: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class Exchange:
+    """One clarification: what the Architect asked, and what the user replied.
+
+    ``answer`` is empty while the question is still open.  A task has at most one
+    open question at a time -- the Architect asks, the user answers, and only then
+    can it ask again -- so the open one is the last exchange without a reply.
+    """
+
+    clarification_id: str
+    question: str
+    why: str
+    answer: str = ""
+
+    @property
+    def answered(self) -> bool:
+        return bool(self.answer)
 
 
 @dataclass(frozen=True, slots=True)
@@ -519,6 +552,71 @@ class ResearchService:
         )
         return await self.task(task_id)
 
+    async def answer_clarification(
+        self,
+        task_id: str,
+        clarification_id: str,
+        answer: str,
+        *,
+        listen: Listener = _ignore,
+    ) -> Task:
+        """Answer the Architect's open question and let it try again.
+
+        The same Research Task throughout.  Answering used to build
+        ``request + answer`` and call :meth:`open_task`, which derives task
+        identity from the Commission -- so a study whose intent needed one
+        clarification became two studies, the first stranded forever at
+        ``clarification_requested``.
+
+        The answer is a committed artifact bound to the exact question it answers,
+        never folded into the Commission: the Commission is what the user actually
+        asked, and it has to stay that way to be worth checking a report against.
+
+        The Architect may ask again.  That is a new question in the same task, not
+        a repeat of the old one -- the answered exchange is part of the next call's
+        input refs, so the ledger cannot replay the question the user just
+        answered.
+        """
+
+        reply = ClarificationReplyBody(answer=answer.strip())
+        store = self._store(task_id)
+        exchanges = await self._exchanges(store)
+        open_question = next(
+            (item for item in reversed(exchanges) if not item.answered), None
+        )
+        if open_question is None:
+            raise ApprovalError("这项研究现在没有待回答的问题。")
+        if clarification_id and clarification_id != open_question.clarification_id:
+            raise StaleClarificationError(
+                "这个澄清问题已经发生变化。请查看最新的问题后回答。"
+            )
+
+        await store.put(
+            kind="clarification_reply",
+            body=reply.encode(),
+            parent_refs=(open_question.clarification_id,),
+            provenance=Provenance(producer="user"),
+        )
+
+        commission = await self._commission(store)
+        commission_ref = (await store.active_view()).active("commission")[-1]
+        contract = await self._propose(store, commission, commission_ref, listen)
+        task = await self.task(task_id)
+        if contract is not None:
+            listen(
+                Event(
+                    "contract_proposed",
+                    approval_card(contract, version=task.plan_version),
+                    {"task_id": task_id, "plan_id": task.plan_id},
+                )
+            )
+        return task
+
+    async def clarification_history(self, task_id: str) -> tuple[Exchange, ...]:
+        """Every question the Architect asked and every answer it was given."""
+
+        return await self._exchanges(self._store(task_id))
+
     async def plan_history(self, task_id: str) -> tuple[PlanVersion, ...]:
         """Every plan this task has had, oldest first, with its decision."""
 
@@ -578,9 +676,18 @@ class ResearchService:
 
         plans = view.active("research_contract")
         contract_head = view.head("research_contract")
+        open_question: Exchange | None = None
         state: TaskState
         if contract_head is None:
             state = "clarification_requested"
+            open_question = next(
+                (
+                    item
+                    for item in reversed(await self._exchanges(store))
+                    if not item.answered
+                ),
+                None,
+            )
         elif view.head("publication_receipt") is not None:
             state = "published"
         else:
@@ -603,6 +710,9 @@ class ResearchService:
             sources=sources,
             plan_id=contract_head or "",
             plan_version=len(plans),
+            clarification_id="" if open_question is None else open_question.clarification_id,
+            clarification_question="" if open_question is None else open_question.question,
+            clarification_why="" if open_question is None else open_question.why,
         )
 
     async def tasks(self) -> tuple[Task, ...]:
@@ -822,17 +932,40 @@ class ResearchService:
         commission_ref: str,
         listen: Listener,
     ) -> ResearchContract | None:
+        """Plan, or ask one question.  Both are legitimate ends to this step.
+
+        Asking is committed as an artifact rather than only announced, so the
+        question survives the session that produced it and the answer has
+        something to bind to.  Every answered exchange becomes part of the
+        Architect's context *and* part of this call's input refs -- which is what
+        stops the ledger replaying the first question forever once it has been
+        answered.
+        """
+
         existing = (await store.active_view()).head("research_contract")
         if existing is not None:
             return ResearchContract.decode(await store.body(existing))
 
+        exchanges = await self._exchanges(store)
+        if exchanges and not exchanges[-1].answered:
+            # A question is still open; planning waits for the user, not the model.
+            return None
+
         runtimes = (await self.execution(store.task_id, listen=listen)).runtimes
+        answered = tuple(
+            (item.question, item.answer) for item in exchanges if item.answered
+        )
+        input_refs = (
+            commission_ref,
+            *(item.clarification_id for item in exchanges if item.answered),
+        )
         body = architect_agent.architect_context_body(
             commission.request,
             source_access=commission.source_access,
             language=commission.language,
             constraints=commission.constraints,
             pack_menu="（本次运行不启用任何能力包。）",
+            clarifications=answered,
         )
         action = await invoke_agent(
             architect_agent.SPEC,
@@ -840,7 +973,7 @@ class ResearchService:
                 role="architect",
                 purpose="把用户委托转化为可审批的研究合同",
                 body=body,
-                input_refs=(commission_ref,),
+                input_refs=input_refs,
             ),
             model=runtimes["architect"].model,
             ledger=self.ledger,
@@ -849,15 +982,12 @@ class ResearchService:
             validate=architect_agent.make_validator(None),
         )
         if action.name == "ask_scope_question":
-            listen(
-                Event(
-                    "clarification_requested",
-                    str(action.arguments["question"]),
-                    {
-                        "why": str(action.arguments["why_it_changes_the_plan"]),
-                        "task_id": store.task_id,
-                    },
-                )
+            await self._ask_clarification(
+                store,
+                commission_ref=commission_ref,
+                previous=exchanges,
+                arguments=action.arguments,
+                listen=listen,
             )
             return None
 
@@ -867,10 +997,72 @@ class ResearchService:
         await store.put(
             kind="research_contract",
             body=contract.encode(),
-            parent_refs=(commission_ref,),
+            parent_refs=tuple(sorted(set(input_refs))),
             provenance=Provenance(producer="architect"),
         )
         return contract
+
+    async def _ask_clarification(
+        self,
+        store: SqliteArtifactStore,
+        *,
+        commission_ref: str,
+        previous: Sequence[Exchange],
+        arguments: Mapping[str, Any],
+        listen: Listener,
+    ) -> None:
+        """Commit the Architect's question and tell the caller about it."""
+
+        question = ClarificationBody(
+            question=str(arguments["question"]),
+            why_it_changes_the_plan=str(arguments["why_it_changes_the_plan"]),
+        )
+        parents = (
+            commission_ref,
+            *(item.clarification_id for item in previous if item.answered),
+        )
+        envelope = await store.put(
+            kind="clarification",
+            body=question.encode(),
+            parent_refs=tuple(sorted(set(parents))),
+            provenance=Provenance(producer="architect"),
+        )
+        listen(
+            Event(
+                "clarification_requested",
+                question.question,
+                {
+                    "why": question.why_it_changes_the_plan,
+                    "task_id": store.task_id,
+                    "clarification_id": envelope.artifact_id,
+                    "round": len(previous) + 1,
+                },
+            )
+        )
+
+    async def _exchanges(self, store: SqliteArtifactStore) -> tuple[Exchange, ...]:
+        """The clarification history in order, each with its reply if answered."""
+
+        view = await store.active_view()
+        replies: dict[str, str] = {}
+        for ref in view.active("clarification_reply"):
+            envelope = await store.get(ref)
+            answer = ClarificationReplyBody.decode(await store.body(ref)).answer
+            for parent in envelope.parent_refs:
+                replies[parent] = answer
+
+        exchanges: list[Exchange] = []
+        for ref in view.active("clarification"):
+            body = ClarificationBody.decode(await store.body(ref))
+            exchanges.append(
+                Exchange(
+                    clarification_id=ref,
+                    question=body.question,
+                    why=body.why_it_changes_the_plan,
+                    answer=replies.get(ref, ""),
+                )
+            )
+        return tuple(exchanges)
 
     async def _govern(
         self,
@@ -1069,6 +1261,7 @@ __all__ = [
     "RUNAWAY_WAVE_GUARD",
     "STALL_TOLERANCE",
     "Event",
+    "Exchange",
     "Listener",
     "PlanVersion",
     "ResearchService",

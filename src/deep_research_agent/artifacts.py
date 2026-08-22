@@ -23,6 +23,8 @@ from .sources import ArtifactValidationError, BodyRef
 
 ArtifactKind = Literal[
     "commission",
+    "clarification",
+    "clarification_reply",
     "research_contract",
     "approval_receipt",
     "source_snapshot",
@@ -38,6 +40,8 @@ ArtifactKind = Literal[
 
 _KIND_PREFIX: Mapping[str, str] = {
     "commission": "cms",
+    "clarification": "clq",
+    "clarification_reply": "cla",
     "research_contract": "ctr",
     "approval_receipt": "apr",
     "source_snapshot": "src",
@@ -68,8 +72,19 @@ SINGLETON_KINDS: frozenset[str] = frozenset(
 )
 
 #: Kinds that accumulate: the whole active set matters, not the newest member.
+#: Clarifications accumulate because the exchange is a history -- the Architect may
+#: need more than one answer, and every question and reply stays readable as part
+#: of how the study's intent was settled.
 COLLECTION_KINDS: frozenset[str] = frozenset(
-    {"source_snapshot", "material", "review", "approval_receipt", "review_receipt"}
+    {
+        "source_snapshot",
+        "material",
+        "review",
+        "approval_receipt",
+        "review_receipt",
+        "clarification",
+        "clarification_reply",
+    }
 )
 
 _ID_HASH_LENGTH = 24

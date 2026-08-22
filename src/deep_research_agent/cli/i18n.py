@@ -56,6 +56,10 @@ _CATALOGUE: Final[Mapping[str, Mapping[str, str]]] = {
         "en": "{count} research plans are waiting for your decision",
     },
     "home.recent_done": {"zh-CN": "最近完成", "en": "Recently completed"},
+    "home.clarification_waiting": {
+        "zh-CN": "有一项研究需要你补充一个信息",
+        "en": "One research needs one more thing from you",
+    },
     # --- actions ----------------------------------------------------------
     "action.configure": {"zh-CN": "配置模型与搜索", "en": "Configure models and search"},
     "action.review_approve": {"zh-CN": "查看并批准", "en": "Review and approve"},
@@ -71,6 +75,7 @@ _CATALOGUE: Final[Mapping[str, Mapping[str, str]]] = {
     "action.view_plan": {"zh-CN": "查看研究方案", "en": "View the research plan"},
     "action.approve_start": {"zh-CN": "批准并开始研究", "en": "Approve and start"},
     "action.request_changes": {"zh-CN": "提出修改", "en": "Request changes"},
+    "action.answer_clarification": {"zh-CN": "回答这个问题", "en": "Answer the question"},
     "action.save_for_later": {"zh-CN": "稍后处理", "en": "Review later"},
     "action.delete_running": {
         "zh-CN": "取消并删除研究",
@@ -197,14 +202,22 @@ _CATALOGUE: Final[Mapping[str, Mapping[str, str]]] = {
         "zh-CN": "批准后将开始模型和搜索调用。",
         "en": "Approving starts model and search calls.",
     },
-    "new.too_vague": {
-        "zh-CN": "这个委托太模糊，无法定出一个方案。",
-        "en": "This brief is too broad to plan from.",
+    "clarify.title": {"zh-CN": "还需要确认一点", "en": "One thing to confirm"},
+    "clarify.label": {"zh-CN": "待澄清", "en": "Open question"},
+    "clarify.why": {
+        "zh-CN": "为什么这会改变方案：{why}",
+        "en": "Why this changes the plan: {why}",
     },
-    "new.clarify_prompt": {
-        "zh-CN": "补充一句，然后我重新拟方案：",
-        "en": "Add a sentence and I will re-draft the plan:",
+    "clarify.prompt": {"zh-CN": "你的回答", "en": "Your answer"},
+    "clarify.working": {
+        "zh-CN": "收到，正在继续整理研究方案…",
+        "en": "Got it — working the plan out…",
     },
+    "clarify.another": {
+        "zh-CN": "还有一个问题需要你确认",
+        "en": "One more thing to confirm",
+    },
+    "clarify.resolved": {"zh-CN": "研究方案已生成", "en": "The research plan is ready"},
     "plan.revise_prompt": {
         "zh-CN": "希望怎么调整这份研究方案？",
         "en": "What should change about this research plan?",

@@ -48,6 +48,15 @@ class StalePlanError(ApprovalError):
     """
 
 
+class StaleClarificationError(ApprovalError):
+    """An answer arrived for a question that is no longer the open one.
+
+    The same hazard as :class:`StalePlanError`, one step earlier: an answer to
+    "are you choosing or explaining" must not be recorded against "which markets
+    matter" just because that is what the Architect is asking now.
+    """
+
+
 @dataclass(frozen=True, slots=True)
 class ApprovalBody:
     """One user decision on one exact Contract candidate.
@@ -213,6 +222,7 @@ __all__ = [
     "ApprovalBody",
     "ApprovalDecision",
     "ApprovalError",
+    "StaleClarificationError",
     "StalePlanError",
     "approval_card",
     "approved_contract",

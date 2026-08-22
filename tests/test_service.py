@@ -24,6 +24,7 @@ import deep_research_agent.service as service_module
 from deep_research_agent.approval import (
     ApprovalBody,
     ApprovalError,
+    StaleClarificationError,
     StalePlanError,
     record_decision,
 )
@@ -914,6 +915,290 @@ class PlanLifecycleTest(ServiceFixture):
         self.assertEqual(2, revised.plan_version)
         await service.approve(revised.task_id, revised.plan_id)
         self.assertEqual("researching", (await service.task(task.task_id)).state)
+
+
+class ClarificationLifecycleTest(ServiceFixture):
+    """Scoping a study is a conversation, and it stays one study.
+
+    Answering used to concatenate the reply onto the request and call open_task,
+    which derives task identity from the Commission -- so one question produced
+    two studies and stranded the first at ``clarification_requested`` forever.
+    """
+
+    def _question(self, text: str, why: str = "两者需要完全不同的证据。") -> ModelReply:
+        return ModelReply(
+            tool_calls=(
+                _call("ask_scope_question", question=text, why_it_changes_the_plan=why),
+            )
+        )
+
+    async def test_a_question_is_committed_and_survives_a_new_service(self) -> None:
+        """Invariant 6: the question is an artifact, not a line in one session."""
+
+        self._use(self._question("这份研究是为选型还是为科普？"))
+        task = await self._open()
+        self.assertEqual("clarification_requested", task.state)
+        self.assertTrue(task.clarification_id.startswith("clq_"))
+        self.assertEqual("这份研究是为选型还是为科普？", task.clarification_question)
+
+        other = ResearchService(
+            connection=self._connection, environ={"DEEPSEEK_API_KEY": "k"}
+        )
+        await other.setup()
+        seen = await other.task(task.task_id)
+        self.assertEqual(task.clarification_id, seen.clarification_id)
+        self.assertEqual(task.clarification_question, seen.clarification_question)
+
+    async def test_answering_keeps_the_same_task_and_reaches_a_plan(self) -> None:
+        """Invariants 1 and 9: one task, and the outcome is that task's Plan v1."""
+
+        self._use(self._question("为选型还是科普？"), _architect_reply())
+        task = await self._open()
+
+        resolved = await self.service.answer_clarification(
+            task.task_id, task.clarification_id, "为选型。"
+        )
+
+        self.assertEqual(task.task_id, resolved.task_id)
+        self.assertEqual("awaiting_approval", resolved.state)
+        self.assertEqual(1, resolved.plan_version)
+        self.assertEqual(1, len(await self.service.tasks()))
+
+    async def test_two_rounds_of_clarification_stay_one_task(self) -> None:
+        """Invariant 2, and invariant 8: the second question is a new question."""
+
+        self._use(
+            self._question("为选型还是科普？"),
+            self._question("要覆盖哪些市场？"),
+            _architect_reply(),
+        )
+        task = await self._open()
+        second = await self.service.answer_clarification(
+            task.task_id, task.clarification_id, "为选型。"
+        )
+        self.assertEqual("clarification_requested", second.state)
+        self.assertEqual("要覆盖哪些市场？", second.clarification_question)
+        self.assertNotEqual(task.clarification_id, second.clarification_id)
+
+        resolved = await self.service.answer_clarification(
+            second.task_id, second.clarification_id, "中国和美国。"
+        )
+        self.assertEqual(task.task_id, resolved.task_id)
+        self.assertEqual("awaiting_approval", resolved.state)
+        self.assertEqual(1, len(await self.service.tasks()))
+
+        history = await self.service.clarification_history(task.task_id)
+        self.assertEqual(
+            [("为选型还是科普？", "为选型。"), ("要覆盖哪些市场？", "中国和美国。")],
+            [(item.question, item.answer) for item in history],
+        )
+
+    async def test_the_original_request_survives_every_answer(self) -> None:
+        """Invariant 3: the Commission is what the user asked, unchanged."""
+
+        original = "调研 AI Agent 行业。"
+        self._use(
+            self._question("为选型还是科普？"),
+            self._question("要覆盖哪些市场？"),
+            _architect_reply(),
+        )
+        task = await self._open(original)
+        second = await self.service.answer_clarification(
+            task.task_id, task.clarification_id, "为选型。"
+        )
+        resolved = await self.service.answer_clarification(
+            second.task_id, second.clarification_id, "中国和美国。"
+        )
+        self.assertEqual(original, resolved.request)
+        self.assertEqual(original, (await self.service.task(task.task_id)).request)
+
+    async def test_the_architect_sees_the_original_request_and_the_exchange(
+        self,
+    ) -> None:
+        """Invariant 7, verified against the real prompt rather than a mock call."""
+
+        seen: list[str] = []
+
+        class Recording(ScriptedModel):
+            async def complete(self, messages, **kwargs):  # noqa: ANN001, ANN202
+                seen.append("\n".join(str(item) for item in messages))
+                return await super().complete(messages, **kwargs)
+
+        model = Recording(
+            self._question("为选型还是科普？"),
+            self._question("要覆盖哪些市场？"),
+            _architect_reply(),
+        )
+        execution = ExecutionIdentity(provider="scripted", model_id="test")
+        runtimes = {
+            role: RoleRuntime(model=model, execution=execution) for role in ROLES
+        }
+        patcher = mock.patch.object(
+            service_module, "build_runtimes", lambda *a, **k: dict(runtimes)
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+        task = await self._open("调研 AI Agent 行业。")
+        second = await self.service.answer_clarification(
+            task.task_id, task.clarification_id, "为选型。"
+        )
+        await self.service.answer_clarification(
+            second.task_id, second.clarification_id, "中国和美国。"
+        )
+
+        final_prompt = seen[-1]
+        self.assertIn("用户原始委托", final_prompt)
+        self.assertIn("调研 AI Agent 行业。", final_prompt)
+        self.assertIn("澄清问题与用户的回答", final_prompt)
+        self.assertIn("Q1. 为选型还是科普？", final_prompt)
+        self.assertIn("A1. 为选型。", final_prompt)
+        self.assertIn("Q2. 要覆盖哪些市场？", final_prompt)
+        self.assertIn("A2. 中国和美国。", final_prompt)
+        # The answer must not have been glued onto the request.
+        self.assertNotIn("调研 AI Agent 行业。\n\n为选型。", final_prompt)
+
+    async def test_the_second_call_is_not_a_replay_of_the_first_question(self) -> None:
+        """The ledger keys on input refs, so the answered exchange must be one.
+
+        Without it the Architect's first answer would replay forever and the study
+        could never leave clarification -- the same trap the revision path hit.
+        """
+
+        model = self._use(self._question("为选型还是科普？"), _architect_reply())
+        task = await self._open()
+        await self.service.answer_clarification(
+            task.task_id, task.clarification_id, "为选型。"
+        )
+        self.assertEqual(2, model.calls, "the Architect must be asked again")
+
+    async def test_an_answer_needs_content(self) -> None:
+        self._use(self._question("为选型还是科普？"))
+        task = await self._open()
+        for empty in ("", "   "):
+            with self.subTest(answer=empty):
+                with self.assertRaises(ArtifactValidationError):
+                    await self.service.answer_clarification(
+                        task.task_id, task.clarification_id, empty
+                    )
+
+    async def test_answering_a_superseded_question_is_refused(self) -> None:
+        """Invariant 5: an answer to the old question is not the new one's answer."""
+
+        self._use(
+            self._question("为选型还是科普？"),
+            self._question("要覆盖哪些市场？"),
+            _architect_reply(),
+        )
+        task = await self._open()
+        stale = task.clarification_id
+        await self.service.answer_clarification(task.task_id, stale, "为选型。")
+
+        with self.assertRaises(StaleClarificationError):
+            await self.service.answer_clarification(task.task_id, stale, "中国和美国。")
+
+    async def test_answering_when_nothing_is_open_is_refused(self) -> None:
+        self._use(_architect_reply())
+        task = await self._open()
+        with self.assertRaisesRegex(ApprovalError, "没有待回答的问题"):
+            await self.service.answer_clarification(task.task_id, "", "随便说点什么。")
+
+    async def test_the_plan_records_the_exchange_that_shaped_it(self) -> None:
+        """Lineage: Plan v1 descends from the Commission *and* the answers."""
+
+        self._use(self._question("为选型还是科普？"), _architect_reply())
+        task = await self._open()
+        resolved = await self.service.answer_clarification(
+            task.task_id, task.clarification_id, "为选型。"
+        )
+
+        store = self.service._store(task.task_id)  # noqa: SLF001
+        envelope = await store.get(resolved.plan_id)
+        self.assertIn(task.clarification_id, envelope.parent_refs)
+        self.assertTrue(
+            any(ref.startswith("cms_") for ref in envelope.parent_refs),
+            "the Commission stays the plan's ancestor",
+        )
+
+    async def test_clarification_does_not_change_the_execution_snapshot(self) -> None:
+        """Invariant 10: answering a question is not a configuration change."""
+
+        self._use(self._question("为选型还是科普？"), _architect_reply())
+        task = await self._open()
+        before = await self.service.execution(task.task_id)
+
+        await self.service.answer_clarification(
+            task.task_id, task.clarification_id, "为选型。"
+        )
+
+        after = await self.service.execution(task.task_id)
+        self.assertTrue(after.frozen)
+        self.assertEqual(
+            before.config.model_for("architect").model_id,
+            after.config.model_for("architect").model_id,
+        )
+        self.assertEqual(before.config.search_providers, after.config.search_providers)
+
+    async def test_clarification_flows_into_the_plan_lifecycle(self) -> None:
+        """The join: one task from first question through to an approved plan."""
+
+        self._use(
+            self._question("为选型还是科普？"),
+            _architect_reply(),
+            ModelReply(
+                tool_calls=(
+                    _call(
+                        "propose_contract",
+                        contract_markdown=CONTRACT_BODY.replace(
+                            "不评测具体实现的性能。", "不评测具体实现的性能。只看中美。"
+                        ),
+                    ),
+                )
+            ),
+        )
+        task = await self._open()
+        planned = await self.service.answer_clarification(
+            task.task_id, task.clarification_id, "为选型。"
+        )
+        revised = await self.service.request_revision(
+            planned.task_id, planned.plan_id, "只看中美市场。"
+        )
+        await self.service.approve(revised.task_id, revised.plan_id)
+
+        final = await self.service.task(task.task_id)
+        self.assertEqual(task.task_id, final.task_id)
+        self.assertEqual("researching", final.state)
+        self.assertEqual(2, final.plan_version)
+        self.assertEqual(1, len(await self.service.tasks()))
+        self.assertEqual(
+            1, len(await self.service.clarification_history(task.task_id))
+        )
+
+    async def test_a_legacy_clarification_task_is_still_readable(self) -> None:
+        """An old task has no clarification artifact at all.
+
+        It reads, it reports the state honestly, and it has no open question to
+        answer -- which is the truth about it, since the question was never
+        recorded anywhere.  Nothing about it becomes unreadable or crashes.
+        """
+
+        self._use(_clarify_reply())
+        task = await self._open()
+        store = self.service._store(task.task_id)  # noqa: SLF001
+        view = await store.active_view()
+        # Simulate the pre-clarification-artifact shape by removing the record.
+        for ref in view.active("clarification"):
+            await self._connection.execute(
+                "DELETE FROM artifacts WHERE task_id = ? AND artifact_id = ?",
+                (task.task_id, ref),
+            )
+        await self._connection.commit()
+
+        legacy = await self.service.task(task.task_id)
+        self.assertEqual("clarification_requested", legacy.state)
+        self.assertEqual("", legacy.clarification_id)
+        self.assertEqual((), await self.service.clarification_history(task.task_id))
+        self.assertTrue(await self.service.delete_research(task.task_id))
 
 
 if __name__ == "__main__":

@@ -215,6 +215,9 @@ class Workspace:
 
         configured = self.is_configured()
         tasks = await self.service.tasks()
+        asking = [
+            item for item in tasks if item.state == "clarification_requested"
+        ]
         awaiting = [item for item in tasks if item.state == "awaiting_approval"]
         paused = [
             item for item in tasks if item.state in ("paused", "halted", "researching")
@@ -222,7 +225,14 @@ class Workspace:
         done = [item for item in tasks if item.state == "published"]
 
         options: list[tuple[str, str]] = []
-        if awaiting:
+        if asking:
+            # A question waiting on the user outranks everything else: the study
+            # cannot even be planned until they answer it.
+            self.console.print()
+            self.console.print(f"  {self.t('home.clarification_waiting')}")
+            self._preview(asking[0])
+            options.append(("answer", self.t("action.answer_clarification")))
+        elif awaiting:
             self.console.print()
             message = (
                 self.t("home.awaiting_one")
@@ -258,7 +268,10 @@ class Workspace:
         disabled = (
             {}
             if configured
-            else {key: self.t("home.configure_first") for key in ("new", "approve", "resume")}
+            else {
+                key: self.t("home.configure_first")
+                for key in ("new", "approve", "resume", "answer")
+            }
         )
 
         if configured and not tasks:
@@ -308,6 +321,8 @@ class Workspace:
                     await self._run_setup()
                 elif action == "new":
                     await self._new_research()
+                elif action == "answer":
+                    await self._first_of("clarification_requested")
                 elif action == "approve":
                     await self._first_of("awaiting_approval")
                 elif action == "resume":
@@ -372,10 +387,6 @@ class Workspace:
                 listen=self._collect,
             )
         theme.dim(self.console, self.t("new.not_started"))
-
-        if task.state == "clarification_requested":
-            await self._handle_clarification(request)
-            return
         await self._task_detail(task.task_id)
 
     def _render_defaults(self, defaults: ResearchDefaults) -> None:
@@ -528,16 +539,42 @@ class Workspace:
             academic_providers=academic if academic is not None else defaults.academic_providers,
         )
 
-    async def _handle_clarification(self, original: str) -> None:
-        """Stay in the workspace: take the answer and re-plan, never exit."""
+    async def _answer_clarification(self, task: Task) -> None:
+        """Answer the Architect's open question, on this task, and let it retry.
 
+        This used to concatenate the answer onto the request and call
+        ``_new_research``, which opened a *second* study and left the first
+        stranded at ``clarification_requested`` forever.  The answer is now bound
+        to the exact question it answers, and the study keeps its identity.
+        """
+
+        assert self.service is not None
+        self.page(title=self.t("clarify.title"))
         self.console.print()
-        theme.status_line(self.console, theme.GLYPH["warn"], self.t("new.too_vague"))
-        addition = await prompts.ask_text(self.t("new.clarify_prompt"))
-        if not addition:
+        self.console.print(f"  {task.clarification_question}")
+        if task.clarification_why:
+            theme.dim(self.console, self.t("clarify.why", why=task.clarification_why))
+        self.console.print()
+
+        answer = await prompts.ask_text(self.t("clarify.prompt"))
+        if not answer:
             return
-        self._pending_request = f"{original}\n\n{addition}"
-        await self._new_research()
+
+        try:
+            with self.console.status(f"  {self.t('clarify.working')}", spinner="dots"):
+                updated = await self.service.answer_clarification(
+                    task.task_id, task.clarification_id, answer
+                )
+        except (ApprovalError, ArtifactValidationError, AgentProtocolError) as error:
+            self.flash(theme.GLYPH["warn"], str(error))
+            return
+
+        journal.record("clarification_answered", task_id=task.task_id)
+        if updated.state == "clarification_requested":
+            # The Architect needs one more thing; still the same study.
+            self.flash(theme.GLYPH["info"], self.t("clarify.another"))
+        else:
+            self.flash(theme.GLYPH["done"], self.t("clarify.resolved"))
 
     # ------------------------------------------------------- task navigation
 
@@ -581,6 +618,13 @@ class Workspace:
             # changed their settings must be able to see that this study did not.
             if task.state == "awaiting_approval" and task.plan_version > 1:
                 rows.append((self.t("plan.label"), self._plan_title(task)))
+            if task.clarification_question:
+                rows.append(
+                    (
+                        self.t("clarify.label"),
+                        theme.truncate(task.clarification_question, 52),
+                    )
+                )
             rows.append(
                 (self.t("cfg.model"), await self.service.execution_summary(task_id))
             )
@@ -600,6 +644,8 @@ class Workspace:
                 await self._read_report(task_id)
             elif action == "export":
                 await self._export_report(task_id)
+            elif action == "answer":
+                await self._answer_clarification(task)
             elif action == "revise":
                 if await self._revise(task):
                     return
@@ -637,6 +683,14 @@ class Workspace:
                 ("export", self.t("action.export_report")),
                 ("delete", self.t("action.delete_done")),
                 ("back", self.t("action.back_workspace")),
+            ]
+        elif task.state == "clarification_requested":
+            # One question is open and the study cannot be planned without it, so
+            # the only moves are answering, leaving it, or abandoning the study.
+            options += [
+                ("answer", self.t("action.answer_clarification")),
+                ("back", self.t("action.save_for_later")),
+                ("delete", self.t("action.delete_running")),
             ]
         else:
             options += [

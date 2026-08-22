@@ -25,7 +25,10 @@ from prompt_toolkit.input import create_pipe_input
 from prompt_toolkit.output import DummyOutput
 
 import deep_research_agent.cli.main as cli_main
-from deep_research_agent.approval import StalePlanError
+from deep_research_agent.approval import (
+    StaleClarificationError,
+    StalePlanError,
+)
 from deep_research_agent.cli import doctor, i18n, journal, paths, setup_flow, theme
 from deep_research_agent.cli import prompts as prompts_module
 from deep_research_agent.cli import settings as cli_settings
@@ -363,6 +366,134 @@ class PlanRevisionWorkspaceTest(unittest.IsolatedAsyncioTestCase):
         )
 
 
+class ClarificationWorkspaceTest(unittest.IsolatedAsyncioTestCase):
+    """Answering the Architect's question happens on the task, not a new one."""
+
+    def _workspace(self, service) -> Workspace:  # noqa: ANN001
+        workspace = Workspace(
+            args=argparse.Namespace(database="", verbose=False),
+            console=theme.console(file=io.StringIO()),
+            settings=CliSettings(cli_language="zh-CN"),
+            translate=i18n.Translator("zh-CN"),
+            environ={},
+        )
+        workspace.service = service
+        return workspace
+
+    def _asking(self, **kwargs) -> Task:  # noqa: ANN003
+        kwargs.setdefault("clarification_id", "clq_abc")
+        return _task("clarification_requested", **kwargs)
+
+    def test_a_task_awaiting_an_answer_offers_exactly_three_moves(self) -> None:
+        workspace = self._workspace(mock.AsyncMock())
+        actions = dict(workspace._actions_for(self._asking()))
+        self.assertEqual({"answer", "back", "delete"}, set(actions))
+        self.assertEqual("回答这个问题", actions["answer"])
+        self.assertEqual("稍后处理", actions["back"])
+
+    async def test_answering_never_opens_a_second_study(self) -> None:
+        service = mock.AsyncMock()
+        service.answer_clarification.return_value = _task(
+            "awaiting_approval", plan_version=1
+        )
+        workspace = self._workspace(service)
+        task = self._asking()
+
+        with mock.patch.object(
+            prompts_module, "ask_text", mock.AsyncMock(return_value="为选型。")
+        ):
+            await workspace._answer_clarification(task)
+
+        service.answer_clarification.assert_awaited_once_with(
+            task.task_id, "clq_abc", "为选型。"
+        )
+        service.open_task.assert_not_called()
+        self.assertIn("研究方案已生成", workspace._receipt[1])
+
+    async def test_a_second_question_is_reported_as_another_question(self) -> None:
+        service = mock.AsyncMock()
+        service.answer_clarification.return_value = self._asking(
+            clarification_id="clq_def"
+        )
+        workspace = self._workspace(service)
+
+        with mock.patch.object(
+            prompts_module, "ask_text", mock.AsyncMock(return_value="为选型。")
+        ):
+            await workspace._answer_clarification(self._asking())
+
+        self.assertIn("还有一个问题", workspace._receipt[1])
+
+    async def test_an_empty_answer_records_nothing(self) -> None:
+        service = mock.AsyncMock()
+        workspace = self._workspace(service)
+        with mock.patch.object(
+            prompts_module, "ask_text", mock.AsyncMock(return_value="")
+        ):
+            await workspace._answer_clarification(self._asking())
+        service.answer_clarification.assert_not_called()
+
+    async def test_a_stale_question_is_reported_and_nothing_is_recorded(self) -> None:
+        service = mock.AsyncMock()
+        service.answer_clarification.side_effect = StaleClarificationError(
+            "这个澄清问题已经发生变化。请查看最新的问题后回答。"
+        )
+        workspace = self._workspace(service)
+        with mock.patch.object(
+            prompts_module, "ask_text", mock.AsyncMock(return_value="为选型。")
+        ):
+            await workspace._answer_clarification(self._asking())
+        self.assertIn("已经发生变化", workspace._receipt[1])
+
+    async def test_the_question_is_shown_before_the_prompt(self) -> None:
+        """Resume: the question comes from the task, not from this session."""
+
+        buffer = io.StringIO()
+        workspace = self._workspace(mock.AsyncMock())
+        workspace.console = theme.console(file=buffer)
+        task = self._asking(
+            clarification_question="这份研究是为选型还是为科普？",
+            clarification_why="两者需要完全不同的证据。",
+        )
+        with mock.patch.object(
+            prompts_module, "ask_text", mock.AsyncMock(return_value=None)
+        ):
+            await workspace._answer_clarification(task)
+        printed = buffer.getvalue()
+        self.assertIn("这份研究是为选型还是为科普？", printed)
+        self.assertIn("两者需要完全不同的证据。", printed)
+
+    async def test_the_home_screen_surfaces_an_open_question_first(self) -> None:
+        """It blocks the study entirely, so it outranks a waiting plan."""
+
+        service = mock.AsyncMock()
+        service.tasks.return_value = (
+            _task("awaiting_approval", task_id="t_2"),
+            self._asking(task_id="t_1"),
+        )
+        workspace = self._workspace(service)
+        workspace.settings = CliSettings(
+            cli_language="zh-CN",
+            defaults=ResearchDefaults(
+                investigator=ModelChoice("deepseek", "a"),
+                other_roles=ModelChoice("deepseek", "b"),
+            ),
+        )
+        workspace.environ = {"DEEPSEEK_API_KEY": "k"}
+
+        offered: list[str] = []
+
+        async def fake_choose(_message, options, **_kwargs):  # noqa: ANN001, ANN202
+            offered.extend(key for key, _label in options)
+            return "exit"
+
+        with mock.patch.object(prompts_module, "choose", fake_choose):
+            await workspace.home()
+
+        self.assertIn("answer", offered)
+        self.assertNotIn("approve", offered)
+
+
 class SettingsTest(unittest.TestCase):
     def test_settings_round_trip(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -436,6 +567,9 @@ def _task(state: str, **kwargs: object) -> Task:
         sources=int(kwargs.get("sources", 0)),
         plan_id=str(kwargs.get("plan_id", "ctr_abc")),
         plan_version=int(kwargs.get("plan_version", 1)),
+        clarification_id=str(kwargs.get("clarification_id", "")),
+        clarification_question=str(kwargs.get("clarification_question", "")),
+        clarification_why=str(kwargs.get("clarification_why", "")),
     )
 
 
