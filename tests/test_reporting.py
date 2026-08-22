@@ -79,7 +79,6 @@ class ScriptedModel:
         self,
         messages: Sequence[Mapping[str, Any]],
         *,
-        json_output: bool = False,
         tools: Sequence[ToolSpec] = (),
         tool_choice: str | None = None,
     ) -> ModelReply:

@@ -19,10 +19,10 @@ async def no_sleep(_seconds: float) -> None:
 
 
 class DeepSeekTransportTest(unittest.IsolatedAsyncioTestCase):
-    async def test_json_mode_and_tool_calls_follow_openai_wire_format(self) -> None:
+    async def test_tool_calls_follow_the_openai_wire_format(self) -> None:
         async def handler(request: httpx.Request) -> httpx.Response:
             payload = json.loads(request.content)
-            self.assertEqual({"type": "json_object"}, payload["response_format"])
+            self.assertNotIn("response_format", payload)
             self.assertEqual(65_536, payload["max_tokens"])
             self.assertEqual("auto", payload["tool_choice"])
             self.assertEqual("search", payload["tools"][0]["function"]["name"])
@@ -58,7 +58,6 @@ class DeepSeekTransportTest(unittest.IsolatedAsyncioTestCase):
                     {"role": "system", "content": "Return JSON."},
                     {"role": "user", "content": "work"},
                 ],
-                json_output=True,
                 tools=(
                     ToolSpec(
                         "search",
@@ -97,7 +96,7 @@ class DeepSeekTransportTest(unittest.IsolatedAsyncioTestCase):
         )
         try:
             reply = await model.complete(
-                [{"role": "user", "content": "Return JSON."}], json_output=True
+                [{"role": "user", "content": "work"}]
             )
         finally:
             await client.aclose()

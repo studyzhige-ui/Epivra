@@ -52,7 +52,6 @@ STATE_GLYPH: Mapping[str, str] = {
     "awaiting_approval": GLYPH["active"],
     "researching": "◐",
     "published": GLYPH["done"],
-    "halted": GLYPH["blocked"],
     "paused": GLYPH["pending"],
 }
 

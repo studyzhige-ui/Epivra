@@ -23,6 +23,8 @@ from typing import Any, Protocol
 from ..context import RoleContext
 from ..model import (
     ChatModel,
+    ModelAuthError,
+    ModelRateLimitError,
     ModelReply,
     ModelRequestRejected,
     ModelToolCall,
@@ -117,12 +119,6 @@ class AgentSpec:
             raise ValueError(f"{self.role} max_tool_turns must be positive")
 
     @property
-    def working_tools(self) -> frozenset[str]:
-        """Tools that do work and hand control back, rather than ending the turn."""
-
-        return frozenset(tool.name for tool in self.tools) - self.terminal_tools
-
-    @property
     def digest(self) -> str:
         """Exact identity of the instructions this role was invoked with.
 
@@ -163,6 +159,11 @@ class AgentToolBudgetExhausted(AgentProtocolError):
 #: How many turns before the ceiling the runtime says so.  Three is enough for a
 #: role to finish reading what it already fetched and still submit.
 _BUDGET_NOTICE_TURNS = 3
+
+#: One correction inside the same operation, then the run pauses for a human.
+#: Escalating further is what turned a research failure into a protocol version
+#: bump in the previous implementation.
+_MAX_CORRECTIONS = 1
 
 
 def _budget_notice(remaining: int) -> str:
@@ -223,7 +224,6 @@ async def invoke_agent(
     execution: ExecutionIdentity,
     validate: TerminalValidator | None = None,
     handlers: Mapping[str, ToolHandler] | None = None,
-    max_corrections: int = 1,
 ) -> TerminalAction:
     """Run one role until it submits a valid terminal action.
 
@@ -277,7 +277,11 @@ async def invoke_agent(
                 ledger,
                 request,
                 send,
-                not_executed=(ModelRequestRejected,),
+                not_executed=(
+                    ModelRequestRejected,
+                    ModelAuthError,
+                    ModelRateLimitError,
+                ),
                 usage_of=_usage_of,
             )
         )
@@ -338,7 +342,7 @@ async def invoke_agent(
         rendered = error.render()
         # Repeating the same invalid action is a pause, not another retry: the
         # role has demonstrated it cannot correct with the context it has.
-        if rendered in seen_errors or corrections >= max_corrections:
+        if rendered in seen_errors or corrections >= _MAX_CORRECTIONS:
             raise AgentProtocolError(
                 f"{spec.role} could not submit a valid terminal action: {rendered}"
             )

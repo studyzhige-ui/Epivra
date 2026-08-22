@@ -31,6 +31,12 @@ _REFERENCE_HEADING_RE = re.compile(
     re.IGNORECASE | re.MULTILINE,
 )
 
+#: The heading the runtime appends.  Fixed rather than configurable: the Author is
+#: forbidden from writing a References section at all, and
+#: :data:`_REFERENCE_HEADING_RE` is what enforces that -- a caller free to choose a
+#: different heading could produce one the check does not recognise.
+REFERENCES_HEADING = "## 参考资料"
+
 
 class CitationClosureError(ValueError):
     """A report cannot be published with its citations as written."""
@@ -204,7 +210,6 @@ def render_citations(
     handles: Sequence[CitationHandle],
     *,
     evidence_set: Sequence[str] | None = None,
-    heading: str = "## 参考资料",
 ) -> RenderedCitations:
     """Resolve every marker, number by first appearance, and append References.
 
@@ -257,7 +262,7 @@ def render_citations(
 
     body = _MARKER_RE.sub(substitute, markdown)
     body = _collapse_adjacent(body).rstrip()
-    rendered = f"{body}\n\n{heading}\n\n" + "\n".join(references) + "\n"
+    rendered = f"{body}\n\n{REFERENCES_HEADING}\n\n" + "\n".join(references) + "\n"
     return RenderedCitations(
         markdown=rendered,
         references=tuple(references),
@@ -266,6 +271,7 @@ def render_citations(
 
 
 __all__ = [
+    "REFERENCES_HEADING",
     "CitationClosureError",
     "CitationHandle",
     "RenderedCitations",

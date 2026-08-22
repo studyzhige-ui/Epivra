@@ -31,13 +31,10 @@ import aiosqlite
 from rich.console import Console
 from rich.markdown import Markdown
 
-from ..agents import AgentProtocolError
 from ..application import load_environment
-from ..approval import ApprovalError
 from ..config import load_config
 from ..providers.llm import LLM_PROVIDERS
 from ..service import Event, ResearchService, Task
-from ..sources import ArtifactValidationError
 from . import journal, prompts, theme
 from .i18n import CLI_LANGUAGES, Translator
 from .paths import config_file, settings_file
@@ -85,6 +82,16 @@ STAGES: tuple[tuple[str, str], ...] = (
     ("writing", "run.stage.writing"),
     ("review", "run.stage.review"),
 )
+
+#: Failures the workspace expects and reports, rather than dying on.
+#:
+#: These two base classes are exactly what this codebase's domain and
+#: infrastructure errors derive from: ``ArtifactValidationError`` and
+#: ``ConfigError`` are ValueErrors, and ``ApprovalError``, ``AgentProtocolError``,
+#: ``OperationError`` and every provider failure are RuntimeErrors.  Deliberately
+#: not ``Exception``: an AttributeError or a TypeError is a bug in this program and
+#: should still fail loudly rather than being reported as if a vendor was at fault.
+EXPECTED_FAILURES = (ValueError, RuntimeError)
 
 
 @dataclass(slots=True)
@@ -220,7 +227,7 @@ class Workspace:
         ]
         awaiting = [item for item in tasks if item.state == "awaiting_approval"]
         paused = [
-            item for item in tasks if item.state in ("paused", "halted", "researching")
+            item for item in tasks if item.state in ("paused", "researching")
         ]
         done = [item for item in tasks if item.state == "published"]
 
@@ -231,7 +238,11 @@ class Workspace:
             self.console.print()
             self.console.print(f"  {self.t('home.clarification_waiting')}")
             self._preview(asking[0])
-            options.append(("answer", self.t("action.answer_clarification")))
+            options.append(
+                ("answer", self.t("action.answer_clarification"))
+                if asking[0].clarification_id
+                else ("replan", self.t("action.replan"))
+            )
         elif awaiting:
             self.console.print()
             message = (
@@ -321,12 +332,12 @@ class Workspace:
                     await self._run_setup()
                 elif action == "new":
                     await self._new_research()
-                elif action == "answer":
+                elif action in ("answer", "replan"):
                     await self._first_of("clarification_requested")
                 elif action == "approve":
                     await self._first_of("awaiting_approval")
                 elif action == "resume":
-                    await self._first_of("paused", "halted", "researching")
+                    await self._first_of("paused", "researching")
                 elif action == "report":
                     await self._first_of("published")
                 elif action == "tasks":
@@ -341,6 +352,13 @@ class Workspace:
                     self.console, theme.GLYPH["pending"], self.t("interrupt.paused")
                 )
                 theme.dim(self.console, self.t("interrupt.explain"))
+            except EXPECTED_FAILURES as error:
+                # A provider outage, an exhausted quota, a frozen operation: things
+                # that go wrong outside this process.  Every artifact is already
+                # committed, so the session continues with one readable line
+                # instead of ending in a traceback.
+                journal.record("failure", kind=type(error).__name__)
+                self.flash(theme.GLYPH["blocked"], theme.truncate(str(error), 160))
 
     async def _first_of(self, *states: str) -> None:
         assert self.service is not None
@@ -539,6 +557,24 @@ class Workspace:
             academic_providers=academic if academic is not None else defaults.academic_providers,
         )
 
+    async def _replan(self, task: Task) -> None:
+        """Retry a plan the Architect never produced.
+
+        Reached when the first attempt failed outside this program -- a provider
+        outage, an expired key -- which left a study with a Commission and nothing
+        else.  Nothing has been paid for yet, so retrying is cheap and safe.
+        """
+
+        assert self.service is not None
+        self.page(title=self.t("plan.title"))
+        with self.console.status(f"  {self.t('new.generating')}", spinner="dots"):
+            updated = await self.service.replan(task.task_id)
+        journal.record("replanned", task_id=task.task_id, state=updated.state)
+        if updated.state == "clarification_requested" and updated.clarification_id:
+            self.flash(theme.GLYPH["info"], self.t("clarify.another"))
+        elif updated.state == "awaiting_approval":
+            self.flash(theme.GLYPH["done"], self.t("clarify.resolved"))
+
     async def _answer_clarification(self, task: Task) -> None:
         """Answer the Architect's open question, on this task, and let it retry.
 
@@ -565,7 +601,7 @@ class Workspace:
                 updated = await self.service.answer_clarification(
                     task.task_id, task.clarification_id, answer
                 )
-        except (ApprovalError, ArtifactValidationError, AgentProtocolError) as error:
+        except EXPECTED_FAILURES as error:
             self.flash(theme.GLYPH["warn"], str(error))
             return
 
@@ -646,6 +682,8 @@ class Workspace:
                 await self._export_report(task_id)
             elif action == "answer":
                 await self._answer_clarification(task)
+            elif action == "replan":
+                await self._replan(task)
             elif action == "revise":
                 if await self._revise(task):
                     return
@@ -670,7 +708,7 @@ class Workspace:
                 ("back", self.t("action.save_for_later")),
                 ("delete", self.t("action.delete_running")),
             ]
-        elif task.state in ("paused", "halted", "researching"):
+        elif task.state in ("paused", "researching"):
             options += [
                 ("resume", self.t("action.resume")),
                 ("plan", self.t("action.view_plan")),
@@ -685,10 +723,13 @@ class Workspace:
                 ("back", self.t("action.back_workspace")),
             ]
         elif task.state == "clarification_requested":
-            # One question is open and the study cannot be planned without it, so
-            # the only moves are answering, leaving it, or abandoning the study.
+            # Either a question is open, or planning failed before it produced
+            # one.  The second case used to offer only deletion, which stranded a
+            # study over a network blip.
             options += [
-                ("answer", self.t("action.answer_clarification")),
+                ("answer", self.t("action.answer_clarification"))
+                if task.clarification_id
+                else ("replan", self.t("action.replan")),
                 ("back", self.t("action.save_for_later")),
                 ("delete", self.t("action.delete_running")),
             ]
@@ -718,7 +759,7 @@ class Workspace:
         theme.dim(self.console, self.t("new.after_approve_costs"))
         try:
             await self.service.approve(task.task_id, task.plan_id)
-        except ApprovalError as error:
+        except EXPECTED_FAILURES as error:
             self.flash(theme.GLYPH["warn"], str(error))
             return
         journal.record(
@@ -814,7 +855,7 @@ class Workspace:
                 revised = await self.service.request_revision(
                     task.task_id, task.plan_id, instruction
                 )
-        except (ApprovalError, ArtifactValidationError, AgentProtocolError) as error:
+        except EXPECTED_FAILURES as error:
             self.flash(theme.GLYPH["warn"], str(error))
             return False
 

@@ -26,6 +26,7 @@ from prompt_toolkit.output import DummyOutput
 
 import deep_research_agent.cli.main as cli_main
 from deep_research_agent.approval import (
+    ApprovalError,
     StaleClarificationError,
     StalePlanError,
 )
@@ -40,6 +41,8 @@ from deep_research_agent.cli.settings import (
     runtime_environment,
 )
 from deep_research_agent.cli.workspace import Workspace
+from deep_research_agent.model import ModelUnavailableError
+from deep_research_agent.operations import OperationReconciliationRequired
 from deep_research_agent.providers import validation
 from deep_research_agent.service import Task
 
@@ -228,7 +231,7 @@ class PauseIsNotDeleteTest(unittest.IsolatedAsyncioTestCase):
         """A paused study offers both, and they are never the same entry."""
 
         workspace = self._workspace(mock.AsyncMock())
-        for state in ("paused", "halted", "researching"):
+        for state in ("paused", "researching"):
             with self.subTest(state=state):
                 actions = dict(workspace._actions_for(_task(state)))
                 self.assertIn("resume", actions)
@@ -494,6 +497,129 @@ class ClarificationWorkspaceTest(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("approve", offered)
 
 
+class FailureBoundaryTest(unittest.IsolatedAsyncioTestCase):
+    """A provider outage is news, not a crash.
+
+    The workspace used to catch only KeyboardInterrupt, so anything a vendor did
+    wrong -- an outage, an exhausted quota, a frozen operation needing
+    reconciliation -- came out as a Python traceback that ended the session.
+    Every artifact is already committed at that point, so there is nothing to
+    protect by dying.
+    """
+
+    def _workspace(self, service) -> Workspace:  # noqa: ANN001
+        workspace = Workspace(
+            args=argparse.Namespace(database="", verbose=False),
+            console=theme.console(file=io.StringIO()),
+            settings=CliSettings(
+                cli_language="zh-CN",
+                defaults=ResearchDefaults(
+                    investigator=ModelChoice("deepseek", "a"),
+                    other_roles=ModelChoice("deepseek", "b"),
+                ),
+            ),
+            translate=i18n.Translator("zh-CN"),
+            environ={"DEEPSEEK_API_KEY": "k"},
+        )
+        workspace.service = service
+        return workspace
+
+    async def _run_once(self, workspace, failure) -> int:  # noqa: ANN001
+        """Drive one home-screen action that fails, then exit."""
+
+        actions = iter(["new", "exit"])
+
+        async def fake_home():  # noqa: ANN202
+            return next(actions)
+
+        with (
+            mock.patch.object(
+                workspace_module.Workspace, "home", lambda _self: fake_home()
+            ),
+            mock.patch.object(
+                workspace_module.Workspace,
+                "_new_research",
+                mock.AsyncMock(side_effect=failure),
+            ),
+            mock.patch.object(journal, "record", lambda *_a, **_k: None),
+        ):
+            return await workspace.loop()
+
+    async def test_a_provider_failure_is_reported_and_the_session_continues(
+        self,
+    ) -> None:
+        workspace = self._workspace(mock.AsyncMock())
+        code = await self._run_once(
+            workspace, ModelUnavailableError("model unavailable with HTTP 503")
+        )
+        self.assertEqual(0, code, "the session ends normally, not by exception")
+        self.assertIn("503", workspace._receipt[1])
+
+    async def test_a_frozen_operation_is_reported_rather_than_fatal(self) -> None:
+        workspace = self._workspace(mock.AsyncMock())
+        code = await self._run_once(
+            workspace, OperationReconciliationRequired("op_abc", "unknown outcome")
+        )
+        self.assertEqual(0, code)
+        self.assertIn("op_abc", workspace._receipt[1])
+
+    async def test_a_domain_refusal_is_reported_rather_than_fatal(self) -> None:
+        workspace = self._workspace(mock.AsyncMock())
+        code = await self._run_once(workspace, ApprovalError("方案已经发生变化。"))
+        self.assertEqual(0, code)
+        self.assertIn("方案已经发生变化", workspace._receipt[1])
+
+    async def test_a_programming_error_still_fails_loudly(self) -> None:
+        """The boundary is for other people's failures, not for our own bugs."""
+
+        workspace = self._workspace(mock.AsyncMock())
+        with self.assertRaises(AttributeError):
+            await self._run_once(workspace, AttributeError("typo in a field name"))
+
+
+class ReplanWorkspaceTest(unittest.IsolatedAsyncioTestCase):
+    """A study whose plan never arrived can be planned again."""
+
+    def _workspace(self, service) -> Workspace:  # noqa: ANN001
+        workspace = Workspace(
+            args=argparse.Namespace(database="", verbose=False),
+            console=theme.console(file=io.StringIO()),
+            settings=CliSettings(cli_language="zh-CN"),
+            translate=i18n.Translator("zh-CN"),
+            environ={},
+        )
+        workspace.service = service
+        return workspace
+
+    def test_a_task_with_no_question_offers_replanning_not_answering(self) -> None:
+        workspace = self._workspace(mock.AsyncMock())
+        stranded = _task("clarification_requested", clarification_id="")
+        actions = dict(workspace._actions_for(stranded))
+        self.assertIn("replan", actions)
+        self.assertNotIn("answer", actions)
+        self.assertEqual("重新生成研究方案", actions["replan"])
+
+    def test_a_task_with_a_question_offers_answering_not_replanning(self) -> None:
+        workspace = self._workspace(mock.AsyncMock())
+        asking = _task("clarification_requested", clarification_id="clq_abc")
+        actions = dict(workspace._actions_for(asking))
+        self.assertIn("answer", actions)
+        self.assertNotIn("replan", actions)
+
+    async def test_replanning_calls_the_service_and_reports_the_outcome(self) -> None:
+        service = mock.AsyncMock()
+        service.replan.return_value = _task("awaiting_approval", plan_version=1)
+        workspace = self._workspace(service)
+        stranded = _task("clarification_requested", clarification_id="")
+
+        with mock.patch.object(journal, "record", lambda *_a, **_k: None):
+            await workspace._replan(stranded)
+
+        service.replan.assert_awaited_once_with(stranded.task_id)
+        service.open_task.assert_not_called()
+        self.assertIn("研究方案已生成", workspace._receipt[1])
+
+
 class SettingsTest(unittest.TestCase):
     def test_settings_round_trip(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -615,7 +741,6 @@ class ActionMappingTest(unittest.TestCase):
             "awaiting_approval",
             "researching",
             "paused",
-            "halted",
             "published",
             "clarification_requested",
         ):

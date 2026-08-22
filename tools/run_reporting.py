@@ -1,13 +1,13 @@
 """Drive the reporting transaction over a recovered evidence database.
 
-This is the first live exercise of the segment that never completed before, so
-it is deliberately a thin script: build the role runtimes from configuration,
-commit a Contract if the task has none, and run the transaction.  Everything it
-does is already covered by scripted tests; what it adds is a real provider.
+A developer harness, not a product path: it runs only the writing—review—publish
+segment against an evidence base that already exists, so the Author and Reviewer
+prompts can be iterated without spending search quota re-gathering evidence.
 
 Usage::
 
-    python tools/run_reporting.py --database <recovered.sqlite3> --task-id <id>
+    python tools/run_reporting.py --database <recovered.sqlite3> --task-id <id> \
+        --contract <contract.md>
 """
 
 from __future__ import annotations
@@ -26,6 +26,11 @@ from deep_research_agent.application import (  # noqa: E402
     load_environment,
     render_role_models,
 )
+from deep_research_agent.approval import (  # noqa: E402
+    ApprovalBody,
+    approved_contract,
+    record_decision,
+)
 from deep_research_agent.artifact_store import SqliteArtifactStore  # noqa: E402
 from deep_research_agent.config import Role, load_config  # noqa: E402
 from deep_research_agent.content_store import SqliteContentStore  # noqa: E402
@@ -38,8 +43,16 @@ from deep_research_agent.reporting import run_reporting  # noqa: E402
 REPORTING_ROLES: tuple[Role, ...] = ("analyst", "author", "reviewer")
 
 
-async def ensure_contract(store: SqliteArtifactStore, contract_path: Path) -> None:
-    """Commit the approved Contract if this task does not already have one.
+async def ensure_approved_contract(
+    store: SqliteArtifactStore, contract_path: Path
+) -> None:
+    """Commit the Contract and its approval if this task has neither.
+
+    The operator running this script *is* the approval -- and it is recorded as
+    one rather than skipped, so the database this harness leaves behind is a
+    database the product could have produced.  Writing a Contract with no receipt
+    would have made this the one path in the repository that reaches paid model
+    calls without an approval on record.
 
     The Contract is stored in its own canonical encoding, not as raw markdown:
     a body written one way and read another is what made the reporting segment
@@ -47,10 +60,15 @@ async def ensure_contract(store: SqliteArtifactStore, contract_path: Path) -> No
     """
 
     view = await store.active_view()
-    if view.head("research_contract") is not None:
-        return
-    contract = build_contract(contract_path.read_text(encoding="utf-8"))
-    await store.put(kind="research_contract", body=contract.encode())
+    head = view.head("research_contract")
+    if head is None:
+        contract = build_contract(contract_path.read_text(encoding="utf-8"))
+        envelope = await store.put(
+            kind="research_contract", body=contract.encode()
+        )
+        head = envelope.artifact_id
+    await record_decision(store, head, ApprovalBody(decision="approved"))
+    await approved_contract(store)
 
 
 async def drive(
@@ -72,7 +90,7 @@ async def drive(
         ledger = SqliteOperationLedger(connection, content)
         await ledger.setup()
 
-        await ensure_contract(store, contract_path)
+        await ensure_approved_contract(store, contract_path)
         view = await store.active_view()
         print(f"evidence set: {view.evidence_set_id()}")
         print(f"materials:    {len(view.active('material'))}")

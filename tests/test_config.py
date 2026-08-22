@@ -93,9 +93,10 @@ class RoleModelTest(unittest.TestCase):
         self.assertEqual("deepseek", config.model_for("analyst").provider.name)
 
     def test_the_default_profile_uses_exactly_two_models(self) -> None:
+        config = load_config(DEEPSEEK)
         self.assertEqual(
-            ("deepseek-v4-flash", "deepseek-v4-pro"),
-            load_config(DEEPSEEK).distinct_models,
+            {"deepseek-v4-flash", "deepseek-v4-pro"},
+            {config.model_for(role).model_id for role in ROLES},
         )
 
     def test_a_missing_credential_is_reported_against_its_role(self) -> None:

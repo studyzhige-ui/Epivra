@@ -222,7 +222,6 @@ class SpecTest(unittest.TestCase):
     def test_the_judge_has_exactly_one_terminal_tool_and_no_others(self) -> None:
         self.assertEqual({"submit_judgement"}, set(judge.SPEC.terminal_tools))
         self.assertEqual({"submit_judgement"}, {tool.name for tool in judge.SPEC.tools})
-        self.assertEqual(frozenset(), judge.SPEC.working_tools)
 
     def test_the_schema_requires_every_domain_exactly_once(self) -> None:
         properties = judge.SUBMIT_JUDGEMENT.parameters["properties"]

@@ -157,12 +157,6 @@ class RuntimeConfig:
             raise ConfigError(f"no model configured for role {role!r}")
         return self.role_models[role]
 
-    @property
-    def distinct_models(self) -> tuple[str, ...]:
-        """Model IDs in use, for surfacing the cost profile to the user."""
-
-        return tuple(sorted({item.model_id for item in self.role_models.values()}))
-
 
 def load_config(environ: Mapping[str, str] | None = None) -> RuntimeConfig:
     """Build the runtime configuration from the environment.

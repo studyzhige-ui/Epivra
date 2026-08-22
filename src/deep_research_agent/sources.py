@@ -269,23 +269,21 @@ class SourceAnchor:
         )
 
 
-def locate_quote(text: str, exact_quote: str, *, occurrence: int = 1) -> TextLocator:
-    """Locate a one-based occurrence of an exact quote in saved text."""
+def locate_quote(text: str, exact_quote: str) -> TextLocator:
+    """Locate the first occurrence of an exact quote in saved text.
 
-    if isinstance(occurrence, bool) or not isinstance(occurrence, int) or occurrence < 1:
-        raise ArtifactValidationError("occurrence must be a positive integer")
+    The first, because :class:`SourceAnchor` records character offsets and has no
+    field for "which occurrence" -- the offsets are what
+    :func:`validate_anchor` checks, so a quote appearing twice is anchored
+    unambiguously either way.
+    """
+
     if not isinstance(exact_quote, str) or not exact_quote:
         raise ArtifactValidationError("exact_quote must not be empty")
 
-    start = -1
-    search_from = 0
-    for _ in range(occurrence):
-        start = text.find(exact_quote, search_from)
-        if start < 0:
-            raise ArtifactValidationError(
-                f"quote occurrence {occurrence} is not present in the saved text"
-            )
-        search_from = start + 1
+    start = text.find(exact_quote)
+    if start < 0:
+        raise ArtifactValidationError("the quote is not present in the saved text")
     return TextLocator(start=start, end=start + len(exact_quote))
 
 

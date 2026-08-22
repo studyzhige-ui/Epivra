@@ -76,6 +76,7 @@ _CATALOGUE: Final[Mapping[str, Mapping[str, str]]] = {
     "action.approve_start": {"zh-CN": "批准并开始研究", "en": "Approve and start"},
     "action.request_changes": {"zh-CN": "提出修改", "en": "Request changes"},
     "action.answer_clarification": {"zh-CN": "回答这个问题", "en": "Answer the question"},
+    "action.replan": {"zh-CN": "重新生成研究方案", "en": "Draft the plan again"},
     "action.save_for_later": {"zh-CN": "稍后处理", "en": "Review later"},
     "action.delete_running": {
         "zh-CN": "取消并删除研究",
@@ -269,7 +270,6 @@ _CATALOGUE: Final[Mapping[str, Mapping[str, str]]] = {
     "state.awaiting_approval": {"zh-CN": "等待批准", "en": "Awaiting approval"},
     "state.researching": {"zh-CN": "研究中", "en": "Researching"},
     "state.published": {"zh-CN": "已完成", "en": "Completed"},
-    "state.halted": {"zh-CN": "已停止", "en": "Halted"},
     "state.paused": {"zh-CN": "已暂停", "en": "Paused"},
     # --- lists / detail ---------------------------------------------------
     "list.title": {"zh-CN": "我的研究", "en": "My research"},

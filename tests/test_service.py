@@ -26,11 +26,16 @@ from deep_research_agent.approval import (
     ApprovalError,
     StaleClarificationError,
     StalePlanError,
+    approved_contract,
     record_decision,
 )
 from deep_research_agent.config import ROLES
 from deep_research_agent.contract import CommissionBody
-from deep_research_agent.model import ModelReply, ModelToolCall
+from deep_research_agent.model import (
+    ModelAuthError,
+    ModelReply,
+    ModelToolCall,
+)
 from deep_research_agent.operations import ExecutionIdentity
 from deep_research_agent.reporting import RoleRuntime
 from deep_research_agent.service import (
@@ -176,7 +181,7 @@ class LifecycleTest(ServiceFixture):
     async def test_research_cannot_start_before_approval(self) -> None:
         self._use(_architect_reply())
         task = await self._open()
-        with self.assertRaisesRegex(ValueError, "has not been approved"):
+        with self.assertRaisesRegex(ApprovalError, "awaiting user approval"):
             await self.service.advance(task.task_id)
 
     async def test_approval_binds_and_changes_the_state(self) -> None:
@@ -243,38 +248,50 @@ class MultiTaskTest(ServiceFixture):
 
 
 class SourceAccessTest(ServiceFixture):
-    """The permission must remove the capability, not request restraint."""
+    """The permission must remove the capability, not request restraint.
+
+    What is authorised is the Commission's own answer.  These pass a Commission
+    rather than a bare tuple because the service asks it, instead of re-deciding
+    from the access list -- two readings of one permission is how they drift.
+    """
+
+    def _commission(self, *access: str) -> CommissionBody:
+        return CommissionBody(request="调研某个课题。", source_access=access)  # type: ignore[arg-type]
 
     async def test_local_only_builds_no_network_client_at_all(self) -> None:
         broker, reader = self.service._broker(  # noqa: SLF001
-            ("local_only",), self.service.config
+            self._commission("local_only"), self.service.config
         )
         self.assertIsNone(broker)
         self.assertIsNone(reader)
 
     async def test_public_web_builds_a_broker_and_a_reader(self) -> None:
         broker, reader = self.service._broker(  # noqa: SLF001
-            ("public_web",), self.service.config
+            self._commission("public_web"), self.service.config
         )
         self.assertIsNotNone(broker)
         self.assertIsNotNone(reader)
 
     async def test_local_access_without_a_corpus_root_is_refused(self) -> None:
         with self.assertRaisesRegex(ValueError, "no corpus root"):
-            self.service._local_reader(("public_web", "user_files"), None)  # noqa: SLF001
+            self.service._local_reader(  # noqa: SLF001
+                self._commission("public_web", "user_files"), None
+            )
 
     async def test_a_corpus_root_yields_a_local_reader(self) -> None:
         with tempfile.TemporaryDirectory() as corpus:
             (Path(corpus) / "note.md").write_text("内容", encoding="utf-8")
             self.assertIsNotNone(
                 self.service._local_reader(  # noqa: SLF001
-                    ("public_web", "user_files"), Path(corpus)
+                    self._commission("public_web", "user_files"), Path(corpus)
                 )
             )
 
     async def test_public_web_alone_never_builds_a_local_reader(self) -> None:
         self.assertIsNone(
-            self.service._local_reader(("public_web",), Path("."))  # noqa: SLF001
+            self.service._local_reader(  # noqa: SLF001
+                self._commission("public_web"), Path(".")
+            )
         )
 
 
@@ -641,7 +658,7 @@ class PlanLifecycleTest(ServiceFixture):
         self.assertTrue(task.plan_id.startswith("ctr_"))
 
         await self.service.approve(task.task_id, task.plan_id)
-        approved = await self.service._approved_contract(  # noqa: SLF001
+        _ref, approved = await approved_contract(
             self.service._store(task.task_id)  # noqa: SLF001
         )
         self.assertIn("CRDT", approved.body_markdown)
@@ -1199,6 +1216,108 @@ class ClarificationLifecycleTest(ServiceFixture):
         self.assertEqual("", legacy.clarification_id)
         self.assertEqual((), await self.service.clarification_history(task.task_id))
         self.assertTrue(await self.service.delete_research(task.task_id))
+
+
+class PlanningFailureTest(ServiceFixture):
+    """A plan the Architect never produced must not strand the study.
+
+    The failure is ordinary: a provider outage, an expired key, an exhausted
+    quota.  What made it serious was that the resulting task had a Commission and
+    nothing else -- no plan to approve, no question to answer, nothing to
+    continue -- so deleting it and retyping the request was the only way out.
+    """
+
+    def _failing(self) -> None:
+        """A provider that refuses the call before running it.
+
+        An expired key, which is a failure the ledger can safely mark retryable
+        because nothing was billed.  ``ModelUnavailableError`` deliberately is not
+        retryable -- a read timeout may have been billed -- so recovering from that
+        one needs ``tools/reconcile.py`` and a human judgment.
+        """
+
+        class Failing:
+            async def complete(self, messages, **kwargs):  # noqa: ANN001, ANN202
+                raise ModelAuthError("model authentication failed with HTTP 401")
+
+        execution = ExecutionIdentity(provider="scripted", model_id="test")
+        runtimes = {
+            role: RoleRuntime(model=Failing(), execution=execution) for role in ROLES
+        }
+        patcher = mock.patch.object(
+            service_module, "build_runtimes", lambda *a, **k: dict(runtimes)
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    async def test_a_failed_plan_leaves_a_task_with_no_open_question(self) -> None:
+        self._failing()
+        with self.assertRaises(ModelAuthError):
+            await self._open()
+
+        tasks = await self.service.tasks()
+        self.assertEqual(1, len(tasks))
+        stranded = tasks[0]
+        self.assertEqual("clarification_requested", stranded.state)
+        self.assertEqual("", stranded.plan_id)
+        self.assertEqual("", stranded.clarification_id)
+
+    async def test_replan_recovers_the_task_once_the_provider_returns(self) -> None:
+        self._failing()
+        with self.assertRaises(ModelAuthError):
+            await self._open()
+        stranded = (await self.service.tasks())[0]
+
+        # The user fixes the key.  Rebinding is what drops the transports bound to
+        # the old one; the task's frozen *configuration* is untouched by it.
+        self._use(_architect_reply())
+        self.service.rebind_credentials({"DEEPSEEK_API_KEY": "fixed"})
+        recovered = await self.service.replan(stranded.task_id)
+
+        self.assertEqual(stranded.task_id, recovered.task_id)
+        self.assertEqual("awaiting_approval", recovered.state)
+        self.assertEqual(1, recovered.plan_version)
+        self.assertEqual(1, len(await self.service.tasks()))
+
+    async def test_replan_on_a_planned_task_costs_nothing(self) -> None:
+        model = self._use(_architect_reply())
+        task = await self._open()
+        again = await self.service.replan(task.task_id)
+        self.assertEqual(task.plan_id, again.plan_id)
+        self.assertEqual(1, model.calls, "proposing is idempotent")
+
+    async def test_replan_still_reaches_a_clarification(self) -> None:
+        """Retrying may legitimately produce a question rather than a plan."""
+
+        self._use(
+            ModelReply(
+                tool_calls=(
+                    _call(
+                        "ask_scope_question",
+                        question="为选型还是科普？",
+                        why_it_changes_the_plan="证据完全不同。",
+                    ),
+                )
+            )
+        )
+        task = await self._open()
+        self.assertTrue(task.clarification_id)
+        again = await self.service.replan(task.task_id)
+        self.assertEqual("clarification_requested", again.state)
+        self.assertEqual(task.clarification_id, again.clarification_id)
+
+
+class TaskOrderTest(ServiceFixture):
+    async def test_the_newest_study_is_listed_first(self) -> None:
+        """Ordering by task_id sorted by hash, so the list was arbitrary."""
+
+        self._use(_architect_reply(), _architect_reply(), _architect_reply())
+        first = await self._open("第一个课题。", created_at="2026-08-20T00:00:00+00:00")
+        second = await self._open("第二个课题。", created_at="2026-08-21T00:00:00+00:00")
+        third = await self._open("第三个课题。", created_at="2026-08-22T00:00:00+00:00")
+
+        listed = [task.task_id for task in await self.service.tasks()]
+        self.assertEqual([third.task_id, second.task_id, first.task_id], listed)
 
 
 if __name__ == "__main__":

@@ -20,7 +20,7 @@ from deep_research_agent.sources import (
 
 
 class InMemoryContentStoreTest(unittest.IsolatedAsyncioTestCase):
-    async def test_put_is_idempotent_and_pages_exact_unicode_text(self) -> None:
+    async def test_put_is_idempotent_and_returns_exact_unicode_text(self) -> None:
         store = InMemoryContentStore()
         content = "研究证据🙂\nsecond line"
 
@@ -30,7 +30,6 @@ class InMemoryContentStoreTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(first, second)
         self.assertEqual(len(content), first.char_count)
         self.assertEqual(content, await store.get(first))
-        self.assertEqual(content[2:7], await store.page(first, offset=2, limit=5))
 
     async def test_missing_and_corrupt_content_fail_explicitly(self) -> None:
         store = InMemoryContentStore()
@@ -58,15 +57,6 @@ class InMemoryContentStoreTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(7, locator.start)
         self.assertEqual("exact evidence", text[locator.start : locator.end])
 
-    async def test_page_arguments_are_validated(self) -> None:
-        store = InMemoryContentStore()
-        ref = await store.put("body")
-        with self.assertRaises(ValueError):
-            await store.page(ref, offset=-1)
-        with self.assertRaises(ValueError):
-            await store.page(ref, limit=0)
-
-
 class SqliteContentStoreTest(unittest.IsolatedAsyncioTestCase):
     async def test_put_if_absent_persists_one_verified_row(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -85,7 +75,6 @@ class SqliteContentStoreTest(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(first, second)
                 self.assertEqual(1, row[0])
                 self.assertEqual(content, await store.get(first))
-                self.assertEqual("immutable", await store.page(first, offset=4, limit=9))
 
     async def test_corrupt_row_and_conflicting_put_are_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

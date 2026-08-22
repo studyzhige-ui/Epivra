@@ -66,7 +66,6 @@ class CountingModel:
         self,
         messages: Sequence[Mapping[str, Any]],
         *,
-        json_output: bool = False,
         tools: Sequence[ToolSpec] = (),
         tool_choice: str | None = None,
     ) -> ModelReply:
@@ -227,8 +226,7 @@ class BudgetNoticeTest(unittest.IsolatedAsyncioTestCase):
                 self,
                 messages: Sequence[Mapping[str, Any]],
                 *,
-                json_output: bool = False,
-                tools: Sequence[ToolSpec] = (),
+                        tools: Sequence[ToolSpec] = (),
                 tool_choice: str | None = None,
             ) -> ModelReply:
                 self.calls += 1

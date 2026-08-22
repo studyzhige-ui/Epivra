@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol
@@ -17,15 +16,21 @@ import httpx
 
 
 class ModelAuthError(RuntimeError):
-    pass
+    """The credential was refused, so the request never ran and nothing was billed."""
 
 
 class ModelRateLimitError(RuntimeError):
-    pass
+    """The provider throttled the request before running it; nothing was billed."""
 
 
 class ModelUnavailableError(RuntimeError):
-    pass
+    """No usable response arrived, and whether the request ran is unknowable.
+
+    Deliberately *not* treated as "definitely not executed", unlike the two above:
+    a read timeout may mean the provider did the work and the answer was lost on
+    the way back.  Retrying on the same operation key could pay twice, so the
+    ledger freezes it for reconciliation instead.
+    """
 
 
 class ModelProtocolError(RuntimeError):
@@ -184,7 +189,6 @@ class ChatModel(Protocol):
         self,
         messages: Sequence[Mapping[str, Any]],
         *,
-        json_output: bool = False,
         tools: Sequence[ToolSpec] = (),
         tool_choice: Literal["auto", "none", "required"] | None = None,
     ) -> ModelReply: ...
@@ -224,24 +228,10 @@ class OpenAICompatibleClient:
         if self.transient_retries < 0:
             raise ValueError("transient_retries must be non-negative")
 
-    @classmethod
-    def from_environment(
-        cls,
-        *,
-        env_var: str = "DEEPSEEK_API_KEY",
-        model: str | None = None,
-        **kwargs: Any,
-    ) -> "OpenAICompatibleClient":
-        key = os.environ.get(env_var, "").strip()
-        if not key:
-            raise ValueError(f"environment variable {env_var} is not configured")
-        return cls(key, model=model or "deepseek-v4-pro", **kwargs)
-
     async def complete(
         self,
         messages: Sequence[Mapping[str, Any]],
         *,
-        json_output: bool = False,
         tools: Sequence[ToolSpec] = (),
         tool_choice: Literal["auto", "none", "required"] | None = None,
     ) -> ModelReply:
@@ -253,8 +243,6 @@ class OpenAICompatibleClient:
             "max_tokens": self.max_output_tokens,
             "stream": False,
         }
-        if json_output:
-            payload["response_format"] = {"type": "json_object"}
         if tools:
             payload["tools"] = [item.as_api_value() for item in tools]
             payload["tool_choice"] = tool_choice or "auto"

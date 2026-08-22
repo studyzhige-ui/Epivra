@@ -15,8 +15,10 @@ interface knows how to do: :meth:`~ResearchService.open_task`,
 :meth:`~ResearchService.approve`, :meth:`~ResearchService.advance`,
 :meth:`~ResearchService.task`, :meth:`~ResearchService.tasks`,
 :meth:`~ResearchService.report`, :meth:`~ResearchService.delete_research`,
-:meth:`~ResearchService.approval_card`, :meth:`~ResearchService.plan_history`,
-:meth:`~ResearchService.request_revision` and
+:meth:`~ResearchService.approval_card`, :meth:`~ResearchService.request_revision`,
+:meth:`~ResearchService.answer_clarification`, :meth:`~ResearchService.replan`,
+:meth:`~ResearchService.plan_history`,
+:meth:`~ResearchService.clarification_history` and
 :meth:`~ResearchService.execution_summary`.
 
 A study's plan may iterate before research starts: the user reads a candidate and
@@ -63,6 +65,7 @@ from .approval import (
     StaleClarificationError,
     StalePlanError,
     approval_card,
+    approved_contract,
     decision_for,
     decision_receipt,
     record_decision,
@@ -92,12 +95,16 @@ from .sources import ArtifactValidationError
 from .tools import TransparentSearchBroker
 from .wave import run_wave
 
+#: Where a study stands, derived from committed artifacts and never stored.  There
+#: is deliberately no ``halted``: a Reviewer that blocks publication leaves a study
+#: that can be continued, which is what ``paused`` already means, and a state
+#: ``task()`` could never derive was one the interface handled but could not reach.
+#: Why a study stopped is carried by the event and the journal, not the state name.
 TaskState = Literal[
     "clarification_requested",
     "awaiting_approval",
     "researching",
     "published",
-    "halted",
     "paused",
 ]
 
@@ -354,11 +361,11 @@ class ResearchService:
         listen(Event("configuration_not_frozen", message, {"models_changed": differs}))
 
     def _local_reader(
-        self, access: Sequence[str], corpus_root: Path | None
+        self, commission: CommissionBody, corpus_root: Path | None
     ) -> LocalCorpusReader | None:
         """Built only when the Commission authorises reading local files."""
 
-        if not ({"user_files", "local_only"} & set(access)):
+        if not commission.allows_local_corpus:
             return None
         if corpus_root is None:
             raise ValueError(
@@ -368,14 +375,16 @@ class ResearchService:
             root=corpus_root, extract_pdf=extract_pdf_in_subprocess
         )
 
-    def _broker(self, access: Sequence[str], config: RuntimeConfig):  # noqa: ANN202
+    def _broker(self, commission: CommissionBody, config: RuntimeConfig):  # noqa: ANN202
         """No network client at all when the Commission forbids the network.
 
         Returning None rather than an empty broker keeps the prohibition
-        mechanical: there is no object present that could reach a vendor.
+        mechanical: there is no object present that could reach a vendor.  What
+        counts as authorised is the Commission's own answer -- deciding it a second
+        time here is how two readings of one permission start to drift.
         """
 
-        if "local_only" in access:
+        if not commission.allows_external_search:
             return None, None
         providers = build_search_providers(
             config.search_providers,
@@ -598,19 +607,22 @@ class ResearchService:
             provenance=Provenance(producer="user"),
         )
 
-        commission = await self._commission(store)
-        commission_ref = (await store.active_view()).active("commission")[-1]
-        contract = await self._propose(store, commission, commission_ref, listen)
-        task = await self.task(task_id)
-        if contract is not None:
-            listen(
-                Event(
-                    "contract_proposed",
-                    approval_card(contract, version=task.plan_version),
-                    {"task_id": task_id, "plan_id": task.plan_id},
-                )
-            )
-        return task
+        return await self._plan(store, listen)
+
+    async def replan(self, task_id: str, *, listen: Listener = _ignore) -> Task:
+        """Ask the Architect again for a task that has no plan yet.
+
+        The planning call can fail for reasons that have nothing to do with the
+        commission: a provider outage, an expired key, an exhausted quota.  Before
+        this existed such a task was stuck for good -- it had a Commission but no
+        plan and no question, so there was nothing to answer, nothing to approve,
+        and nothing to continue, and deleting it was the only way forward.
+
+        Safe on a task that already has a plan: proposing is idempotent, so it
+        returns the task unchanged rather than paying for a second candidate.
+        """
+
+        return await self._plan(self._store(task_id), listen)
 
     async def clarification_history(self, task_id: str) -> tuple[Exchange, ...]:
         """Every question the Architect asked and every answer it was given."""
@@ -648,12 +660,10 @@ class ResearchService:
 
         execution = await self.execution(task_id, listen=listen)
         store = self._store(task_id)
-        contract = await self._approved_contract(store)
+        _plan_ref, contract = await approved_contract(store)
         commission = await self._commission(store)
-        broker, reader = self._broker(commission.source_access, execution.config)
-        local_reader = self._local_reader(
-            commission.source_access, execution.corpus_root
-        )
+        broker, reader = self._broker(commission, execution.config)
+        local_reader = self._local_reader(commission, execution.corpus_root)
         return await self._govern(
             store,
             contract=contract,
@@ -716,8 +726,12 @@ class ResearchService:
         )
 
     async def tasks(self) -> tuple[Task, ...]:
+        # Newest first, keyed on the one Commission every task has.  Ordering by
+        # task_id sorted by hash, so "the study I just started" landed anywhere in
+        # the list and the home screen surfaced an arbitrary one of several.
         rows = await self.connection.execute_fetchall(
-            "SELECT DISTINCT task_id FROM artifacts ORDER BY task_id"
+            "SELECT task_id FROM artifacts WHERE kind = 'commission' "
+            "ORDER BY produced_at DESC, sequence DESC"
         )
         return tuple([await self.task(str(row[0])) for row in rows])
 
@@ -910,20 +924,27 @@ class ResearchService:
     async def _commission_refs(self, store: SqliteArtifactStore) -> tuple[str, ...]:
         return (await store.active_view()).active("commission")
 
-    async def _approved_contract(
-        self, store: SqliteArtifactStore
-    ) -> ResearchContract:
-        view = await store.active_view()
-        head = view.head("research_contract")
-        if head is None:
-            raise ValueError(f"task {store.task_id} has no Contract")
-        decision = await decision_for(store, head)
-        if decision is None or decision.decision != "approved":
-            raise ValueError(
-                f"task {store.task_id} has not been approved; research must not "
-                "start before the user accepts the Contract"
+    async def _plan(self, store: SqliteArtifactStore, listen: Listener) -> Task:
+        """Run the planning step and report whichever outcome it reached.
+
+        Shared by answering a clarification and by retrying a failed plan, because
+        both end the same way: the Architect either proposes a candidate or asks
+        one more question, and the caller wants the resulting task either way.
+        """
+
+        commission = await self._commission(store)
+        commission_ref = (await store.active_view()).active("commission")[-1]
+        contract = await self._propose(store, commission, commission_ref, listen)
+        task = await self.task(store.task_id)
+        if contract is not None:
+            listen(
+                Event(
+                    "contract_proposed",
+                    approval_card(contract, version=task.plan_version),
+                    {"task_id": task.task_id, "plan_id": task.plan_id},
+                )
             )
-        return ResearchContract.decode(await store.body(head))
+        return task
 
     async def _propose(
         self,

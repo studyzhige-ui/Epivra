@@ -24,24 +24,11 @@ class ContentReader(Protocol):
     async def get(self, ref: BodyRef) -> str:
         """Return and verify the complete body."""
 
-    async def page(
-        self, ref: BodyRef, *, offset: int = 0, limit: int = 20_000
-    ) -> str:
-        """Return one verified character page from the exact body."""
-
-
 class ContentStore(ContentReader, Protocol):
     """Store exact immutable content once and return its durable reference."""
 
     async def put(self, content: str) -> BodyRef:
         """Persist content idempotently and return its content-addressed ref."""
-
-
-def _validate_page(offset: int, limit: int) -> None:
-    if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
-        raise ValueError("offset must be a non-negative integer")
-    if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
-        raise ValueError("limit must be a positive integer")
 
 
 def _verify_content(ref: BodyRef, content: str) -> str:
@@ -86,13 +73,6 @@ class InMemoryContentStore:
         if content is None:
             raise ContentIntegrityError(f"content {ref.content_hash} is missing")
         return _verify_content(ref, content)
-
-    async def page(
-        self, ref: BodyRef, *, offset: int = 0, limit: int = 20_000
-    ) -> str:
-        _validate_page(offset, limit)
-        content = await self.get(ref)
-        return content[offset : offset + limit]
 
 
 class SqliteContentStore:
@@ -142,13 +122,6 @@ class SqliteContentStore:
                 f"{ref.char_count}, found {stored_count}"
             )
         return _verify_content(ref, content)
-
-    async def page(
-        self, ref: BodyRef, *, offset: int = 0, limit: int = 20_000
-    ) -> str:
-        _validate_page(offset, limit)
-        content = await self.get(ref)
-        return content[offset : offset + limit]
 
     async def _row(self, content_hash: str) -> tuple[int, str]:
         cursor = await self._connection.execute(

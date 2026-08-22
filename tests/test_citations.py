@@ -53,11 +53,10 @@ class AnchorTest(unittest.TestCase):
     def test_a_quote_must_be_locatable_in_the_saved_text(self) -> None:
         text = "Repeated evidence. Repeated evidence."
 
-        first = locate_quote(text, "Repeated evidence.")
-        second = locate_quote(text, "Repeated evidence.", occurrence=2)
+        located = locate_quote(text, "Repeated evidence.")
 
-        self.assertEqual(0, first.start)
-        self.assertEqual(19, second.start)
+        self.assertEqual(0, located.start)
+        self.assertEqual(18, located.end)
         with self.assertRaisesRegex(ArtifactValidationError, "not present"):
             locate_quote(text, "Absent claim.")
 
