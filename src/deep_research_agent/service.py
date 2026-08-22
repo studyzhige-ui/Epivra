@@ -15,8 +15,16 @@ interface knows how to do: :meth:`~ResearchService.open_task`,
 :meth:`~ResearchService.approve`, :meth:`~ResearchService.advance`,
 :meth:`~ResearchService.task`, :meth:`~ResearchService.tasks`,
 :meth:`~ResearchService.report`, :meth:`~ResearchService.delete_research`,
-:meth:`~ResearchService.approval_card` and
+:meth:`~ResearchService.approval_card`, :meth:`~ResearchService.plan_history`,
+:meth:`~ResearchService.request_revision` and
 :meth:`~ResearchService.execution_summary`.
+
+A study's plan may iterate before research starts: the user reads a candidate and
+either approves it or says what to change.  A revision produces a new Contract
+artifact under the **same task**, so the plan has versions while the study has
+one identity, and the original Commission is never rewritten.  Both decisions
+name the exact plan they are about, so a reply aimed at a superseded candidate is
+refused rather than applied to a body the user never read.
 
 Pausing is not among them, and that is a consequence of the design rather than an
 omission: stopping means the caller stops awaiting :meth:`~ResearchService.advance`,
@@ -49,9 +57,17 @@ from .agents import AgentProtocolError, invoke_agent
 from .agents import architect as architect_agent
 from .agents import lead as lead_agent
 from .application import build_runtimes
-from .approval import ApprovalBody, approval_card, decision_for, record_decision
+from .approval import (
+    ApprovalBody,
+    ApprovalError,
+    StalePlanError,
+    approval_card,
+    decision_for,
+    decision_receipt,
+    record_decision,
+)
 from .artifact_store import SqliteArtifactStore
-from .artifacts import Provenance
+from .artifacts import ArtifactDisposition, Provenance
 from .config import RuntimeConfig, load_config
 from .content_store import SqliteContentStore
 from .context import RoleContext, latest_body, lead_context, load_evidence
@@ -65,6 +81,7 @@ from .providers import build_search_providers
 from .providers.local import LocalCorpusReader
 from .providers.reader import PublicHttpReader, extract_pdf_in_subprocess
 from .reporting import RoleRuntime, run_reporting
+from .sources import ArtifactValidationError
 from .tools import TransparentSearchBroker
 from .wave import run_wave
 
@@ -109,7 +126,13 @@ def _ignore(_event: Event) -> None:
 
 @dataclass(frozen=True, slots=True)
 class Task:
-    """What a caller needs to show a task in a list."""
+    """What a caller needs to show a task in a list or decide on its plan.
+
+    ``plan_id`` and ``plan_version`` identify the Contract candidate currently
+    awaiting a decision.  Both are derived from the artifact history rather than
+    stored: the version is that Contract's position in the task's plan chain, so
+    nothing has to be kept in step with anything else.
+    """
 
     task_id: str
     request: str
@@ -118,6 +141,28 @@ class Task:
     state: TaskState
     materials: int = 0
     sources: int = 0
+    plan_id: str = ""
+    plan_version: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class PlanVersion:
+    """One Contract candidate in a task's plan history.
+
+    The provenance of a study starts here: what the user asked, what the
+    Architect proposed, what the user sent back and why, and which version was
+    finally approved.  It is a projection of committed artifacts, not a second
+    record.
+    """
+
+    plan_id: str
+    version: int
+    decision: str = ""
+    revision_note: str = ""
+
+    @property
+    def approved(self) -> bool:
+        return self.decision == "approved"
 
 
 @dataclass(frozen=True, slots=True)
@@ -362,24 +407,135 @@ class ResearchService:
         if contract is None:
             return await self.task(task_id)
 
+        task = await self.task(task_id)
         listen(
             Event(
                 "contract_proposed",
-                approval_card(contract),
-                {"task_id": task_id},
+                approval_card(contract, version=task.plan_version),
+                {"task_id": task_id, "plan_id": task.plan_id},
             )
+        )
+        return task
+
+    async def approve(self, task_id: str, plan_id: str) -> None:
+        """Approve one exact plan.
+
+        ``plan_id`` is required rather than convenient.  A user approves the plan
+        they read, and if a revision has produced a newer one since, applying
+        their "yes" to it would authorise spending on a body they never saw.
+        """
+
+        store = self._store(task_id)
+        current = await self._require_current_plan(store, plan_id)
+        decided = await decision_for(store, current)
+        if decided is not None:
+            if decided.decision == "approved":
+                return  # already approved; approving twice is not an error
+            raise ApprovalError(
+                "这一版方案已经提出过修改，请查看新版方案后再批准。"
+            )
+        await record_decision(store, current, ApprovalBody(decision="approved"))
+
+    async def request_revision(
+        self,
+        task_id: str,
+        plan_id: str,
+        revision_note: str,
+        *,
+        listen: Listener = _ignore,
+    ) -> Task:
+        """Send one exact plan back with an instruction, and get the next version.
+
+        This is the same Research Task throughout.  The plan iterates; the study's
+        identity, its original Commission and its frozen execution configuration
+        do not.  Earlier versions are never rewritten -- the revised Contract
+        carries the previous one and the request that produced it among its
+        parents, so the whole chain stays readable afterwards.
+
+        Recording the request before calling the Architect is what makes an
+        interrupted revision recoverable: the instruction is already committed, so
+        calling again with nothing new resumes it.  Saying something *different*
+        about the same candidate supersedes the earlier request rather than being
+        ignored -- otherwise an Architect that answered with a question instead of
+        a plan would leave the study unable to move.
+        """
+
+        instruction = revision_note.strip()
+        store = self._store(task_id)
+        current = await self._require_current_plan(store, plan_id)
+
+        found = await decision_receipt(store, current)
+        if found is not None and found[1].decision != "revision_requested":
+            raise ApprovalError("这一版方案已经批准，不能再提出修改。")
+
+        if found is None:
+            if not instruction:
+                raise ArtifactValidationError(
+                    "a revision request must say what to change"
+                )
+            receipt_ref = await record_decision(
+                store,
+                current,
+                ApprovalBody(
+                    decision="revision_requested", revision_note=instruction
+                ),
+            )
+            recorded = instruction
+        elif instruction and instruction != found[1].revision_note:
+            # The user has said something new about the same candidate -- they
+            # changed their mind, or the Architect came back with a question
+            # instead of a plan.  The newest instruction is the live one, and the
+            # superseded receipt stays readable as history.
+            receipt_ref = await record_decision(
+                store,
+                current,
+                ApprovalBody(
+                    decision="revision_requested", revision_note=instruction
+                ),
+            )
+            await store.dispose(
+                ArtifactDisposition(
+                    target_ref=found[0],
+                    status="superseded",
+                    reason="用户重新说明了要修改什么",
+                    replacement_ref=receipt_ref,
+                )
+            )
+            recorded = instruction
+        else:
+            # Nothing new to say: answer the request already on record.  This is
+            # what makes an interrupted revision resumable rather than lost.
+            receipt_ref, body = found
+            recorded = body.revision_note
+
+        commission = await self._commission(store)
+        await self._propose_revision(
+            store,
+            commission=commission,
+            previous_ref=current,
+            receipt_ref=receipt_ref,
+            revision_note=recorded,
+            listen=listen,
         )
         return await self.task(task_id)
 
-    async def approve(self, task_id: str) -> None:
-        """Record the user's approval against the exact Contract they read."""
+    async def plan_history(self, task_id: str) -> tuple[PlanVersion, ...]:
+        """Every plan this task has had, oldest first, with its decision."""
 
         store = self._store(task_id)
         view = await store.active_view()
-        head = view.head("research_contract")
-        if head is None:
-            raise ValueError(f"task {task_id} has no Contract to approve")
-        await record_decision(store, head, ApprovalBody(decision="approved"))
+        history: list[PlanVersion] = []
+        for index, ref in enumerate(view.active("research_contract"), start=1):
+            decision = await decision_for(store, ref)
+            history.append(
+                PlanVersion(
+                    plan_id=ref,
+                    version=index,
+                    decision="" if decision is None else decision.decision,
+                    revision_note="" if decision is None else decision.revision_note,
+                )
+            )
+        return tuple(history)
 
     async def advance(
         self, task_id: str, *, listen: Listener = _ignore
@@ -420,6 +576,7 @@ class ResearchService:
         materials = len(view.active("material"))
         sources = len(view.active("source_snapshot"))
 
+        plans = view.active("research_contract")
         contract_head = view.head("research_contract")
         state: TaskState
         if contract_head is None:
@@ -429,6 +586,10 @@ class ResearchService:
         else:
             decision = await decision_for(store, contract_head)
             if decision is None or decision.decision != "approved":
+                # A plan awaiting a decision and a plan sent back for revision are
+                # the same thing to a user: the study is waiting on them.  Adding
+                # states for the steps between would put the lifecycle in two
+                # places at once.
                 state = "awaiting_approval"
             else:
                 state = "paused" if materials or sources else "researching"
@@ -440,6 +601,8 @@ class ResearchService:
             state=state,
             materials=materials,
             sources=sources,
+            plan_id=contract_head or "",
+            plan_version=len(plans),
         )
 
     async def tasks(self) -> tuple[Task, ...]:
@@ -507,9 +670,13 @@ class ResearchService:
         return capture_execution(self.config).render() + "（创建时未冻结，用当前设置）"
 
     async def approval_card(self, task_id: str) -> str:
-        """The exact card the user must read before approving."""
+        """The exact card the user must read before deciding on the current plan."""
 
-        return approval_card(await self._contract(self._store(task_id)))
+        store = self._store(task_id)
+        view = await store.active_view()
+        return approval_card(
+            await self._contract(store), version=len(view.active("research_contract"))
+        )
 
     # ----------------------------------------------------------------- private
 
@@ -524,6 +691,114 @@ class ResearchService:
         if found is None:
             raise ValueError(f"task {store.task_id} has no Contract")
         return ResearchContract.decode(found[1])
+
+    async def _require_current_plan(
+        self, store: SqliteArtifactStore, plan_id: str
+    ) -> str:
+        """Return the head plan, refusing any decision aimed at an older one."""
+
+        head = (await store.active_view()).head("research_contract")
+        if head is None:
+            raise ValueError(f"task {store.task_id} has no Contract to decide on")
+        if plan_id and plan_id != head:
+            raise StalePlanError(
+                "当前研究方案已经发生变化。请查看最新方案后重新操作。"
+            )
+        return head
+
+    async def _propose_revision(
+        self,
+        store: SqliteArtifactStore,
+        *,
+        commission: CommissionBody,
+        previous_ref: str,
+        receipt_ref: str,
+        revision_note: str,
+        listen: Listener,
+    ) -> ResearchContract:
+        """Ask the Architect to replace one candidate, given what to change.
+
+        The Architect is given the original Commission, the candidate being
+        replaced, and the user's instruction -- not a request string with the
+        instruction glued onto the end.  That is the difference between "revise
+        this plan" and "here is a new, longer brief": only the first can be asked
+        to keep what the user did not object to.
+
+        Idempotent by construction.  If the revised Contract is already committed
+        (an interrupted call, a repeated click) the store returns the existing
+        envelope, and the ledger replays the Architect's answer instead of paying
+        for it twice.
+        """
+
+        parents = tuple(
+            sorted({receipt_ref, previous_ref, *await self._commission_refs(store)})
+        )
+        runtimes = (await self.execution(store.task_id, listen=listen)).runtimes
+        body = architect_agent.architect_context_body(
+            commission.request,
+            source_access=commission.source_access,
+            language=commission.language,
+            constraints=commission.constraints,
+            pack_menu="（本次运行不启用任何能力包。）",
+            previous_contract=await store.body(previous_ref),
+            revision_note=revision_note,
+        )
+        action = await invoke_agent(
+            architect_agent.SPEC,
+            RoleContext(
+                role="architect",
+                purpose="根据用户对上一版方案的修改要求，提交完整的替代方案",
+                body=body,
+                # The receipt is an input, so this call fingerprints differently
+                # from the one that produced the previous candidate.
+                input_refs=parents,
+            ),
+            model=runtimes["architect"].model,
+            ledger=self.ledger,
+            task_id=store.task_id,
+            execution=runtimes["architect"].execution,
+            validate=architect_agent.make_validator(None),
+        )
+        if action.name == "ask_scope_question":
+            # The Architect may legitimately need one answer before it can
+            # rewrite.  The request stays recorded, so answering it resumes.
+            listen(
+                Event(
+                    "clarification_requested",
+                    str(action.arguments["question"]),
+                    {
+                        "why": str(action.arguments["why_it_changes_the_plan"]),
+                        "task_id": store.task_id,
+                    },
+                )
+            )
+            raise AgentProtocolError(
+                "Architect 需要先澄清一个问题才能修改方案：" + str(
+                    action.arguments["question"]
+                )
+            )
+
+        contract = architect_agent.contract_from_action(
+            action.arguments, language=commission.language
+        )
+        await store.put(
+            kind="research_contract",
+            body=contract.encode(),
+            parent_refs=parents,
+            provenance=Provenance(producer="architect"),
+        )
+        version = len((await store.active_view()).active("research_contract"))
+        listen(
+            Event(
+                "plan_revised",
+                approval_card(contract, version=version),
+                {"task_id": store.task_id, "version": version},
+            )
+        )
+        return contract
+
+    async def _commission_refs(self, store: SqliteArtifactStore) -> tuple[str, ...]:
+        return (await store.active_view()).active("commission")
 
     async def _approved_contract(
         self, store: SqliteArtifactStore
@@ -795,6 +1070,7 @@ __all__ = [
     "STALL_TOLERANCE",
     "Event",
     "Listener",
+    "PlanVersion",
     "ResearchService",
     "Task",
     "TaskExecution",

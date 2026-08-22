@@ -25,6 +25,7 @@ from prompt_toolkit.input import create_pipe_input
 from prompt_toolkit.output import DummyOutput
 
 import deep_research_agent.cli.main as cli_main
+from deep_research_agent.approval import StalePlanError
 from deep_research_agent.cli import doctor, i18n, journal, paths, setup_flow, theme
 from deep_research_agent.cli import prompts as prompts_module
 from deep_research_agent.cli import settings as cli_settings
@@ -232,6 +233,136 @@ class PauseIsNotDeleteTest(unittest.IsolatedAsyncioTestCase):
                 self.assertNotEqual(actions["resume"], actions["delete"])
 
 
+class PlanRevisionWorkspaceTest(unittest.IsolatedAsyncioTestCase):
+    """The approval page: approve, request changes, or come back later.
+
+    Requesting changes used to build a longer request string and open a second
+    study.  What the user experiences now is one study whose plan has versions,
+    so these assert the three exits from that page by what they call on the
+    service -- not by what they print.
+    """
+
+    def _workspace(self, tasks) -> tuple[Workspace, mock.AsyncMock]:  # noqa: ANN001
+        service = mock.AsyncMock()
+        service.task.side_effect = list(tasks)
+        service.execution_summary.return_value = "deepseek/x / deepseek/y"
+        service.approval_card.return_value = "# 研究方案待您批准\n\n正文"
+        workspace = Workspace(
+            args=argparse.Namespace(database="", verbose=False),
+            console=theme.console(file=io.StringIO()),
+            settings=CliSettings(cli_language="zh-CN"),
+            translate=i18n.Translator("zh-CN"),
+            environ={},
+        )
+        workspace.service = service
+        return workspace, service
+
+    def test_the_approval_page_offers_request_changes_not_revise_the_brief(
+        self,
+    ) -> None:
+        workspace, _ = self._workspace([_task("awaiting_approval")])
+        labels = dict(workspace._actions_for(_task("awaiting_approval")))
+        self.assertEqual("提出修改", labels["revise"])
+        self.assertEqual("稍后处理", labels["back"])
+        self.assertIn("批准", labels["approve"])
+
+    async def test_requesting_changes_revises_the_plan_on_the_same_task(self) -> None:
+        first = _task("awaiting_approval", plan_id="ctr_v1", plan_version=1)
+        workspace, service = self._workspace([first])
+        service.request_revision.return_value = _task(
+            "awaiting_approval", plan_id="ctr_v2", plan_version=2
+        )
+
+        with mock.patch.object(
+            prompts_module,
+            "ask_text",
+            mock.AsyncMock(return_value="只看中美市场，去掉融资历史。"),
+        ):
+            stayed = await workspace._revise(first)
+
+        service.request_revision.assert_awaited_once_with(
+            first.task_id, "ctr_v1", "只看中美市场，去掉融资历史。"
+        )
+        service.open_task.assert_not_called()
+        self.assertFalse(stayed, "the user stays on this task, not the home screen")
+        self.assertIn("第 2 版", workspace._receipt[1])
+
+    async def test_an_empty_instruction_revises_nothing(self) -> None:
+        task = _task("awaiting_approval", plan_id="ctr_v1", plan_version=1)
+        workspace, service = self._workspace([task])
+        with mock.patch.object(
+            prompts_module, "ask_text", mock.AsyncMock(return_value="")
+        ):
+            self.assertFalse(await workspace._revise(task))
+        service.request_revision.assert_not_called()
+
+    async def test_a_stale_plan_is_reported_and_nothing_is_decided(self) -> None:
+        task = _task("awaiting_approval", plan_id="ctr_v1", plan_version=1)
+        workspace, service = self._workspace([task])
+        service.request_revision.side_effect = StalePlanError(
+            "当前研究方案已经发生变化。请查看最新方案后重新操作。"
+        )
+        with mock.patch.object(
+            prompts_module, "ask_text", mock.AsyncMock(return_value="改一下")
+        ):
+            self.assertFalse(await workspace._revise(task))
+        self.assertIn("已经发生变化", workspace._receipt[1])
+
+    async def test_approving_names_the_plan_the_user_read(self) -> None:
+        task = _task("awaiting_approval", plan_id="ctr_v2", plan_version=2)
+        workspace, service = self._workspace([task])
+        service.advance.return_value = "researching"
+
+        with mock.patch.object(
+            prompts_module, "choose", mock.AsyncMock(return_value="back")
+        ):
+            await workspace._approve_and_run(task)
+
+        service.approve.assert_awaited_once_with(task.task_id, "ctr_v2")
+        service.advance.assert_awaited_once()
+
+    async def test_a_stale_approval_does_not_start_research(self) -> None:
+        task = _task("awaiting_approval", plan_id="ctr_v1", plan_version=1)
+        workspace, service = self._workspace([task])
+        service.approve.side_effect = StalePlanError("当前研究方案已经发生变化。")
+
+        await workspace._approve_and_run(task)
+
+        service.advance.assert_not_called()
+        self.assertIn("已经发生变化", workspace._receipt[1])
+
+    async def test_review_later_decides_nothing_and_leaves_the_task_waiting(
+        self,
+    ) -> None:
+        """Invariant 9: "later" is not an approval event."""
+
+        task = _task("awaiting_approval", plan_id="ctr_v1", plan_version=1)
+        workspace, service = self._workspace([task, task])
+
+        with mock.patch.object(
+            prompts_module, "choose", mock.AsyncMock(return_value="back")
+        ):
+            await workspace._task_detail(task.task_id)
+
+        service.approve.assert_not_called()
+        service.request_revision.assert_not_called()
+        service.delete_research.assert_not_called()
+        self.assertEqual("awaiting_approval", (await service.task(task.task_id)).state)
+
+    async def test_the_page_names_the_version_once_there_is_more_than_one(
+        self,
+    ) -> None:
+        workspace, _ = self._workspace([])
+        self.assertEqual(
+            "研究方案",
+            workspace._plan_title(_task("awaiting_approval", plan_version=1)),
+        )
+        self.assertEqual(
+            "研究方案 · 第 3 版",
+            workspace._plan_title(_task("awaiting_approval", plan_version=3)),
+        )
+
+
 class SettingsTest(unittest.TestCase):
     def test_settings_round_trip(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -303,6 +434,8 @@ def _task(state: str, **kwargs: object) -> Task:
         state=state,  # type: ignore[arg-type]
         materials=int(kwargs.get("materials", 0)),
         sources=int(kwargs.get("sources", 0)),
+        plan_id=str(kwargs.get("plan_id", "ctr_abc")),
+        plan_version=int(kwargs.get("plan_version", 1)),
     )
 
 
@@ -369,7 +502,7 @@ class ActionMappingTest(unittest.TestCase):
         labels = dict(self.workspace._actions_for(_task("awaiting_approval"))).values()
         self.assertNotIn("取消", labels)
         joined = " ".join(labels)
-        self.assertIn("保存以后处理", joined)
+        self.assertIn("稍后处理", joined)
         self.assertIn("取消并删除研究", joined)
 
 

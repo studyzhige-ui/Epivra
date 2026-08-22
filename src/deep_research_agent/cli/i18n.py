@@ -70,8 +70,8 @@ _CATALOGUE: Final[Mapping[str, Mapping[str, str]]] = {
     "action.export_report": {"zh-CN": "导出 Markdown", "en": "Export Markdown"},
     "action.view_plan": {"zh-CN": "查看研究方案", "en": "View the research plan"},
     "action.approve_start": {"zh-CN": "批准并开始研究", "en": "Approve and start"},
-    "action.revise_brief": {"zh-CN": "修改研究委托", "en": "Revise the brief"},
-    "action.save_for_later": {"zh-CN": "保存以后处理", "en": "Save for later"},
+    "action.request_changes": {"zh-CN": "提出修改", "en": "Request changes"},
+    "action.save_for_later": {"zh-CN": "稍后处理", "en": "Review later"},
     "action.delete_running": {
         "zh-CN": "取消并删除研究",
         "en": "Cancel and delete this research",
@@ -205,9 +205,13 @@ _CATALOGUE: Final[Mapping[str, Mapping[str, str]]] = {
         "zh-CN": "补充一句，然后我重新拟方案：",
         "en": "Add a sentence and I will re-draft the plan:",
     },
-    "new.revise_prompt": {
-        "zh-CN": "你想怎么调整这次研究？",
-        "en": "How should the research change?",
+    "plan.revise_prompt": {
+        "zh-CN": "希望怎么调整这份研究方案？",
+        "en": "What should change about this research plan?",
+    },
+    "plan.revising": {
+        "zh-CN": "正在根据你的意见调整研究方案…",
+        "en": "Revising the research plan from your instructions…",
     },
     # --- plan -------------------------------------------------------------
     "plan.read_these": {
@@ -215,6 +219,12 @@ _CATALOGUE: Final[Mapping[str, Mapping[str, str]]] = {
         "en": "Look closely at: the core question Q1, the default assumptions, and the excluded uses.",
     },
     "plan.approved": {"zh-CN": "研究方案已批准", "en": "Research plan approved"},
+    "plan.title": {"zh-CN": "研究方案", "en": "Research plan"},
+    "plan.label": {"zh-CN": "方案版本", "en": "Plan version"},
+    "plan.version": {
+        "zh-CN": "研究方案 · 第 {version} 版",
+        "en": "Research plan · version {version}",
+    },
     # --- run --------------------------------------------------------------
     "run.stage.baseline": {"zh-CN": "建立研究基线", "en": "Establish the baseline"},
     "run.stage.breadth": {"zh-CN": "广度检索", "en": "Breadth search"},
@@ -283,6 +293,10 @@ _CATALOGUE: Final[Mapping[str, Mapping[str, str]]] = {
     "receipt.search_added": {
         "zh-CN": "{provider} 连接成功",
         "en": "{provider} connected",
+    },
+    "receipt.plan_revised": {
+        "zh-CN": "已生成第 {version} 版研究方案",
+        "en": "Research plan version {version} is ready",
     },
     "receipt.defaults_saved": {
         "zh-CN": "研究默认值已保存",

@@ -287,15 +287,9 @@ class ApprovalTest(ApprovalFixture):
         await record_decision(
             self.store,
             ref,
-            ApprovalBody(decision="revision_requested", note="缩小地域"),
+            ApprovalBody(decision="revision_requested", revision_note="缩小地域"),
         )
         with self.assertRaisesRegex(ApprovalError, "requested a revision"):
-            await approved_contract(self.store)
-
-    async def test_cancellation_blocks_research(self) -> None:
-        ref = await self.commit_contract()
-        await record_decision(self.store, ref, ApprovalBody(decision="cancelled"))
-        with self.assertRaisesRegex(ApprovalError, "cancelled"):
             await approved_contract(self.store)
 
     async def test_an_approval_never_carries_over_to_a_revised_contract(self) -> None:
@@ -331,10 +325,10 @@ class ApprovalTest(ApprovalFixture):
 
     async def test_a_revision_request_must_say_what_to_change(self) -> None:
         with self.assertRaisesRegex(ArtifactValidationError, "what to change"):
-            ApprovalBody(decision="revision_requested", note="  ")
+            ApprovalBody(decision="revision_requested", revision_note="  ")
 
     async def test_an_unknown_decision_is_refused(self) -> None:
-        for value in ("approve", "partially_approved", ""):
+        for value in ("approve", "partially_approved", "cancelled", ""):
             with self.subTest(value=value):
                 with self.assertRaises(ArtifactValidationError):
                     ApprovalBody(decision=value)  # type: ignore[arg-type]

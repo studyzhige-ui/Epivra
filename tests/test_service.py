@@ -21,6 +21,12 @@ from unittest import mock
 import aiosqlite
 
 import deep_research_agent.service as service_module
+from deep_research_agent.approval import (
+    ApprovalBody,
+    ApprovalError,
+    StalePlanError,
+    record_decision,
+)
 from deep_research_agent.config import ROLES
 from deep_research_agent.contract import CommissionBody
 from deep_research_agent.model import ModelReply, ModelToolCall
@@ -31,6 +37,7 @@ from deep_research_agent.service import (
     ResearchService,
     new_task_id,
 )
+from deep_research_agent.sources import ArtifactValidationError
 
 CONTRACT_BODY = """\
 ## 目的与用途
@@ -174,7 +181,7 @@ class LifecycleTest(ServiceFixture):
     async def test_approval_binds_and_changes_the_state(self) -> None:
         self._use(_architect_reply())
         task = await self._open()
-        await self.service.approve(task.task_id)
+        await self.service.approve(task.task_id, task.plan_id)
         self.assertEqual("researching", (await self.service.task(task.task_id)).state)
 
     async def test_a_clarification_leaves_no_contract_to_approve(self) -> None:
@@ -184,7 +191,7 @@ class LifecycleTest(ServiceFixture):
         self.assertEqual("clarification_requested", task.state)
         self.assertEqual(["clarification_requested"], [e.kind for e in events])
         with self.assertRaisesRegex(ValueError, "no Contract"):
-            await self.service.approve(task.task_id)
+            await self.service.approve(task.task_id, "")
 
     async def test_the_approval_card_is_what_the_user_reads(self) -> None:
         self._use(_architect_reply())
@@ -313,7 +320,7 @@ class ExecutionSnapshotTest(ServiceFixture):
             {"DEEPSEEK_API_KEY": "k", "DEEP_RESEARCH_REASONING_MODEL": "model-b"}
         )
         # (3) approve and continue the existing task
-        await later.approve(task.task_id)
+        await later.approve(task.task_id, task.plan_id)
         execution = await later.execution(task.task_id)
         # (4) still configuration A
         self.assertTrue(execution.frozen)
@@ -601,6 +608,312 @@ class TaskIdentityTest(unittest.TestCase):
             new_task_id(english, created_at=stamp),
             new_task_id(chinese, created_at=stamp),
         )
+
+
+class PlanLifecycleTest(ServiceFixture):
+    """A plan may iterate; the study it belongs to may not.
+
+    The defect these exist for: "revise" used to concatenate the user's
+    instruction onto the request and open a *new* task, so adjusting a plan twice
+    left three studies and two abandoned plans, and the Architect was handed an
+    ever-longer brief instead of "here is your plan, change this".
+    """
+
+    def _revised(self, marker: str) -> ModelReply:
+        """A distinct Contract body, so each version has its own identity."""
+
+        return ModelReply(
+            tool_calls=(
+                _call(
+                    "propose_contract",
+                    contract_markdown=CONTRACT_BODY.replace(
+                        "不评测具体实现的性能。", f"不评测具体实现的性能。{marker}"
+                    ),
+                ),
+            )
+        )
+
+    async def test_the_first_plan_is_version_one_and_approvable(self) -> None:
+        self._use(_architect_reply())
+        task = await self._open()
+        self.assertEqual(1, task.plan_version)
+        self.assertTrue(task.plan_id.startswith("ctr_"))
+
+        await self.service.approve(task.task_id, task.plan_id)
+        approved = await self.service._approved_contract(  # noqa: SLF001
+            self.service._store(task.task_id)  # noqa: SLF001
+        )
+        self.assertIn("CRDT", approved.body_markdown)
+
+    async def test_a_revision_keeps_the_same_task_and_adds_a_version(self) -> None:
+        """Invariant 1: revision does not create a new Research Task."""
+
+        self._use(_architect_reply(), self._revised("聚焦已商业化实现。"))
+        task = await self._open()
+
+        revised = await self.service.request_revision(
+            task.task_id, task.plan_id, "聚焦已经商业化的实现，不要融资历史。"
+        )
+
+        self.assertEqual(task.task_id, revised.task_id)
+        self.assertEqual(2, revised.plan_version)
+        self.assertNotEqual(task.plan_id, revised.plan_id)
+        self.assertEqual("awaiting_approval", revised.state)
+        self.assertEqual(1, len(await self.service.tasks()))
+
+    async def test_the_architect_is_given_the_previous_plan_and_the_instruction(
+        self,
+    ) -> None:
+        """Invariant: a revision is "change this plan", not "here is a new brief"."""
+
+        seen: list[str] = []
+
+        class Recording(ScriptedModel):
+            async def complete(self, messages, **kwargs):  # noqa: ANN001, ANN202
+                seen.append("\n".join(str(item) for item in messages))
+                return await super().complete(messages, **kwargs)
+
+        model = Recording(_architect_reply(), self._revised("只看中美市场。"))
+        execution = ExecutionIdentity(provider="scripted", model_id="test")
+        runtimes = {
+            role: RoleRuntime(model=model, execution=execution) for role in ROLES
+        }
+        patcher = mock.patch.object(
+            service_module, "build_runtimes", lambda *a, **k: dict(runtimes)
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+        task = await self._open()
+        await self.service.request_revision(
+            task.task_id, task.plan_id, "中美市场详细，欧洲简要。"
+        )
+
+        revision_prompt = seen[-1]
+        self.assertIn("上一份候选", revision_prompt)
+        self.assertIn("用户要求的修改", revision_prompt)
+        self.assertIn("中美市场详细，欧洲简要。", revision_prompt)
+        self.assertIn("用户原始委托", revision_prompt)
+
+    async def test_three_versions_and_the_approved_one_is_the_last(self) -> None:
+        """Invariant 8: only the approved plan becomes the execution contract."""
+
+        self._use(
+            _architect_reply(),
+            self._revised("第二版：只看中美。"),
+            self._revised("第三版：加入开源实现。"),
+        )
+        task = await self._open()
+        second = await self.service.request_revision(
+            task.task_id, task.plan_id, "只看中美市场。"
+        )
+        third = await self.service.request_revision(
+            second.task_id, second.plan_id, "补上开源实现。"
+        )
+        self.assertEqual(3, third.plan_version)
+        self.assertEqual(task.task_id, third.task_id)
+
+        await self.service.approve(third.task_id, third.plan_id)
+        history = await self.service.plan_history(task.task_id)
+        self.assertEqual([1, 2, 3], [item.version for item in history])
+        self.assertEqual(
+            ["revision_requested", "revision_requested", "approved"],
+            [item.decision for item in history],
+        )
+        self.assertEqual(third.plan_id, next(i.plan_id for i in history if i.approved))
+
+    async def test_the_original_request_survives_every_revision(self) -> None:
+        """Invariant 2: the Commission is not rewritten by a revision."""
+
+        original = "调研 AI Agent 行业，包括主要公司、技术路线和未来趋势。"
+        self._use(
+            _architect_reply(),
+            self._revised("第二版。"),
+            self._revised("第三版。"),
+        )
+        task = await self._open(original)
+        second = await self.service.request_revision(
+            task.task_id, task.plan_id, "只看已商业化产品。"
+        )
+        third = await self.service.request_revision(
+            second.task_id, second.plan_id, "去掉融资历史。"
+        )
+        self.assertEqual(original, third.request)
+        self.assertEqual(original, (await self.service.task(task.task_id)).request)
+
+    async def test_a_revision_needs_an_instruction(self) -> None:
+        """Invariant 5: "change something" is not a request."""
+
+        self._use(_architect_reply())
+        task = await self._open()
+        for empty in ("", "   ", "\n"):
+            with self.subTest(instruction=empty):
+                with self.assertRaisesRegex(
+                    ArtifactValidationError, "what to change"
+                ):
+                    await self.service.request_revision(
+                        task.task_id, task.plan_id, empty
+                    )
+
+    async def test_approving_a_superseded_plan_is_refused(self) -> None:
+        """Invariant 6: a reply to the old screen must not approve the new plan."""
+
+        self._use(_architect_reply(), self._revised("第二版。"))
+        first = await self._open()
+        stale_plan = first.plan_id
+        await self.service.request_revision(
+            first.task_id, stale_plan, "换个角度。"
+        )
+
+        with self.assertRaises(StalePlanError):
+            await self.service.approve(first.task_id, stale_plan)
+        self.assertEqual(
+            "awaiting_approval", (await self.service.task(first.task_id)).state
+        )
+
+    async def test_revising_a_superseded_plan_is_refused(self) -> None:
+        """Invariant 7: same guard, other direction."""
+
+        self._use(_architect_reply(), self._revised("第二版。"))
+        first = await self._open()
+        stale_plan = first.plan_id
+        await self.service.request_revision(first.task_id, stale_plan, "换个角度。")
+
+        with self.assertRaises(StalePlanError):
+            await self.service.request_revision(
+                first.task_id, stale_plan, "再换一次。"
+            )
+
+    async def test_an_approved_plan_cannot_then_be_revised(self) -> None:
+        self._use(_architect_reply())
+        task = await self._open()
+        await self.service.approve(task.task_id, task.plan_id)
+        with self.assertRaisesRegex(ApprovalError, "已经批准"):
+            await self.service.request_revision(
+                task.task_id, task.plan_id, "再改一下。"
+            )
+
+    async def test_approving_twice_is_not_an_error(self) -> None:
+        self._use(_architect_reply())
+        task = await self._open()
+        await self.service.approve(task.task_id, task.plan_id)
+        await self.service.approve(task.task_id, task.plan_id)
+        history = await self.service.plan_history(task.task_id)
+        self.assertEqual(1, len(history))
+        self.assertTrue(history[0].approved)
+
+    async def test_an_interrupted_revision_resumes_from_the_recorded_request(
+        self,
+    ) -> None:
+        """The instruction is committed before the Architect is called.
+
+        So a crash between the two does not lose it: calling again with nothing
+        new answers the request already on record.
+        """
+
+        self._use(_architect_reply(), self._revised("第二版。"))
+        task = await self._open()
+        store = self.service._store(task.task_id)  # noqa: SLF001
+        await record_decision(
+            store,
+            task.plan_id,
+            ApprovalBody(
+                decision="revision_requested", revision_note="记录在案的要求。"
+            ),
+        )
+
+        revised = await self.service.request_revision(task.task_id, task.plan_id, "")
+        self.assertEqual(2, revised.plan_version)
+        history = await self.service.plan_history(task.task_id)
+        self.assertEqual("记录在案的要求。", history[0].revision_note)
+
+    async def test_saying_something_new_supersedes_the_pending_request(self) -> None:
+        """Otherwise the user's newest instruction would be silently discarded.
+
+        Which also traps the study: if the Architect answers a revision with a
+        scope question rather than a plan, replaying the recorded request would
+        return that same question forever.
+        """
+
+        self._use(_architect_reply(), self._revised("第二版。"))
+        task = await self._open()
+        store = self.service._store(task.task_id)  # noqa: SLF001
+        await record_decision(
+            store,
+            task.plan_id,
+            ApprovalBody(decision="revision_requested", revision_note="先前的要求。"),
+        )
+
+        revised = await self.service.request_revision(
+            task.task_id, task.plan_id, "改主意了：只看中国市场。"
+        )
+
+        self.assertEqual(2, revised.plan_version)
+        history = await self.service.plan_history(task.task_id)
+        self.assertEqual("改主意了：只看中国市场。", history[0].revision_note)
+
+    async def test_the_plan_history_is_the_provenance_of_the_decision(self) -> None:
+        """Item: revision history must be persisted, not held in the interface."""
+
+        self._use(_architect_reply(), self._revised("第二版。"))
+        task = await self._open()
+        await self.service.request_revision(
+            task.task_id, task.plan_id, "把欧洲市场删掉。"
+        )
+
+        # A second service over the same database answers identically.
+        other = ResearchService(
+            connection=self._connection, environ={"DEEPSEEK_API_KEY": "k"}
+        )
+        await other.setup()
+        history = await other.plan_history(task.task_id)
+        self.assertEqual(2, len(history))
+        self.assertEqual("把欧洲市场删掉。", history[0].revision_note)
+        self.assertEqual("", history[1].decision)
+
+    async def test_a_revised_plan_records_what_it_came_from(self) -> None:
+        """Lineage, in the artifact graph rather than a parallel version table."""
+
+        self._use(_architect_reply(), self._revised("第二版。"))
+        task = await self._open()
+        revised = await self.service.request_revision(
+            task.task_id, task.plan_id, "换个角度。"
+        )
+
+        store = self.service._store(task.task_id)  # noqa: SLF001
+        envelope = await store.get(revised.plan_id)
+        self.assertIn(task.plan_id, envelope.parent_refs)
+        receipt = next(ref for ref in envelope.parent_refs if ref.startswith("apr_"))
+        body = ApprovalBody.decode(await store.body(receipt))
+        self.assertEqual("revision_requested", body.decision)
+        self.assertEqual("换个角度。", body.revision_note)
+
+    async def test_a_legacy_plan_without_revision_metadata_still_works(self) -> None:
+        """Invariant: an existing awaiting-approval task stays usable.
+
+        A task written before plan versions existed has one Contract and no
+        receipts, which is exactly Plan v1 -- so it reads, approves and continues
+        without a migration.
+        """
+
+        self._use(_architect_reply(), self._revised("第二版。"))
+        task = await self._open()
+
+        service = ResearchService(
+            connection=self._connection, environ={"DEEPSEEK_API_KEY": "k"}
+        )
+        await service.setup()
+
+        seen = await service.task(task.task_id)
+        self.assertEqual(1, seen.plan_version)
+        self.assertEqual("awaiting_approval", seen.state)
+
+        revised = await service.request_revision(
+            seen.task_id, seen.plan_id, "缩小到中国市场。"
+        )
+        self.assertEqual(2, revised.plan_version)
+        await service.approve(revised.task_id, revised.plan_id)
+        self.assertEqual("researching", (await service.task(task.task_id)).state)
 
 
 if __name__ == "__main__":

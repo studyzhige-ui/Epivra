@@ -31,10 +31,13 @@ import aiosqlite
 from rich.console import Console
 from rich.markdown import Markdown
 
+from ..agents import AgentProtocolError
 from ..application import load_environment
+from ..approval import ApprovalError
 from ..config import load_config
 from ..providers.llm import LLM_PROVIDERS
 from ..service import Event, ResearchService, Task
+from ..sources import ArtifactValidationError
 from . import journal, prompts, theme
 from .i18n import CLI_LANGUAGES, Translator
 from .paths import config_file, settings_file
@@ -272,6 +275,13 @@ class Workspace:
             # below rather than leaving the product.  Only the menu's own exit --
             # chosen or by Escape -- ends the session.
         return await prompts.choose("", options, disabled=disabled)
+
+    def _plan_title(self, task: Task) -> str:
+        """The plan's own name, so a user always knows which version they hold."""
+
+        if task.plan_version > 1:
+            return self.t("plan.version", version=task.plan_version)
+        return self.t("plan.title")
 
     def _preview(self, task: Task) -> None:
         title = theme.truncate(task.request, 52)
@@ -569,6 +579,8 @@ class Workspace:
                 rows.append(("", self.t("run.materials", count=task.materials)))
             # The frozen model, not the current default: a user who has since
             # changed their settings must be able to see that this study did not.
+            if task.state == "awaiting_approval" and task.plan_version > 1:
+                rows.append((self.t("plan.label"), self._plan_title(task)))
             rows.append(
                 (self.t("cfg.model"), await self.service.execution_summary(task_id))
             )
@@ -579,9 +591,9 @@ class Workspace:
             if action in (None, "back"):
                 return
             if action == "plan":
-                await self._show_plan(task_id)
+                await self._show_plan(task)
             elif action == "approve":
-                await self._approve_and_run(task_id)
+                await self._approve_and_run(task)
             elif action == "resume":
                 await self._run_research(task_id)
             elif action == "report":
@@ -608,7 +620,7 @@ class Workspace:
             options += [
                 ("plan", self.t("action.view_plan")),
                 ("approve", self.t("action.approve_start")),
-                ("revise", self.t("action.revise_brief")),
+                ("revise", self.t("action.request_changes")),
                 ("back", self.t("action.save_for_later")),
                 ("delete", self.t("action.delete_running")),
             ]
@@ -633,10 +645,10 @@ class Workspace:
             ]
         return options
 
-    async def _show_plan(self, task_id: str) -> None:
+    async def _show_plan(self, task: Task) -> None:
         assert self.service is not None
-        card = await self.service.approval_card(task_id)
-        self.page(title=self.t("action.view_plan"))
+        card = await self.service.approval_card(task.task_id)
+        self.page(title=self._plan_title(task))
         self.console.print(Markdown(card))
         theme.dim(self.console, self.t("plan.read_these"))
         theme.dim(self.console, self.t("new.not_started"))
@@ -644,15 +656,21 @@ class Workspace:
         # page waits for them rather than being replaced by the next menu.
         await self.hold()
 
-    async def _approve_and_run(self, task_id: str) -> None:
+    async def _approve_and_run(self, task: Task) -> None:
         assert self.service is not None
         # From here the screen is a live log, not a page: a run's own history is
         # what the user is watching, so nothing below clears it.
         self.page(title=self.t("plan.approved"))
         theme.dim(self.console, self.t("new.after_approve_costs"))
-        await self.service.approve(task_id)
-        journal.record("research_approved", task_id=task_id)
-        await self._run_research(task_id)
+        try:
+            await self.service.approve(task.task_id, task.plan_id)
+        except ApprovalError as error:
+            self.flash(theme.GLYPH["warn"], str(error))
+            return
+        journal.record(
+            "research_approved", task_id=task.task_id, version=task.plan_version
+        )
+        await self._run_research(task.task_id)
 
     async def _run_research(self, task_id: str) -> None:
         assert self.service is not None
@@ -723,14 +741,38 @@ class Workspace:
         )
 
     async def _revise(self, task: Task) -> bool:
-        """Revising the brief must return to the approval gate, never skip it."""
+        """Send the plan back with an instruction, and show the next version.
 
-        addition = await prompts.ask_text(self.t("new.revise_prompt"))
-        if not addition:
+        The same study throughout.  This used to build ``request + 补充：…`` and
+        open a *new* task, so a user who adjusted a plan twice ended up with three
+        studies and two abandoned plans -- and the Architect saw a longer brief
+        rather than "here is your plan, change this".
+        """
+
+        assert self.service is not None
+        instruction = await prompts.ask_text(self.t("plan.revise_prompt"))
+        if not instruction:
             return False
-        self._pending_request = f"{task.request}\n\n补充：{addition}"
-        await self._new_research()
-        return True
+
+        self.console.print()
+        try:
+            with self.console.status(f"  {self.t('plan.revising')}", spinner="dots"):
+                revised = await self.service.request_revision(
+                    task.task_id, task.plan_id, instruction
+                )
+        except (ApprovalError, ArtifactValidationError, AgentProtocolError) as error:
+            self.flash(theme.GLYPH["warn"], str(error))
+            return False
+
+        journal.record(
+            "plan_revised", task_id=task.task_id, version=revised.plan_version
+        )
+        self.flash(
+            theme.GLYPH["done"],
+            self.t("receipt.plan_revised", version=revised.plan_version),
+        )
+        # Stays on this task: the next thing to do is read the new version.
+        return False
 
     async def _delete(self, task: Task) -> bool:
         assert self.service is not None
