@@ -95,15 +95,7 @@ class TranslationTest(unittest.TestCase):
 
 
 class SurfaceTest(unittest.TestCase):
-    """What the CLI publicly is, in both directions.
-
-    The research workflow used to be reachable as subcommands (``new``,
-    ``approve``, ``continue``, ``report`` …) as well as through the workspace.
-    Two human-facing interfaces over one service meant building, translating and
-    testing everything twice, and the command path always lagged.  It is retired:
-    people use the workspace, machines will use MCP, and both go through
-    ``ResearchService``.  These pin the surface so it cannot creep back.
-    """
+    """What the CLI is: a workspace, a diagnostic command, and metadata."""
 
     def _args(self, argv: list[str]) -> argparse.Namespace:
         return cli_main.build_parser().parse_args(argv)
@@ -135,27 +127,15 @@ class SurfaceTest(unittest.TestCase):
         workspace.assert_not_called()
         self.assertIn("deep-research", buffer.getvalue())
 
-    def test_doctor_is_the_only_subcommand(self) -> None:
-        self.assertIs(self._args(["doctor"]).run, doctor.run)
+    def test_doctor_is_the_only_command(self) -> None:
         self.assertEqual({"doctor"}, _registered_commands())
+        self.assertIs(self._args(["doctor"]).run, doctor.run)
 
-    def test_the_retired_research_commands_are_gone(self) -> None:
-        """A retired command must be rejected, not silently accepted."""
+    def test_doctor_takes_live(self) -> None:
+        self.assertFalse(self._args(["doctor"]).live)
+        self.assertTrue(self._args(["doctor", "--live"]).live)
 
-        for command in (
-            "new",
-            "init",
-            "list",
-            "show",
-            "approve",
-            "continue",
-            "report",
-            "delete",
-        ):
-            with self.subTest(command=command), self.assertRaises(SystemExit):
-                self._args([command, "t_test"])
-
-    def test_help_names_every_registered_command(self) -> None:
+    def test_help_names_every_command_and_says_what_the_bare_form_does(self) -> None:
         """The command list is hand-written; this is what stops it drifting."""
 
         rendered = cli_main.build_parser().format_help()
@@ -163,11 +143,6 @@ class SurfaceTest(unittest.TestCase):
             self.assertIn(command, rendered)
         self.assertIn("commands:", rendered)
         self.assertIn("交互式研究工作区", rendered)
-
-    def test_help_no_longer_advertises_a_research_workflow(self) -> None:
-        rendered = cli_main.build_parser().format_help()
-        for retired in ("approve", "continue", "report", "new "):
-            self.assertNotIn(retired, rendered)
 
     def test_version_comes_from_package_metadata(self) -> None:
         """One source for the version; a second copy is a second thing to forget."""
@@ -192,6 +167,69 @@ def _registered_commands() -> set[str]:
         if isinstance(action, argparse._SubParsersAction):  # noqa: SLF001
             return set(action.choices)
     return set()
+
+
+class PauseIsNotDeleteTest(unittest.IsolatedAsyncioTestCase):
+    """Two operations that must never share a path.
+
+    Pause stops the running execution and keeps every artifact; delete destroys
+    the study.  A user reaching for one and getting the other loses hours of paid
+    work, so the separation is asserted rather than left to reading the code.
+    """
+
+    def _workspace(self, service) -> Workspace:  # noqa: ANN001
+        workspace = Workspace(
+            args=argparse.Namespace(database="", verbose=False),
+            console=theme.console(file=io.StringIO()),
+            settings=CliSettings(cli_language="zh-CN"),
+            translate=i18n.Translator("zh-CN"),
+            environ={},
+        )
+        workspace.service = service
+        return workspace
+
+    async def test_an_interrupt_mid_research_destroys_nothing(self) -> None:
+        """Ctrl-C is a pause.  It must not reach delete_research."""
+
+        service = mock.AsyncMock()
+        service.advance.side_effect = KeyboardInterrupt
+        workspace = self._workspace(service)
+
+        with mock.patch.object(
+            prompts_module, "choose", mock.AsyncMock(return_value="back")
+        ):
+            await workspace._run_research("t_abc")
+
+        service.delete_research.assert_not_called()
+        self.assertIn("暂停", workspace.console.file.getvalue())
+
+    async def test_deleting_requires_an_explicit_destructive_confirmation(self) -> None:
+        service = mock.AsyncMock()
+        workspace = self._workspace(service)
+        task = _task("paused", materials=42)
+
+        with mock.patch.object(
+            prompts_module, "confirm_destructive", mock.AsyncMock(return_value=False)
+        ):
+            self.assertFalse(await workspace._delete(task))
+        service.delete_research.assert_not_called()
+
+        with mock.patch.object(
+            prompts_module, "confirm_destructive", mock.AsyncMock(return_value=True)
+        ):
+            self.assertTrue(await workspace._delete(task))
+        service.delete_research.assert_awaited_once_with(task.task_id)
+
+    def test_resuming_and_deleting_are_different_actions_in_every_state(self) -> None:
+        """A paused study offers both, and they are never the same entry."""
+
+        workspace = self._workspace(mock.AsyncMock())
+        for state in ("paused", "halted", "researching"):
+            with self.subTest(state=state):
+                actions = dict(workspace._actions_for(_task(state)))
+                self.assertIn("resume", actions)
+                self.assertIn("delete", actions)
+                self.assertNotEqual(actions["resume"], actions["delete"])
 
 
 class SettingsTest(unittest.TestCase):

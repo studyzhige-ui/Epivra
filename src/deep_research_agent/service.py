@@ -1,8 +1,8 @@
 """The application service: one place that runs a study, for every interface.
 
-A CLI, an MCP server and a web UI must not each reimplement governance.  They
-differ only in how they collect a request and render progress, so this module
-owns the whole lifecycle and they stay thin adapters over it::
+An interface must not reimplement governance.  Interfaces differ only in how they
+collect a request and render progress, so this module owns the whole lifecycle and
+they stay thin adapters over it::
 
                         ResearchService
                               │
@@ -10,15 +10,19 @@ owns the whole lifecycle and they stay thin adapters over it::
                   ▼                       ▼
         Interactive workspace         MCP (future)
 
-Every capability a caller could need is a method here, not something only the
-workspace knows how to do: :meth:`~ResearchService.open_task`,
+Every capability a caller could need is a method here, not something only one
+interface knows how to do: :meth:`~ResearchService.open_task`,
 :meth:`~ResearchService.approve`, :meth:`~ResearchService.advance`,
 :meth:`~ResearchService.task`, :meth:`~ResearchService.tasks`,
 :meth:`~ResearchService.report`, :meth:`~ResearchService.delete_research`,
 :meth:`~ResearchService.approval_card` and
-:meth:`~ResearchService.execution_summary`.  Pausing is deliberately not a method
--- it is what happens when a caller stops awaiting ``advance``, and the state is
-derived from the store afterwards.
+:meth:`~ResearchService.execution_summary`.
+
+Pausing is not among them, and that is a consequence of the design rather than an
+omission: stopping means the caller stops awaiting :meth:`~ResearchService.advance`,
+after which the state derives as ``paused`` from what is already committed.  A
+``pause()`` method would need a flag to set, and a flag would be a second account
+of truth about a state the store already answers.
 
 **No interface holds state.**  Everything durable lives in the artifact store and
 the operation ledger, so "resume" is opening the same database again -- proven in
@@ -367,7 +371,7 @@ class ResearchService:
         )
         return await self.task(task_id)
 
-    async def approve(self, task_id: str, note: str = "") -> None:
+    async def approve(self, task_id: str) -> None:
         """Record the user's approval against the exact Contract they read."""
 
         store = self._store(task_id)
@@ -375,9 +379,7 @@ class ResearchService:
         head = view.head("research_contract")
         if head is None:
             raise ValueError(f"task {task_id} has no Contract to approve")
-        await record_decision(
-            store, head, ApprovalBody(decision="approved", note=note)
-        )
+        await record_decision(store, head, ApprovalBody(decision="approved"))
 
     async def advance(
         self, task_id: str, *, listen: Listener = _ignore

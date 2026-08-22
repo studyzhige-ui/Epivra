@@ -1,20 +1,14 @@
 """Entry point and dispatch.
 
-The surface is deliberately two things:
+The surface is two things:
 
 * ``deep-research`` -- the interactive workspace.  This is the product, and the
-  only interface a person needs.
+  only interface a person needs in order to do research.
 * ``deep-research doctor`` -- diagnostics.  A different job from using the
   product: one shot, no navigation, output meant to be read or pasted.
 
-There used to be a third: a full research workflow as subcommands (``new``,
-``approve``, ``continue``, ``report`` …).  It is gone.  Two human-facing
-interfaces over one service meant every feature had to be built, translated and
-tested twice, and the command path always lagged -- its ``init`` wrote
-credentials without validating them, which is how a placeholder key ended up
-looking configured everywhere.  Machine access is a real need, but a shell
-wrapper is a poor way to serve it; that belongs to MCP, over the same
-:class:`deep_research_agent.service.ResearchService` the workspace uses.
+Plus ``--help`` and ``--version``, which are what every command-line tool owes
+its user.
 
 Without a terminal there is no workspace to enter, so a bare invocation prints
 help and exits successfully rather than blocking on a prompt nobody can answer.
@@ -43,11 +37,10 @@ commands:
 def build_parser() -> argparse.ArgumentParser:
     """The whole public surface, in one place.
 
-    With a single subcommand, argparse's own rendering prints the name twice --
-    once as the group's metavar and once as the choice.  The command list is in
-    the description instead, and the subparser group is suppressed from help.  A
-    test asserts every registered command appears in that text, so the two cannot
-    drift apart.
+    argparse prints a lone command twice -- once as the group's metavar and once
+    as the choice -- so the command list lives in the description and the
+    subparser group is suppressed from help.  A test asserts every registered
+    command appears in that text, so the two cannot drift apart.
     """
 
     parser = argparse.ArgumentParser(

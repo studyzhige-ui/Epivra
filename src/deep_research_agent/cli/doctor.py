@@ -1,9 +1,8 @@
-"""``deep-research doctor``: the one subcommand that is not the product.
+"""``deep-research doctor``: does this installation work, and if not, why.
 
-The workspace is for *using* Deep Research; this is for finding out why it will
-not work.  That is a different job with a different shape -- one shot, no
-navigation, output that is meant to be read, pasted into an issue, or piped -- so
-it stays a command while the research workflow does not.
+A different job from using the product, and a different shape: one shot, no
+navigation, output meant to be read, pasted into an issue, or piped into a CI
+log.  That is why it is a command rather than a page in the workspace.
 
 It answers two questions:
 

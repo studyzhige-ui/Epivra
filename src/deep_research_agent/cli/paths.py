@@ -1,7 +1,7 @@
 """Where configuration and studies live on disk.
 
-One module owns these paths so the interactive workspace, the subcommands and the
-tests cannot disagree about where a user's data is.
+One module owns these paths so the workspace, the diagnostics and the tests
+cannot disagree about where a user's data is.
 
 A project-local ``.env`` wins over the home directory: running inside a checkout
 should use that checkout's configuration, while an installed command run from

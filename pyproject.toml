@@ -22,7 +22,7 @@ dependencies = [
 ]
 
 [project.scripts]
-# One entry point; subcommands are dispatched inside deep_research_agent.cli.
+# One entry point: the interactive workspace, with doctor for diagnostics.
 deep-research = "deep_research_agent.cli.main:main"
 
 [tool.setuptools.packages.find]

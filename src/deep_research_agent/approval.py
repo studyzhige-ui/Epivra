@@ -15,7 +15,6 @@ a copy of its text: artifact identity already includes the body hash, so
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Literal
 
@@ -182,15 +181,6 @@ async def decision_for(
     return None
 
 
-def render_decisions(decisions: Mapping[str, ApprovalBody]) -> str:
-    """Compact audit rendering used by status output."""
-
-    return "\n".join(
-        f"{ref}: {body.decision}" + (f" — {body.note}" if body.note else "")
-        for ref, body in sorted(decisions.items())
-    )
-
-
 __all__ = [
     "DECISIONS",
     "ApprovalBody",
@@ -200,5 +190,4 @@ __all__ = [
     "approved_contract",
     "decision_for",
     "record_decision",
-    "render_decisions",
 ]

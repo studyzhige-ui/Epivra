@@ -174,7 +174,7 @@ class LifecycleTest(ServiceFixture):
     async def test_approval_binds_and_changes_the_state(self) -> None:
         self._use(_architect_reply())
         task = await self._open()
-        await self.service.approve(task.task_id, note="同意")
+        await self.service.approve(task.task_id)
         self.assertEqual("researching", (await self.service.task(task.task_id)).state)
 
     async def test_a_clarification_leaves_no_contract_to_approve(self) -> None:

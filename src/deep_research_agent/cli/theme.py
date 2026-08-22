@@ -111,11 +111,11 @@ def page(target: Console, *, brand: str = "", title: str = "") -> None:
 
 
 def header(target: Console, *, name: str) -> None:
-    """The brand header.  Shown by the workspace, never by a subcommand.
+    """The brand header, deliberately just the name.
 
-    Deliberately just the name.  A tagline repeated at the top of every page is
-    an advertisement to someone who has already bought the thing; the welcome
-    belongs in the body of the home screen, once.
+    A tagline repeated at the top of every page is an advertisement to someone
+    who has already bought the thing; the welcome belongs in the body of the home
+    screen, once.
     """
 
     target.print(
