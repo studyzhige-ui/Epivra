@@ -17,6 +17,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from typing import get_args
 from unittest import mock
 
 import questionary
@@ -44,7 +45,7 @@ from deep_research_agent.cli.workspace import Workspace
 from deep_research_agent.model import ModelUnavailableError
 from deep_research_agent.operations import OperationReconciliationRequired
 from deep_research_agent.providers import validation
-from deep_research_agent.service import Task
+from deep_research_agent.service import EXPECTED_FAILURES, Task, TaskState
 
 
 class TranslationTest(unittest.TestCase):
@@ -576,6 +577,34 @@ class FailureBoundaryTest(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(AttributeError):
             await self._run_once(workspace, AttributeError("typo in a field name"))
 
+    async def test_a_bare_builtin_error_is_not_dressed_up_as_business_news(
+        self,
+    ) -> None:
+        """The boundary named base classes, and the base classes are everyone's.
+
+        ``(ValueError, RuntimeError)`` covers every domain error this codebase
+        raises -- and also a bad ``int()``, a bad ``dict`` key coerced by hand, and
+        a generator restarted.  Those are bugs here, and reporting one as "a
+        provider had a problem" leaves the session running on a broken assumption.
+        """
+
+        for failure in (ValueError("bad literal for int()"), RuntimeError("re-entered")):
+            with self.subTest(failure=type(failure).__name__):
+                workspace = self._workspace(mock.AsyncMock())
+                with self.assertRaises(type(failure)):
+                    await self._run_once(workspace, failure)
+
+    def test_the_expected_set_names_classes_rather_than_base_classes(self) -> None:
+        self.assertNotIn(Exception, EXPECTED_FAILURES)
+        self.assertNotIn(ValueError, EXPECTED_FAILURES)
+        self.assertNotIn(RuntimeError, EXPECTED_FAILURES)
+        for entry in EXPECTED_FAILURES:
+            with self.subTest(entry=entry.__name__):
+                self.assertTrue(issubclass(entry, Exception))
+                # Every one has to come from this project: a third-party base
+                # class would drag its whole hierarchy in behind it.
+                self.assertTrue(entry.__module__.startswith("deep_research_agent"))
+
 
 class ReplanWorkspaceTest(unittest.IsolatedAsyncioTestCase):
     """A study whose plan never arrived can be planned again."""
@@ -734,16 +763,23 @@ class ActionMappingTest(unittest.TestCase):
         self.assertIn("resume", keys)
         self.assertNotIn("approve", keys)
 
+    def test_a_halted_study_can_be_handed_back_to_the_lead(self) -> None:
+        """Review's refusal is not the end of the study, only of that rewrite.
+
+        Resuming returns to the Lead, which is the one actor that can change the
+        basis the Reviewer objected to.  Offering nothing but deletion -- which is
+        what the fallback branch did -- would throw away every material gathered.
+        """
+
+        keys = self._keys("halted")
+        self.assertIn("resume", keys)
+        self.assertIn("plan", keys)
+        self.assertNotIn("approve", keys)
+
     def test_every_state_allows_deletion(self) -> None:
         """A user must be able to abandon a study from any state."""
 
-        for state in (
-            "awaiting_approval",
-            "researching",
-            "paused",
-            "published",
-            "clarification_requested",
-        ):
+        for state in get_args(TaskState):
             with self.subTest(state=state):
                 self.assertIn("delete", self._keys(state))
 
@@ -772,11 +808,22 @@ class ThemeTest(unittest.TestCase):
         self.assertLessEqual(theme.width(console), 120)
 
     def test_every_task_state_has_a_glyph_and_a_label(self) -> None:
+        """Both directions, because the drift went both ways.
+
+        ``halted`` was returned by a run while the interface had no glyph and no
+        label for it, so the one screen that had to explain what happened fell
+        through to a default dot.  Iterating the glyph table alone could not see
+        that; iterating the states can.
+        """
+
         translate = i18n.Translator("en")
-        for state in theme.STATE_GLYPH:
+        for state in get_args(TaskState):
             with self.subTest(state=state):
-                self.assertTrue(theme.STATE_GLYPH[state])
+                self.assertIn(state, theme.STATE_GLYPH)
                 self.assertTrue(translate(f"state.{state}"))
+        for state in theme.STATE_GLYPH:
+            with self.subTest(glyph=state):
+                self.assertIn(state, get_args(TaskState))
 
     def test_truncation_marks_that_something_was_cut(self) -> None:
         self.assertEqual("abc…", theme.truncate("abcdefgh", 4))

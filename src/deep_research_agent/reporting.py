@@ -45,6 +45,43 @@ class ReportingHalted(RuntimeError):
     """The transaction stopped and needs a Lead decision or human judgement."""
 
 
+#: Reviews one transaction may run: the baseline, plus the closure review the
+#: single automatic revision earns.  The pipeline below is straight-line code
+#: rather than a loop, so this names its round count instead of bounding it --
+#: which is what :func:`publication_blocked` reads to tell "the Reviewer's last
+#: word blocks and no revision remains" apart from "still mid-transaction".
+REVIEW_ROUNDS = 2
+
+
+async def publication_blocked(store: SqliteArtifactStore) -> bool:
+    """Whether review has finally blocked publication, from committed facts only.
+
+    Three facts already on record answer this, so nothing new is stored: a
+    ``review_receipt`` exists **only** when a Reviewer approved, a
+    ``publication_receipt`` exists only when a report was published, and reviews
+    accumulate one per round.  Reviews at the round ceiling with no approval and
+    no publication is exactly "the Reviewer still blocks and the automatic
+    revision is spent".
+
+    A boolean field would have been a second account of the same truth -- and the
+    one that could disagree with the artifacts, since the artifacts are what a
+    later process reads after a crash.
+
+    Deliberately pessimistic in one window: a crash between a *second*
+    transaction's baseline block and its revision reads as blocked, because the
+    last recorded verdict does block.  Resuming re-runs from the ledger and the
+    state corrects itself, and both readings offer the user the same next step.
+    """
+
+    view = await store.active_view()
+    if view.head("publication_receipt") is not None:
+        return False
+    return (
+        len(view.active("review")) >= REVIEW_ROUNDS
+        and not view.active("review_receipt")
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class ReviewRound:
     """One reviewer verdict against one exact report version."""
@@ -327,8 +364,10 @@ def _sorted(refs: Sequence[str]) -> tuple[str, ...]:
 
 
 __all__ = [
+    "REVIEW_ROUNDS",
     "ReportingHalted",
     "ReportingOutcome",
+    "publication_blocked",
     "synthesise",
     "ReviewRound",
     "RoleRuntime",

@@ -270,6 +270,10 @@ _CATALOGUE: Final[Mapping[str, Mapping[str, str]]] = {
     "state.awaiting_approval": {"zh-CN": "等待批准", "en": "Awaiting approval"},
     "state.researching": {"zh-CN": "研究中", "en": "Researching"},
     "state.published": {"zh-CN": "已完成", "en": "Completed"},
+    # Distinct from paused on purpose: review's refusal stands, and the automatic
+    # revision it was entitled to is spent.  Saying "paused" would suggest that
+    # simply continuing would finish it.
+    "state.halted": {"zh-CN": "审查阻断发布", "en": "Blocked by review"},
     "state.paused": {"zh-CN": "已暂停", "en": "Paused"},
     # --- lists / detail ---------------------------------------------------
     "list.title": {"zh-CN": "我的研究", "en": "My research"},

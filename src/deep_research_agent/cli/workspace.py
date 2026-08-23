@@ -34,7 +34,7 @@ from rich.markdown import Markdown
 from ..application import load_environment
 from ..config import load_config
 from ..providers.llm import LLM_PROVIDERS
-from ..service import Event, ResearchService, Task
+from ..service import EXPECTED_FAILURES, Event, ResearchService, Task
 from . import journal, prompts, theme
 from .i18n import CLI_LANGUAGES, Translator
 from .paths import config_file, settings_file
@@ -83,15 +83,11 @@ STAGES: tuple[tuple[str, str], ...] = (
     ("review", "run.stage.review"),
 )
 
-#: Failures the workspace expects and reports, rather than dying on.
-#:
-#: These two base classes are exactly what this codebase's domain and
-#: infrastructure errors derive from: ``ArtifactValidationError`` and
-#: ``ConfigError`` are ValueErrors, and ``ApprovalError``, ``AgentProtocolError``,
-#: ``OperationError`` and every provider failure are RuntimeErrors.  Deliberately
-#: not ``Exception``: an AttributeError or a TypeError is a bug in this program and
-#: should still fail loudly rather than being reported as if a vendor was at fault.
-EXPECTED_FAILURES = (ValueError, RuntimeError)
+#: Studies whose next step is to continue running.  ``halted`` belongs here for
+#: navigation while staying its own state in the list: review's refusal is not a
+#: pause, but what the user can do about it is the same -- hand it back to the
+#: Lead, which is what resuming does.
+CONTINUABLE: tuple[str, ...] = ("paused", "researching", "halted")
 
 
 @dataclass(slots=True)
@@ -226,9 +222,7 @@ class Workspace:
             item for item in tasks if item.state == "clarification_requested"
         ]
         awaiting = [item for item in tasks if item.state == "awaiting_approval"]
-        paused = [
-            item for item in tasks if item.state in ("paused", "researching")
-        ]
+        paused = [item for item in tasks if item.state in CONTINUABLE]
         done = [item for item in tasks if item.state == "published"]
 
         options: list[tuple[str, str]] = []
@@ -337,7 +331,7 @@ class Workspace:
                 elif action == "approve":
                     await self._first_of("awaiting_approval")
                 elif action == "resume":
-                    await self._first_of("paused", "researching")
+                    await self._first_of(*CONTINUABLE)
                 elif action == "report":
                     await self._first_of("published")
                 elif action == "tasks":
@@ -708,7 +702,7 @@ class Workspace:
                 ("back", self.t("action.save_for_later")),
                 ("delete", self.t("action.delete_running")),
             ]
-        elif task.state in ("paused", "researching"):
+        elif task.state in CONTINUABLE:
             options += [
                 ("resume", self.t("action.resume")),
                 ("plan", self.t("action.view_plan")),
@@ -1072,4 +1066,11 @@ def run_workspace(args: argparse.Namespace) -> int:
         return 130
 
 
-__all__ = ["ACCESS_OPTIONS", "REPORT_LANGUAGES", "STAGES", "Workspace", "run_workspace"]
+__all__ = [
+    "ACCESS_OPTIONS",
+    "CONTINUABLE",
+    "REPORT_LANGUAGES",
+    "STAGES",
+    "Workspace",
+    "run_workspace",
+]

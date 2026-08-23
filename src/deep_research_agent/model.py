@@ -47,6 +47,19 @@ class ModelRequestRejected(RuntimeError):
     """
 
 
+#: Every way a model call can fail.  Declared beside the classes so a caller that
+#: has to handle "the model did not answer" cannot list four of the five: the
+#: whole point of splitting them was that each says something different about
+#: billing, and a set assembled from memory somewhere else would drift.
+MODEL_FAILURES: tuple[type[Exception], ...] = (
+    ModelAuthError,
+    ModelProtocolError,
+    ModelRateLimitError,
+    ModelRequestRejected,
+    ModelUnavailableError,
+)
+
+
 def _redacted_error(response: "httpx.Response") -> str:
     """Surface the provider's reason without echoing payloads or credentials."""
 
@@ -332,6 +345,7 @@ class OpenAICompatibleClient:
 
 
 __all__ = [
+    "MODEL_FAILURES",
     "ChatModel",
     "OpenAICompatibleClient",
     "ModelAuthError",

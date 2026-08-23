@@ -16,6 +16,7 @@ import asyncio
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from ..config import ConfigError
 from ..sources import LOCAL_SCHEME, canonical_local_ref
 from ..tools import ReadResult
 from ._http import SourceReadError
@@ -50,7 +51,11 @@ class LocalCorpusReader:
     def __post_init__(self) -> None:
         resolved = Path(self.root).expanduser().resolve()
         if not resolved.is_dir():
-            raise ValueError(f"local corpus root is not a directory: {resolved}")
+            # A ConfigError rather than a bare ValueError because this is the
+            # user's setting failing to hold, not a caller passing nonsense: they
+            # granted a folder and it is no longer there, which an interface has
+            # to be able to report instead of dying on.
+            raise ConfigError(f"local corpus root is not a directory: {resolved}")
         self.root = resolved
         if self.max_bytes < 1 or self.max_text_chars < 1:
             raise ValueError("local reader limits must be positive")

@@ -136,17 +136,21 @@ async def record_decision(
     store: SqliteArtifactStore,
     contract_ref: str,
     body: ApprovalBody,
-    *,
-    provenance: object = None,
 ) -> str:
-    """Commit a decision bound to one exact Contract artifact."""
+    """Commit a decision bound to one exact Contract artifact.
+
+    One function records every approval in the repository -- the product's and the
+    developer harness's alike.  There is deliberately no way to say *who* approved
+    beyond the receipt's own provenance: an "operator approval" variant would be a
+    second kind of approval, and the moment two exist, one of them is the one that
+    skips a check.
+    """
 
     await store.get(contract_ref)
     envelope = await store.put(
         kind="approval_receipt",
         body=body.encode(),
         parent_refs=(contract_ref,),
-        provenance=provenance,  # type: ignore[arg-type]
     )
     return envelope.artifact_id
 

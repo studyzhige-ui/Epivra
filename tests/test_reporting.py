@@ -24,7 +24,13 @@ from deep_research_agent.content_store import SqliteContentStore
 from deep_research_agent.contract import build_contract
 from deep_research_agent.model import ModelReply, ModelToolCall, ToolSpec
 from deep_research_agent.operations import ExecutionIdentity, SqliteOperationLedger
-from deep_research_agent.reporting import ReportingHalted, RoleRuntime, run_reporting
+from deep_research_agent.reporting import (
+    REVIEW_ROUNDS,
+    ReportingHalted,
+    RoleRuntime,
+    publication_blocked,
+    run_reporting,
+)
 from deep_research_agent.sources import (
     MaterialBody,
     SourceAnchor,
@@ -370,6 +376,68 @@ class BoundedReviewTest(ReportingFixture):
         self.assertIn("Lead", outcome.halted_reason)
         # The author was never asked to write a third time.
         self.assertEqual(2, len(self.author_model.calls))
+
+    async def test_the_final_block_is_readable_from_the_artifacts_alone(self) -> None:
+        """Whoever opens this database next must be able to see what happened.
+
+        The transaction's own return value lives in one process; the state a user
+        is shown has to survive closing the terminal, and it does so by being
+        derived rather than stored.  Anything else would be a second account of
+        the same truth, and the artifacts are the one a later process reads.
+        """
+
+        self.assertFalse(await publication_blocked(self.store))
+
+        await self.run_transaction(
+            self.runtimes(
+                analyst=[("publish_synthesis", {"synthesis_markdown": synthesis_text()})],
+                author=[
+                    ("submit_report", {"report_markdown": report_text()}),
+                    (
+                        "submit_revised_report",
+                        {
+                            "report_markdown": report_text(),
+                            "finding_dispositions": [
+                                {"finding_index": 1, "response": "已修改。"}
+                            ],
+                        },
+                    ),
+                ],
+                reviewer=[self.blocking(), self.blocking()],
+            )
+        )
+
+        view = await self.store.active_view()
+        self.assertEqual(REVIEW_ROUNDS, len(view.active("review")))
+        self.assertEqual((), view.active("review_receipt"))
+        self.assertTrue(await publication_blocked(self.store))
+
+    async def test_one_block_that_a_revision_answered_is_not_a_final_block(
+        self,
+    ) -> None:
+        await self.run_transaction(
+            self.runtimes(
+                analyst=[("publish_synthesis", {"synthesis_markdown": synthesis_text()})],
+                author=[
+                    ("submit_report", {"report_markdown": report_text()}),
+                    (
+                        "submit_revised_report",
+                        {
+                            "report_markdown": report_text(),
+                            "finding_dispositions": [
+                                {"finding_index": 1, "response": "已限定为不可比。"}
+                            ],
+                        },
+                    ),
+                ],
+                reviewer=[
+                    self.blocking(),
+                    ("approve_report", {"rationale": "阻断项已充分处置。" * 5}),
+                ],
+            )
+        )
+
+        self.assertFalse(await publication_blocked(self.store))
 
     async def test_closure_receives_the_findings_and_their_dispositions(self) -> None:
         await self.run_transaction(

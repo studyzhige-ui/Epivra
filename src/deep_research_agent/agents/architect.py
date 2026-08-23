@@ -269,9 +269,11 @@ def architect_context_body(
     """Compose the Architect's context from the Commission and the pack menu.
 
     Three kinds of added context, kept separate because they mean different
-    things.  ``clarifications`` are answered questions from *before* any plan
-    existed -- the Architect asked what it needed in order to plan at all.  A
-    revision passes the previous candidate and the user's note, because the
+    things.  ``clarifications`` are answered questions -- the Architect asked what
+    it needed in order to plan at all -- and every plan version carries the whole
+    exchange, including a revision: an answer the user has already given does not
+    stop being true because the plan is now on its second draft.  A revision
+    additionally passes the previous candidate and the user's note, because the
     Architect must produce a *complete replacement* Contract rather than append an
     amendment -- an approval binds one exact body, so patching a prior one would
     leave nothing coherent to approve.
@@ -280,6 +282,15 @@ def architect_context_body(
     no rewrite may touch, and gluing answers onto it would hand the Architect an
     ever-longer brief in place of "here is what they asked, and here is what they
     have since told you".
+
+    **Section order is fixed, and stable-first.**  Everything the Commission
+    settles comes before anything that accumulates: those sections plus the pack
+    menu are byte-identical for every Architect call in one task, the
+    clarification exchange only ever grows by appending, and the revision pair is
+    last.  So each successive call sends the previous call's prompt plus a suffix,
+    which is the one shape a vendor prefix cache can actually reuse -- and it
+    costs nothing beyond deciding the order, which is why there is no cache
+    bookkeeping here.
     """
 
     parts = [
@@ -296,6 +307,9 @@ def architect_context_body(
             "## 用户明确约束\n\n"
             + "\n".join(f"- {item}" for item in constraints)
         )
+    parts.append(
+        "## 可选能力包\n\n" + (pack_menu or "（未安装能力包，本次不使用包）")
+    )
     if clarifications:
         exchange = "\n\n".join(
             f"Q{index}. {question.strip()}\nA{index}. {answer.strip()}"
@@ -306,9 +320,6 @@ def architect_context_body(
             + exchange
             + "\n\n这些回答与原始委托同等有效，不要再问已经得到答案的问题。"
         )
-    parts.append(
-        "## 可选能力包\n\n" + (pack_menu or "（未安装能力包，本次不使用包）")
-    )
     if previous_contract.strip():
         parts.append("## 上一份候选\n\n" + previous_contract.strip())
     if revision_note.strip():

@@ -29,7 +29,7 @@ from deep_research_agent.approval import (
     approved_contract,
     record_decision,
 )
-from deep_research_agent.config import ROLES
+from deep_research_agent.config import ROLES, ConfigError
 from deep_research_agent.contract import CommissionBody
 from deep_research_agent.model import (
     ModelAuthError,
@@ -43,7 +43,13 @@ from deep_research_agent.service import (
     ResearchService,
     new_task_id,
 )
-from deep_research_agent.sources import ArtifactValidationError
+from deep_research_agent.sources import (
+    ArtifactValidationError,
+    MaterialBody,
+    SourceAnchor,
+    SourceSnapshotBody,
+    locate_quote,
+)
 
 CONTRACT_BODY = """\
 ## 目的与用途
@@ -70,6 +76,13 @@ Q1. CRDT 与 OT 在核心机制上的本质差异是什么，各自适合什么�
 
 Lead 可调整检索顺序；改变 Q1 需重新审批。已知限制：无公开可比性能数据。
 """
+
+SYNTHESIS = (
+    "## Q1 机制差异\n\nCRDT 用可交换的数据类型换取无中心排序；OT 用变换函数换取更小的"
+    "元数据，代价是通常需要服务器排序。\n\n## 冲突与不可比\n\n公开材料只覆盖机制层面，"
+    "没有同一负载下的对照实现，因此不能给出性能排序。\n\n## Evidence Frontier\n\n"
+    "缺少同一负载下的对照实现；若出现，将改变适用场景的判断。"
+)
 
 
 def _call(name: str, **arguments: object) -> ModelToolCall:
@@ -273,9 +286,28 @@ class SourceAccessTest(ServiceFixture):
         self.assertIsNotNone(reader)
 
     async def test_local_access_without_a_corpus_root_is_refused(self) -> None:
-        with self.assertRaisesRegex(ValueError, "no corpus root"):
+        """And refused in a class an interface expects, not as a bare ValueError.
+
+        A granted folder that has since been deleted is the user's setting failing
+        to hold.  The workspace reports the ones it knows by name; a bare
+        ``ValueError`` is what a bug in this program raises, and the boundary can
+        no longer tell those two apart if a real refusal wears the same class.
+        """
+
+        with self.assertRaisesRegex(ConfigError, "no corpus root"):
             self.service._local_reader(  # noqa: SLF001
                 self._commission("public_web", "user_files"), None
+            )
+        self.assertIn(ConfigError, service_module.EXPECTED_FAILURES)
+
+    async def test_a_corpus_root_that_no_longer_exists_is_reported_not_fatal(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as corpus:
+            missing = Path(corpus) / "moved-away"
+        with self.assertRaises(ConfigError):
+            self.service._local_reader(  # noqa: SLF001
+                self._commission("public_web", "user_files"), missing
             )
 
     async def test_a_corpus_root_yields_a_local_reader(self) -> None:
@@ -712,6 +744,68 @@ class PlanLifecycleTest(ServiceFixture):
         self.assertIn("用户要求的修改", revision_prompt)
         self.assertIn("中美市场详细，欧洲简要。", revision_prompt)
         self.assertIn("用户原始委托", revision_prompt)
+
+    async def test_a_revision_is_given_the_clarifications_already_answered(
+        self,
+    ) -> None:
+        """Every plan version sees the whole exchange, revisions included.
+
+        It did not, and the asymmetry was silent: the first draft was told "for
+        procurement, not education" and the second was not, so a revision could
+        undo an answer the user had already given.
+        """
+
+        seen: list[str] = []
+
+        class Recording(ScriptedModel):
+            async def complete(self, messages, **kwargs):  # noqa: ANN001, ANN202
+                seen.append("\n".join(str(item) for item in messages))
+                return await super().complete(messages, **kwargs)
+
+        model = Recording(
+            _clarify_reply(), _architect_reply(), self._revised("只看中美市场。")
+        )
+        execution = ExecutionIdentity(provider="scripted", model_id="test")
+        runtimes = {
+            role: RoleRuntime(model=model, execution=execution) for role in ROLES
+        }
+        patcher = mock.patch.object(
+            service_module, "build_runtimes", lambda *a, **k: dict(runtimes)
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+        asked = await self._open()
+        planned = await self.service.answer_clarification(
+            asked.task_id, asked.clarification_id, "为采购选型。"
+        )
+        await self.service.request_revision(
+            planned.task_id, planned.plan_id, "中美市场详细，欧洲简要。"
+        )
+
+        revision_prompt = seen[-1]
+        self.assertIn("为采购选型。", revision_prompt)
+        self.assertIn("这份研究是为选型还是为科普？", revision_prompt)
+        self.assertIn("上一份候选", revision_prompt)
+
+    async def test_the_revised_plan_descends_from_the_answers_too(self) -> None:
+        """What the Architect reads and what the artifact records must agree."""
+
+        self._use(
+            _clarify_reply(), _architect_reply(), self._revised("只看中美市场。")
+        )
+        asked = await self._open()
+        planned = await self.service.answer_clarification(
+            asked.task_id, asked.clarification_id, "为采购选型。"
+        )
+        revised = await self.service.request_revision(
+            planned.task_id, planned.plan_id, "中美市场详细。"
+        )
+
+        store = self.service._store(revised.task_id)  # noqa: SLF001
+        parents = set((await store.get(revised.plan_id)).parent_refs)
+        self.assertIn(asked.clarification_id, parents)
+        self.assertIn(planned.plan_id, parents)
 
     async def test_three_versions_and_the_approved_one_is_the_last(self) -> None:
         """Invariant 8: only the approved plan becomes the execution contract."""
@@ -1305,6 +1399,151 @@ class PlanningFailureTest(ServiceFixture):
         again = await self.service.replan(task.task_id)
         self.assertEqual("clarification_requested", again.state)
         self.assertEqual(task.clarification_id, again.clarification_id)
+
+
+class ReviewHaltTest(ServiceFixture):
+    """Review's final refusal is its own state, and it is derived.
+
+    ``advance()`` used to return ``"halted"`` while ``TaskState`` did not list it
+    and ``task()`` could not produce it: the interface had no glyph and no label
+    for the one value the run actually returned, and reopening the database
+    reported the study as merely paused.  Two accounts of one truth, disagreeing.
+    """
+
+    SOURCE_TEXT = (
+        "CRDT merges concurrent edits without a central server, while OT requires "
+        "a transformation function and, in most deployments, a server that orders "
+        "operations before broadcasting them."
+    )
+    QUOTE = "CRDT merges concurrent edits without a central server"
+
+    async def _seed_evidence(self, task_id: str) -> None:
+        """Give the task one citable Material, so a report can be written."""
+
+        store = self.service._store(task_id)  # noqa: SLF001
+        text_ref = await self.service._content.put(self.SOURCE_TEXT)  # noqa: SLF001
+        source = await store.put(
+            kind="source_snapshot",
+            body=SourceSnapshotBody(
+                url="https://example.org/crdt-vs-ot",
+                title="CRDT and OT compared",
+                text_ref=text_ref,
+                fetched_at="2026-08-20",
+            ).encode(),
+        )
+        material = MaterialBody.create(
+            content="CRDT 不需要中心服务器即可合并并发编辑；OT 通常需要服务器排序。",
+            boundaries="仅机制层面；不含性能数据。",
+            anchors=(
+                SourceAnchor(
+                    source_ref=source.artifact_id,
+                    exact_quote=self.QUOTE,
+                    locator=locate_quote(self.SOURCE_TEXT, self.QUOTE),
+                ),
+            ),
+        )
+        await store.put(
+            kind="material",
+            body=material.encode(),
+            parent_refs=material.source_refs,
+        )
+
+    def _blocking(self) -> ModelReply:
+        return ModelReply(
+            tool_calls=(
+                _call(
+                    "block_report",
+                    findings=[
+                        {
+                            "location": "执行摘要",
+                            "problem": "结论强度超出机制层面证据允许的范围。",
+                            "impact": "读者会把机制差异当成全场景优劣结论。",
+                            "acceptance_condition": "把结论限定到机制层面。",
+                        }
+                    ],
+                ),
+            )
+        )
+
+    async def _halt(self) -> str:
+        """Drive one study to a report that review refuses twice."""
+
+        report = (
+            "# CRDT 与 OT 的机制差异\n\n## 执行摘要\n\n"
+            "两者的本质差异在于是否需要中心服务器排序 [[cite:h1]]。\n\n"
+            "## 局限\n\n本报告不覆盖性能。\n"
+        )
+        self._use(
+            _architect_reply(),
+            ModelReply(
+                tool_calls=(
+                    _call(
+                        "commission_report",
+                        report_brief="面向工程团队的机制对比说明。",
+                        stop_rationale="公开证据已覆盖机制层面，达到当前能力边界。",
+                    ),
+                )
+            ),
+            ModelReply(
+                tool_calls=(
+                    _call("publish_synthesis", synthesis_markdown=SYNTHESIS * 2),
+                )
+            ),
+            ModelReply(tool_calls=(_call("submit_report", report_markdown=report),)),
+            self._blocking(),
+            ModelReply(
+                tool_calls=(
+                    _call(
+                        "submit_revised_report",
+                        report_markdown=report,
+                        finding_dispositions=[
+                            {"finding_index": 1, "response": "已限定到机制层面。"}
+                        ],
+                    ),
+                )
+            ),
+            self._blocking(),
+        )
+        task = await self._open()
+        await self._seed_evidence(task.task_id)
+        await self.service.approve(task.task_id, task.plan_id)
+        return task.task_id
+
+    async def test_a_final_block_is_halted_and_advance_agrees_with_task(self) -> None:
+        task_id = await self._halt()
+        events: list[Event] = []
+
+        state = await self.service.advance(task_id, listen=events.append)
+
+        self.assertEqual("halted", state)
+        self.assertEqual("halted", (await self.service.task(task_id)).state)
+        self.assertEqual("halted", events[-1].kind)
+        self.assertIn("未发布", events[-1].message)
+
+    async def test_halted_survives_a_new_service_over_the_same_database(self) -> None:
+        """Nothing was stored, so reopening has to reach the same conclusion."""
+
+        task_id = await self._halt()
+        await self.service.advance(task_id)
+
+        another = ResearchService(
+            connection=self._connection, environ={"DEEPSEEK_API_KEY": "test-key"}
+        )
+        await another.setup()
+        self.assertEqual("halted", (await another.task(task_id)).state)
+
+    async def test_halted_is_not_paused(self) -> None:
+        """The two must never collapse: only one of them can be finished by resuming."""
+
+        task_id = await self._halt()
+        # Approved, with evidence already gathered and no report yet: continuing
+        # is all this study needs.
+        self.assertEqual("paused", (await self.service.task(task_id)).state)
+
+        await self.service.advance(task_id)
+
+        # Review has now refused twice, which is a different situation and says so.
+        self.assertEqual("halted", (await self.service.task(task_id)).state)
 
 
 class TaskOrderTest(ServiceFixture):

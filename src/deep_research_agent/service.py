@@ -55,7 +55,7 @@ from typing import Any, Literal
 
 import aiosqlite
 
-from .agents import AgentProtocolError, invoke_agent
+from .agents import AgentProtocolError, TerminalAction, invoke_agent
 from .agents import architect as architect_agent
 from .agents import lead as lead_agent
 from .application import build_runtimes
@@ -72,9 +72,16 @@ from .approval import (
 )
 from .artifact_store import SqliteArtifactStore
 from .artifacts import ArtifactDisposition, Provenance
-from .config import RuntimeConfig, load_config
+from .citations import CitationClosureError
+from .config import ConfigError, RuntimeConfig, load_config
 from .content_store import SqliteContentStore
-from .context import RoleContext, latest_body, lead_context, load_evidence
+from .context import (
+    ContextCapacityError,
+    RoleContext,
+    latest_body,
+    lead_context,
+    load_evidence,
+)
 from .contract import (
     ClarificationBody,
     ClarificationReplyBody,
@@ -86,27 +93,75 @@ from .execution_snapshot import capture as capture_execution
 from .execution_snapshot import freeze as freeze_execution
 from .execution_snapshot import load as load_execution
 from .execution_snapshot import setup as setup_executions
-from .operations import SqliteOperationLedger
+from .model import MODEL_FAILURES
+from .operations import OperationError, SqliteOperationLedger
 from .providers import build_search_providers
 from .providers.local import LocalCorpusReader
 from .providers.reader import PublicHttpReader, extract_pdf_in_subprocess
-from .reporting import RoleRuntime, run_reporting
+from .reporting import (
+    ReportingHalted,
+    RoleRuntime,
+    publication_blocked,
+    run_reporting,
+)
 from .sources import ArtifactValidationError
 from .tools import TransparentSearchBroker
 from .wave import run_wave
 
-#: Where a study stands, derived from committed artifacts and never stored.  There
-#: is deliberately no ``halted``: a Reviewer that blocks publication leaves a study
-#: that can be continued, which is what ``paused`` already means, and a state
-#: ``task()`` could never derive was one the interface handled but could not reach.
-#: Why a study stopped is carried by the event and the journal, not the state name.
+#: Where a study stands, derived from committed artifacts and never stored.
+#:
+#: ``halted`` and ``paused`` are kept apart because they are not the same
+#: situation: ``paused`` means the study can be continued as it is, while
+#: ``halted`` means independent review still refuses to publish *and* the one
+#: automatic revision it was entitled to is spent -- nothing the runtime can do
+#: unaided will change that verdict.  Both are derived from what is committed, so
+#: neither is a flag anyone can set: see
+#: :func:`~deep_research_agent.reporting.publication_blocked`.
 TaskState = Literal[
     "clarification_requested",
     "awaiting_approval",
     "researching",
     "published",
+    "halted",
     "paused",
 ]
+
+#: Failures an interface is expected to report and carry on from, as opposed to
+#: crash on.  Named one by one on purpose: this used to be ``(ValueError,
+#: RuntimeError)``, which is every base class this codebase's own errors derive
+#: from -- and also what a typo raises.  A ``TypeError`` from a bad call or an
+#: ``AttributeError`` from a missing field is a bug in this program, and dressing
+#: one up as "a provider had a problem" hides it from the only people who can fix
+#: it.
+#:
+#: It lives here because it is part of the service's contract with its
+#: interfaces, not a terminal detail: the next interface must expect the same set.
+#:
+#: The provider vocabulary in :mod:`~deep_research_agent.providers` is absent by
+#: design rather than by omission -- a search or fetch failure is a research
+#: observation the broker records and hands to the role, so it never reaches a
+#: caller.  Model failures do reach one, which is why they are listed.
+EXPECTED_FAILURES: tuple[type[Exception], ...] = (
+    # A role could not produce a valid action, or ran out of tool budget.
+    AgentProtocolError,
+    # The approval state as recorded forbids this, including a stale plan or a
+    # stale clarification.
+    ApprovalError,
+    # A body the domain refuses: an empty revision note, a malformed Contract.
+    ArtifactValidationError,
+    # A finished report cannot be cited safely, so it is not published.
+    CitationClosureError,
+    # The installation's own configuration is unusable.
+    ConfigError,
+    # A role's basis does not fit, or an approved Contract is missing.
+    ContextCapacityError,
+    # A frozen operation, or an exhausted attempt budget.
+    OperationError,
+    # There is nothing to report on yet.
+    ReportingHalted,
+    # Every way a paid model call can fail.
+    *MODEL_FAILURES,
+)
 
 #: Consecutive Waves that may add no Material before governance pauses.  This is
 #: not a research budget: the Lead decides when evidence is sufficient, and this
@@ -116,6 +171,12 @@ STALL_TOLERANCE = 2
 #: Runaway guard only, set far above anything an observed run has needed (the
 #: deepest so far used three waves).  Reaching it is a pause, never "finished".
 RUNAWAY_WAVE_GUARD = 24
+
+#: What the Architect is told about capability packs.  One string, because it is
+#: part of the prompt prefix every plan version shares: two copies of the same
+#: sentence would eventually become two different sentences, and a prefix that
+#: differs by a character is a prefix the vendor cache cannot reuse.
+PACK_MENU = "（本次运行不启用任何能力包。）"
 
 
 @dataclass(frozen=True, slots=True)
@@ -368,7 +429,7 @@ class ResearchService:
         if not commission.allows_local_corpus:
             return None
         if corpus_root is None:
-            raise ValueError(
+            raise ConfigError(
                 "this commission authorises local files but no corpus root was given"
             )
         return LocalCorpusReader(
@@ -708,6 +769,8 @@ class ResearchService:
                 # states for the steps between would put the lifecycle in two
                 # places at once.
                 state = "awaiting_approval"
+            elif await publication_blocked(store):
+                state = "halted"
             else:
                 state = "paused" if materials or sources else "researching"
         return Task(
@@ -830,6 +893,56 @@ class ResearchService:
             )
         return head
 
+    async def _ask_architect(
+        self,
+        store: SqliteArtifactStore,
+        commission: CommissionBody,
+        *,
+        purpose: str,
+        input_refs: tuple[str, ...],
+        exchanges: Sequence[Exchange],
+        previous_contract: str = "",
+        revision_note: str = "",
+        listen: Listener,
+    ) -> TerminalAction:
+        """One Architect call, with the context every plan version must carry.
+
+        Both plan paths come through here so the invariant cannot hold in one of
+        them: whichever version is being written, the Architect sees the original
+        Commission and the *whole* clarification exchange.  It did not, and the
+        asymmetry was invisible -- a revision was given the plan and the note but
+        not the answers, so a user who had already said "for procurement, not
+        education" could watch v2 drift back towards a tutorial.
+        """
+
+        runtimes = (await self.execution(store.task_id, listen=listen)).runtimes
+        body = architect_agent.architect_context_body(
+            commission.request,
+            source_access=commission.source_access,
+            language=commission.language,
+            constraints=commission.constraints,
+            pack_menu=PACK_MENU,
+            clarifications=tuple(
+                (item.question, item.answer) for item in exchanges if item.answered
+            ),
+            previous_contract=previous_contract,
+            revision_note=revision_note,
+        )
+        return await invoke_agent(
+            architect_agent.SPEC,
+            RoleContext(
+                role="architect",
+                purpose=purpose,
+                body=body,
+                input_refs=input_refs,
+            ),
+            model=runtimes["architect"].model,
+            ledger=self.ledger,
+            task_id=store.task_id,
+            execution=runtimes["architect"].execution,
+            validate=architect_agent.make_validator(None),
+        )
+
     async def _propose_revision(
         self,
         store: SqliteArtifactStore,
@@ -842,11 +955,12 @@ class ResearchService:
     ) -> ResearchContract:
         """Ask the Architect to replace one candidate, given what to change.
 
-        The Architect is given the original Commission, the candidate being
-        replaced, and the user's instruction -- not a request string with the
-        instruction glued onto the end.  That is the difference between "revise
-        this plan" and "here is a new, longer brief": only the first can be asked
-        to keep what the user did not object to.
+        The Architect is given the original Commission, every clarification it has
+        already been answered, the candidate being replaced, and the user's
+        instruction -- not a request string with the instruction glued onto the
+        end.  That is the difference between "revise this plan" and "here is a new,
+        longer brief": only the first can be asked to keep what the user did not
+        object to.
 
         Idempotent by construction.  If the revised Contract is already committed
         (an interrupted call, a repeated click) the store returns the existing
@@ -854,34 +968,28 @@ class ResearchService:
         for it twice.
         """
 
+        exchanges = await self._exchanges(store)
         parents = tuple(
-            sorted({receipt_ref, previous_ref, *await self._commission_refs(store)})
+            sorted(
+                {
+                    receipt_ref,
+                    previous_ref,
+                    *await self._commission_refs(store),
+                    *(item.clarification_id for item in exchanges if item.answered),
+                }
+            )
         )
-        runtimes = (await self.execution(store.task_id, listen=listen)).runtimes
-        body = architect_agent.architect_context_body(
-            commission.request,
-            source_access=commission.source_access,
-            language=commission.language,
-            constraints=commission.constraints,
-            pack_menu="（本次运行不启用任何能力包。）",
+        action = await self._ask_architect(
+            store,
+            commission,
+            purpose="根据用户对上一版方案的修改要求，提交完整的替代方案",
+            # The receipt is an input, so this call fingerprints differently from
+            # the one that produced the previous candidate.
+            input_refs=parents,
+            exchanges=exchanges,
             previous_contract=await store.body(previous_ref),
             revision_note=revision_note,
-        )
-        action = await invoke_agent(
-            architect_agent.SPEC,
-            RoleContext(
-                role="architect",
-                purpose="根据用户对上一版方案的修改要求，提交完整的替代方案",
-                body=body,
-                # The receipt is an input, so this call fingerprints differently
-                # from the one that produced the previous candidate.
-                input_refs=parents,
-            ),
-            model=runtimes["architect"].model,
-            ledger=self.ledger,
-            task_id=store.task_id,
-            execution=runtimes["architect"].execution,
-            validate=architect_agent.make_validator(None),
+            listen=listen,
         )
         if action.name == "ask_scope_question":
             # The Architect may legitimately need one answer before it can
@@ -972,35 +1080,21 @@ class ResearchService:
             # A question is still open; planning waits for the user, not the model.
             return None
 
-        runtimes = (await self.execution(store.task_id, listen=listen)).runtimes
-        answered = tuple(
-            (item.question, item.answer) for item in exchanges if item.answered
+        input_refs = tuple(
+            sorted(
+                {
+                    commission_ref,
+                    *(item.clarification_id for item in exchanges if item.answered),
+                }
+            )
         )
-        input_refs = (
-            commission_ref,
-            *(item.clarification_id for item in exchanges if item.answered),
-        )
-        body = architect_agent.architect_context_body(
-            commission.request,
-            source_access=commission.source_access,
-            language=commission.language,
-            constraints=commission.constraints,
-            pack_menu="（本次运行不启用任何能力包。）",
-            clarifications=answered,
-        )
-        action = await invoke_agent(
-            architect_agent.SPEC,
-            RoleContext(
-                role="architect",
-                purpose="把用户委托转化为可审批的研究合同",
-                body=body,
-                input_refs=input_refs,
-            ),
-            model=runtimes["architect"].model,
-            ledger=self.ledger,
-            task_id=store.task_id,
-            execution=runtimes["architect"].execution,
-            validate=architect_agent.make_validator(None),
+        action = await self._ask_architect(
+            store,
+            commission,
+            purpose="把用户委托转化为可审批的研究合同",
+            input_refs=input_refs,
+            exchanges=exchanges,
+            listen=listen,
         )
         if action.name == "ask_scope_question":
             await self._ask_clarification(
@@ -1018,7 +1112,7 @@ class ResearchService:
         await store.put(
             kind="research_contract",
             body=contract.encode(),
-            parent_refs=tuple(sorted(set(input_refs))),
+            parent_refs=input_refs,
             provenance=Provenance(producer="architect"),
         )
         return contract
@@ -1243,10 +1337,14 @@ class ResearchService:
             )
 
         if not outcome.published:
-            listen(
-                Event("halted", f"未发布：{outcome.halted_reason}", {}),
-            )
-            return "halted"
+            # What stopped the transaction is not always the Reviewer: an Author
+            # who says the evidence cannot support the report leaves a study that
+            # is merely paused.  So the state is read back from what was
+            # committed rather than assumed here, which is also the only way
+            # advance() and task() cannot disagree about the same study.
+            state = (await self.task(store.task_id)).state
+            listen(Event(state, f"未发布：{outcome.halted_reason}", {}))
+            return state
 
         assert outcome.rendered is not None
         listen(
@@ -1279,6 +1377,8 @@ class ResearchService:
 
 
 __all__ = [
+    "EXPECTED_FAILURES",
+    "PACK_MENU",
     "RUNAWAY_WAVE_GUARD",
     "STALL_TOLERANCE",
     "Event",

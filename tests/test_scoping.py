@@ -239,6 +239,52 @@ class ContextTest(unittest.TestCase):
             architect_context_body("x", source_access=["public_web"], language="zh"),
         )
 
+    def test_every_later_call_extends_the_previous_prompt_rather_than_editing_it(
+        self,
+    ) -> None:
+        """Sections are ordered stable-first, so the prompt only ever grows.
+
+        This is what makes a vendor prefix cache usable across a study's plan
+        versions, and it is a property of the *order* alone -- if the pack menu
+        sat after the clarification exchange, one answer would move it and every
+        later call would pay full price for a prompt it had already sent.
+        """
+
+        fixed = {
+            "source_access": ["public_web"],
+            "language": "zh",
+            "constraints": ["只看公开资料"],
+            "pack_menu": "（不启用能力包）",
+        }
+        first = architect_context_body("原始委托。", **fixed)
+        answered = architect_context_body(
+            "原始委托。", **fixed, clarifications=(("为选型还是科普？", "选型。"),)
+        )
+        revising = architect_context_body(
+            "原始委托。",
+            **fixed,
+            clarifications=(("为选型还是科普？", "选型。"),),
+            previous_contract=CONTRACT,
+            revision_note="只看华东。",
+        )
+
+        self.assertTrue(answered.startswith(first))
+        self.assertTrue(revising.startswith(answered))
+
+    def test_a_revision_still_carries_the_answers_the_user_already_gave(self) -> None:
+        """An answer does not expire because the plan reached its second draft."""
+
+        body = architect_context_body(
+            "比较两条路径。",
+            source_access=["public_web"],
+            language="zh",
+            clarifications=(("为选型还是科普？", "为采购选型。"),),
+            previous_contract=CONTRACT,
+            revision_note="把地域限定到华东。",
+        )
+        self.assertIn("为采购选型。", body)
+        self.assertIn("不要再问已经得到答案的问题", body)
+
 
 class ApprovalFixture(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:

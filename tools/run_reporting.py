@@ -48,11 +48,12 @@ async def ensure_approved_contract(
 ) -> None:
     """Commit the Contract and its approval if this task has neither.
 
-    The operator running this script *is* the approval -- and it is recorded as
-    one rather than skipped, so the database this harness leaves behind is a
-    database the product could have produced.  Writing a Contract with no receipt
-    would have made this the one path in the repository that reaches paid model
-    calls without an approval on record.
+    The operator running this script *is* the approval, and it is recorded through
+    the product's own gate -- :func:`record_decision` with an ordinary
+    ``approved`` receipt, nothing added to the Approval domain for the harness's
+    benefit.  A harness that needed its own kind of approval would be evidence the
+    gate was in the wrong place; one that satisfies the real gate leaves behind a
+    database the product could have produced.
 
     The Contract is stored in its own canonical encoding, not as raw markdown:
     a body written one way and read another is what made the reporting segment

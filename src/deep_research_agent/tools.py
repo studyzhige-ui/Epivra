@@ -17,10 +17,6 @@ RoutingMode = Literal["auto", "prefer", "only", "exclude"]
 SourceKind = Literal["web", "news"]
 
 
-class ToolPermissionError(PermissionError):
-    """A role attempted to use a capability it does not own."""
-
-
 @dataclass(frozen=True)
 class ProviderInfo:
     provider_id: str
@@ -469,6 +465,5 @@ __all__ = [
     "SearchRouting",
     "SourceKind",
     "SourceReader",
-    "ToolPermissionError",
     "TransparentSearchBroker",
 ]
