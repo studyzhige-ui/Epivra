@@ -77,7 +77,19 @@ class RequestShapeTest(unittest.IsolatedAsyncioTestCase):
         finally:
             await client.client.aclose()
 
-        self.assertEqual("You are an Evidence Analyst.", seen["payload"]["system"])
+        # A list of blocks rather than a bare string, because the stable prefix
+        # carries a cache breakpoint.  Still a top-level parameter, which is the
+        # difference from the OpenAI shape this test exists to pin.
+        self.assertEqual(
+            [
+                {
+                    "type": "text",
+                    "text": "You are an Evidence Analyst.",
+                    "cache_control": {"type": "ephemeral"},
+                }
+            ],
+            seen["payload"]["system"],
+        )
         self.assertEqual(
             [{"role": "user", "content": "Analyse."}], seen["payload"]["messages"]
         )
@@ -281,6 +293,130 @@ class FailureMappingTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_the_api_key_never_appears_in_the_repr(self) -> None:
         self.assertNotIn("secret", repr(AnthropicClient("secret")))
+
+
+class AnthropicStreamingTest(unittest.IsolatedAsyncioTestCase):
+    """The Messages event stream must rebuild the same body a POST returns.
+
+    Assembled into the response shape rather than parsed separately, so exactly one
+    function decides what a stop reason means.  The two transports have already
+    disagreed about that once -- silently publishing a truncated report on one
+    vendor and raising on the other -- and a second parser here would be the same
+    mistake in a new place.
+    """
+
+    @staticmethod
+    def _sse(*events: object) -> str:
+        return "".join(
+            f"event: {getattr(event, 'get', dict)('type', 'x')}\n"
+            f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+            for event in events
+        )
+
+    async def _complete(self, body: str):  # noqa: ANN202
+        async def handler(request: httpx.Request) -> httpx.Response:
+            self.assertIs(True, json.loads(request.content)["stream"])
+            return httpx.Response(200, text=body)
+
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        model = AnthropicClient(
+            "secret", max_output_tokens=64_000, stream=True, client=client
+        )
+        try:
+            return await model.complete([{"role": "user", "content": "write"}])
+        finally:
+            await client.aclose()
+
+    async def test_text_and_usage_reassemble(self) -> None:
+        reply = await self._complete(
+            self._sse(
+                {
+                    "type": "message_start",
+                    "message": {"usage": {"input_tokens": 120, "output_tokens": 0}},
+                },
+                {
+                    "type": "content_block_start",
+                    "index": 0,
+                    "content_block": {"type": "text", "text": ""},
+                },
+                {
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": {"type": "text_delta", "text": "结论："},
+                },
+                {
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": {"type": "text_delta", "text": "证据充分。"},
+                },
+                {
+                    "type": "message_delta",
+                    "delta": {"stop_reason": "end_turn"},
+                    "usage": {"output_tokens": 42},
+                },
+            )
+        )
+        self.assertEqual("结论：证据充分。", reply.content)
+        assert reply.usage is not None
+        self.assertEqual(120, reply.usage.input_tokens)
+        self.assertEqual(42, reply.usage.output_tokens)
+
+    async def test_a_tool_call_reassembles_from_json_fragments(self) -> None:
+        reply = await self._complete(
+            self._sse(
+                {"type": "message_start", "message": {}},
+                {
+                    "type": "content_block_start",
+                    "index": 0,
+                    "content_block": {"type": "tool_use", "id": "t1", "name": "submit"},
+                },
+                {
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": {"type": "input_json_delta", "partial_json": '{"answer"'},
+                },
+                {
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": {"type": "input_json_delta", "partial_json": ': "好"}'},
+                },
+                {"type": "message_delta", "delta": {"stop_reason": "tool_use"}},
+            )
+        )
+        self.assertEqual("submit", reply.tool_calls[0].name)
+        self.assertEqual({"answer": "好"}, reply.tool_calls[0].parsed_arguments())
+
+    async def test_truncation_is_caught_on_the_streamed_path_too(self) -> None:
+        with self.assertRaises(ModelOutputTruncated):
+            await self._complete(
+                self._sse(
+                    {"type": "message_start", "message": {}},
+                    {
+                        "type": "content_block_start",
+                        "index": 0,
+                        "content_block": {"type": "text", "text": ""},
+                    },
+                    {
+                        "type": "content_block_delta",
+                        "index": 0,
+                        "delta": {"type": "text_delta", "text": "写到一半"},
+                    },
+                    {"type": "message_delta", "delta": {"stop_reason": "max_tokens"}},
+                )
+            )
+
+    async def test_a_mid_stream_error_event_is_not_silently_dropped(self) -> None:
+        with self.assertRaisesRegex(ModelUnavailableError, "overloaded"):
+            await self._complete(
+                self._sse(
+                    {"type": "message_start", "message": {}},
+                    {"type": "error", "error": {"message": "overloaded"}},
+                )
+            )
+
+    async def test_a_large_ceiling_without_streaming_is_refused(self) -> None:
+        with self.assertRaisesRegex(ValueError, "requires stream=True"):
+            AnthropicClient("secret", max_output_tokens=64_000)
 
 
 class ProtocolRoutingTest(unittest.TestCase):

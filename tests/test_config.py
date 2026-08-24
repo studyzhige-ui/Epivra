@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 
 from deep_research_agent.config import (
+    DEFAULT_ROLE_EFFORT,
     DEFAULT_ROLE_TIERS,
     ROLES,
     ConfigError,
@@ -10,11 +11,90 @@ from deep_research_agent.config import (
 )
 from deep_research_agent.providers.llm import (
     LLM_PROVIDERS,
+    MODEL_EFFORTS,
     configured_llm_providers,
     resolve_llm_provider,
 )
 
 DEEPSEEK = {"DEEPSEEK_API_KEY": "ds-key"}
+
+
+class ExecutionLimitTest(unittest.TestCase):
+    """Every role must know the ceilings it runs under, and be able to change them.
+
+    The audit found no part of the system knew a provider's input ceiling, so
+    §8.3's capacity red line could not exist -- overflow surfaced as a vendor 400
+    misread as "not executed" and retried to death.
+    """
+
+    def test_every_vendor_declares_positive_floors_for_both_tiers(self) -> None:
+        for spec in LLM_PROVIDERS:
+            for tier in ("reasoning", "fast"):
+                with self.subTest(provider=spec.name, tier=tier):
+                    limits = spec.default_limits(tier)  # type: ignore[arg-type]
+                    self.assertGreater(limits.context, 0)
+                    self.assertGreater(limits.output, 0)
+                    # A floor low enough to reject the largest role context this
+                    # system has actually produced would block real work: the
+                    # measured maximum Reviewer basis is ~134k tokens.
+                    self.assertGreaterEqual(limits.context, 128_000)
+
+    def test_each_role_resolves_a_ceiling_and_an_effort(self) -> None:
+        config = load_config(DEEPSEEK)
+        for role in ROLES:
+            with self.subTest(role=role):
+                chosen = config.model_for(role)
+                self.assertGreater(chosen.limits.context, 0)
+                self.assertGreater(chosen.limits.output, 0)
+                self.assertIn(chosen.effort, MODEL_EFFORTS)
+                self.assertEqual(DEFAULT_ROLE_EFFORT[role], chosen.effort)
+
+    def test_the_cheapest_role_is_the_one_that_runs_most(self) -> None:
+        """The Investigator is the cost driver, so it is where effort drops."""
+
+        config = load_config(DEEPSEEK)
+        self.assertEqual("low", config.model_for("investigator").effort)
+        for role in ("author", "reviewer"):
+            self.assertEqual("xhigh", config.model_for(role).effort)
+
+    def test_ceilings_and_effort_are_overridable_per_role(self) -> None:
+        config = load_config(
+            {
+                **DEEPSEEK,
+                "DEEP_RESEARCH_AUTHOR_CONTEXT_LIMIT": "400000",
+                "DEEP_RESEARCH_AUTHOR_OUTPUT_CEILING": "60000",
+                "DEEP_RESEARCH_AUTHOR_EFFORT": "max",
+            }
+        )
+        author = config.model_for("author")
+        self.assertEqual(400_000, author.limits.context)
+        self.assertEqual(60_000, author.limits.output)
+        self.assertEqual("max", author.effort)
+        # One role only; the others keep the registry floor.
+        self.assertNotEqual(400_000, config.model_for("reviewer").limits.context)
+
+    def test_an_unusable_override_is_refused_rather_than_ignored(self) -> None:
+        for value in ("0", "-1", "lots"):
+            with self.subTest(value=value), self.assertRaises(ConfigError):
+                load_config(
+                    {**DEEPSEEK, "DEEP_RESEARCH_AUTHOR_OUTPUT_CEILING": value}
+                )
+        with self.assertRaises(ConfigError):
+            load_config({**DEEPSEEK, "DEEP_RESEARCH_AUTHOR_EFFORT": "enormous"})
+
+    def test_a_deep_report_fits_inside_the_authors_output_ceiling(self) -> None:
+        """The defect this pins: the ceiling used to be below the delivery target.
+
+        A "deep" report is 12k-30k Chinese characters, which is roughly 13k-33k
+        tokens.  The Anthropic transport defaulted to 16,000 and silently accepted
+        the truncated result, so the deepest length profile was physically
+        undeliverable on that vendor.
+        """
+
+        config = load_config(
+            {"ANTHROPIC_API_KEY": "k", "DEEP_RESEARCH_LLM_PROVIDER": "anthropic"}
+        )
+        self.assertGreaterEqual(config.model_for("author").limits.output, 33_000)
 
 
 class LlmRegistryTest(unittest.TestCase):

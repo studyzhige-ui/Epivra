@@ -23,7 +23,12 @@ class DeepSeekTransportTest(unittest.IsolatedAsyncioTestCase):
         async def handler(request: httpx.Request) -> httpx.Response:
             payload = json.loads(request.content)
             self.assertNotIn("response_format", payload)
-            self.assertEqual(65_536, payload["max_tokens"])
+            # The default is now a ceiling that is safe to send without
+            # streaming; the composition root raises it and enables streaming
+            # together, because a large non-streaming request times out and a
+            # timeout is an unknown outcome the ledger can only freeze.
+            self.assertEqual(16_000, payload["max_tokens"])
+            self.assertIs(False, payload["stream"])
             self.assertEqual("auto", payload["tool_choice"])
             self.assertEqual("search", payload["tools"][0]["function"]["name"])
             return httpx.Response(
@@ -152,6 +157,111 @@ class DeepSeekTransportTest(unittest.IsolatedAsyncioTestCase):
             await client.aclose()
         self.assertIn("max_tokens", str(raised.exception))
         self.assertIn("输出上限", str(raised.exception))
+
+
+class StreamingTest(unittest.IsolatedAsyncioTestCase):
+    """A streamed reply must be indistinguishable from a whole one.
+
+    Streaming exists so a long report does not sit on one connection until the
+    read timeout -- and a timeout is an *unknown* outcome, so the ledger can only
+    freeze it.  That makes streaming part of the recovery story, not a nicety, and
+    it must not introduce a second interpretation of a reply: everything goes
+    through the same parser, so the stop-reason checks apply to both paths.
+    """
+
+    @staticmethod
+    def _sse(*events: object) -> str:
+        return "".join(
+            f"data: {json.dumps(event, ensure_ascii=False)}\n\n" for event in events
+        ) + "data: [DONE]\n\n"
+
+    async def _complete(self, body: str, **kwargs: object):  # noqa: ANN202
+        async def handler(request: httpx.Request) -> httpx.Response:
+            self.assertIs(True, json.loads(request.content)["stream"])
+            return httpx.Response(200, text=body)
+
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        model = OpenAICompatibleClient(
+            "secret", max_output_tokens=64_000, stream=True, client=client, **kwargs  # type: ignore[arg-type]
+        )
+        try:
+            return await model.complete([{"role": "user", "content": "write"}])
+        finally:
+            await client.aclose()
+
+    async def test_text_fragments_reassemble_in_order(self) -> None:
+        reply = await self._complete(
+            self._sse(
+                {"choices": [{"delta": {"content": "第一段"}}]},
+                {"choices": [{"delta": {"content": "第二段"}}]},
+                {"choices": [{"delta": {}, "finish_reason": "stop"}]},
+                {"choices": [], "usage": {"prompt_tokens": 10, "completion_tokens": 4}},
+            )
+        )
+        self.assertEqual("第一段第二段", reply.content)
+        assert reply.usage is not None
+        self.assertEqual(10, reply.usage.input_tokens)
+
+    async def test_parallel_tool_call_arguments_stay_separate(self) -> None:
+        """Fragments are keyed by index; concatenating in arrival order would
+        interleave two JSON documents into one unparseable string."""
+
+        reply = await self._complete(
+            self._sse(
+                {
+                    "choices": [
+                        {
+                            "delta": {
+                                "tool_calls": [
+                                    {
+                                        "index": 0,
+                                        "id": "a",
+                                        "function": {"name": "search", "arguments": '{"q"'},
+                                    },
+                                    {
+                                        "index": 1,
+                                        "id": "b",
+                                        "function": {"name": "read", "arguments": '{"u"'},
+                                    },
+                                ]
+                            }
+                        }
+                    ]
+                },
+                {
+                    "choices": [
+                        {
+                            "delta": {
+                                "tool_calls": [
+                                    {"index": 0, "function": {"arguments": ': "x"}'}},
+                                    {"index": 1, "function": {"arguments": ': "y"}'}},
+                                ]
+                            }
+                        }
+                    ]
+                },
+                {"choices": [{"delta": {}, "finish_reason": "tool_calls"}]},
+            )
+        )
+        self.assertEqual(("search", "read"), tuple(c.name for c in reply.tool_calls))
+        self.assertEqual({"q": "x"}, reply.tool_calls[0].parsed_arguments())
+        self.assertEqual({"u": "y"}, reply.tool_calls[1].parsed_arguments())
+
+    async def test_a_truncated_stream_is_refused_like_a_truncated_body(self) -> None:
+        with self.assertRaises(ModelOutputTruncated):
+            await self._complete(
+                self._sse(
+                    {"choices": [{"delta": {"content": "报告写到一半"}}]},
+                    {"choices": [{"delta": {}, "finish_reason": "length"}]},
+                )
+            )
+
+    async def test_a_large_ceiling_without_streaming_is_refused(self) -> None:
+        """Refused at construction rather than downgraded: the failure it would
+        otherwise produce is a timeout, which the ledger can only freeze."""
+
+        with self.assertRaisesRegex(ValueError, "requires stream=True"):
+            OpenAICompatibleClient("secret", max_output_tokens=64_000)
 
 
 class TokenUsageTest(unittest.TestCase):

@@ -255,6 +255,81 @@ class ChatModel(Protocol):
 Sleep = Callable[[float], Awaitable[None]]
 
 
+def _assemble_chat_stream(lines: Sequence[str]) -> dict[str, Any]:
+    """Rebuild a whole Chat Completions body from its server-sent event lines.
+
+    Tool-call arguments arrive as fragments keyed by index, so they are joined per
+    index rather than concatenated in arrival order -- a parallel tool call would
+    otherwise interleave two JSON documents into one unparseable string.
+    """
+
+    content: list[str] = []
+    reasoning: list[str] = []
+    finish_reason = ""
+    usage: dict[str, Any] = {}
+    calls: dict[int, dict[str, Any]] = {}
+
+    for line in lines:
+        if not line.startswith("data:"):
+            continue
+        raw = line[len("data:") :].strip()
+        if not raw or raw == "[DONE]":
+            continue
+        try:
+            event = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise ModelProtocolError("model stream sent invalid JSON") from exc
+        if not isinstance(event, dict):
+            continue
+        if isinstance(event.get("usage"), dict):
+            usage = dict(event["usage"])
+        choices = event.get("choices")
+        if not isinstance(choices, list) or not choices:
+            continue
+        choice = choices[0]
+        if not isinstance(choice, dict):
+            continue
+        if choice.get("finish_reason"):
+            finish_reason = str(choice["finish_reason"])
+        delta = choice.get("delta")
+        if not isinstance(delta, dict):
+            continue
+        for key, sink in (("content", content), ("reasoning_content", reasoning)):
+            piece = delta.get(key)
+            if isinstance(piece, str):
+                sink.append(piece)
+        for item in delta.get("tool_calls") or ():
+            if not isinstance(item, dict):
+                continue
+            index = item.get("index", 0)
+            if not isinstance(index, int):
+                continue
+            entry = calls.setdefault(
+                index, {"id": "", "type": "function", "function": {"name": "", "arguments": ""}}
+            )
+            if item.get("id"):
+                entry["id"] = str(item["id"])
+            function = item.get("function")
+            if isinstance(function, dict):
+                if function.get("name"):
+                    entry["function"]["name"] = str(function["name"])
+                fragment = function.get("arguments")
+                if isinstance(fragment, str):
+                    entry["function"]["arguments"] += fragment
+
+    message: dict[str, Any] = {"content": "".join(content) or None}
+    if reasoning:
+        message["reasoning_content"] = "".join(reasoning)
+    if calls:
+        message["tool_calls"] = [calls[index] for index in sorted(calls)]
+    body: dict[str, Any] = {
+        "choices": [{"message": message, "finish_reason": finish_reason}]
+    }
+    if usage:
+        body["usage"] = usage
+    return body
+
+
 @dataclass(slots=True)
 class OpenAICompatibleClient:
     """Chat Completions transport for any OpenAI-compatible vendor.
@@ -266,11 +341,17 @@ class OpenAICompatibleClient:
     api_key: str = field(repr=False)
     model: str = "deepseek-v4-pro"
     api_base: str = "https://api.deepseek.com"
-    max_output_tokens: int = 65_536
-    timeout_seconds: float = 180.0
+    #: Kept at a value that is safe to send without streaming.  It used to default
+    #: to 65,536 non-streaming against a 180-second timeout, which is the shape
+    #: that turns a long report into a read timeout -- and a timeout is an unknown
+    #: outcome, so the ledger can only freeze it.  The composition root raises this
+    #: and enables ``stream`` together, because they are one decision.
+    max_output_tokens: int = 16_000
+    timeout_seconds: float = 600.0
     transient_retries: int = 2
     client: httpx.AsyncClient | None = field(default=None, repr=False)
     sleep: Sleep = field(default=asyncio.sleep, repr=False)
+    stream: bool = False
 
     def __post_init__(self) -> None:
         if not self.api_key.strip():
@@ -285,6 +366,12 @@ class OpenAICompatibleClient:
             raise ValueError("timeout_seconds must be positive")
         if self.transient_retries < 0:
             raise ValueError("transient_retries must be non-negative")
+        if self.max_output_tokens > STREAMING_THRESHOLD_TOKENS and not self.stream:
+            raise ValueError(
+                f"max_output_tokens={self.max_output_tokens} requires stream=True; "
+                f"a non-streaming request above {STREAMING_THRESHOLD_TOKENS} tokens "
+                "trips the read timeout, which freezes the operation"
+            )
 
     async def complete(
         self,
@@ -299,8 +386,13 @@ class OpenAICompatibleClient:
             "model": self.model,
             "messages": [dict(message) for message in messages],
             "max_tokens": self.max_output_tokens,
-            "stream": False,
+            "stream": self.stream,
         }
+        if self.stream:
+            # Ask for the usage block, which most vendors omit from streamed
+            # responses unless requested.  Without it every streamed call would be
+            # recorded as unmeasured spend, and §10.6 needs the opposite.
+            payload["stream_options"] = {"include_usage": True}
         if tools:
             payload["tools"] = [item.as_api_value() for item in tools]
             payload["tool_choice"] = tool_choice or "auto"
@@ -312,14 +404,7 @@ class OpenAICompatibleClient:
         try:
             for attempt in range(self.transient_retries + 1):
                 try:
-                    response = await client.post(
-                        f"{self.api_base.rstrip('/')}/chat/completions",
-                        json=payload,
-                        headers={
-                            "Authorization": f"Bearer {self.api_key}",
-                            "Content-Type": "application/json",
-                        },
-                    )
+                    response = await self._post(client, payload)
                 except (httpx.TimeoutException, httpx.NetworkError) as exc:
                     if attempt >= self.transient_retries:
                         raise ModelUnavailableError("model request unavailable") from exc
@@ -351,6 +436,38 @@ class OpenAICompatibleClient:
         finally:
             if owns_client:
                 await client.aclose()
+
+    async def _post(
+        self, client: httpx.AsyncClient, payload: Mapping[str, Any]
+    ) -> httpx.Response:
+        """Issue one request, collapsing a stream into an ordinary response.
+
+        Streaming is a transport concern.  The assembled body is the same shape a
+        non-streaming call returns, so ``_parse_response`` stays the single place
+        that decides what a stop reason means -- the two transports have already
+        disagreed about that once.
+        """
+
+        url = f"{self.api_base.rstrip('/')}/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+        if not payload.get("stream"):
+            return await client.post(url, json=dict(payload), headers=headers)
+
+        async with client.stream(
+            "POST", url, json=dict(payload), headers=headers
+        ) as response:
+            if response.status_code >= 400:
+                await response.aread()
+                return response
+            lines = [line async for line in response.aiter_lines()]
+        return httpx.Response(
+            200,
+            json=_assemble_chat_stream(lines),
+            request=response.request,
+        )
 
     @staticmethod
     def _parse_response(response: httpx.Response) -> ModelReply:

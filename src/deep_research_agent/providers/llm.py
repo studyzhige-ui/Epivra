@@ -31,6 +31,37 @@ MODEL_TIERS: tuple[ModelTier, ...] = ("reasoning", "fast")
 #: not just a registry row -- which is exactly why it is recorded explicitly.
 LlmProtocol = Literal["openai_compatible", "anthropic"]
 
+#: How much thinking a role is asked to spend.  Named after the API parameter it
+#: becomes, and deliberately a closed set: an unbounded knob invites tuning it per
+#: task, which is how a cost setting turns into a research decision.
+ModelEffort = Literal["low", "medium", "high", "xhigh", "max"]
+
+MODEL_EFFORTS: tuple[ModelEffort, ...] = ("low", "medium", "high", "xhigh", "max")
+
+
+@dataclass(frozen=True, slots=True)
+class ModelLimits:
+    """Conservative floors for one tier's input and output ceilings.
+
+    **These are floors, not the vendor's real numbers.**  Context windows change
+    faster than this repository does -- the same reason the registry records no
+    prices (§9.1) -- and a stale optimistic window is worse than none: it would
+    let the capacity red line wave through a request that cannot fit.  A floor
+    that is too low only fails earlier, with a readable message.
+
+    The truth is asked of the vendor: ``providers.validation`` reads the real
+    input ceiling from the model catalogue where the vendor publishes it, and
+    ``doctor --live`` reports where floor and reality disagree.  An operator who
+    needs the real number today sets it per role in the environment.
+    """
+
+    context: int
+    output: int
+
+    def __post_init__(self) -> None:
+        if self.context < 1 or self.output < 1:
+            raise ValueError("model limits must be positive")
+
 
 @dataclass(frozen=True, slots=True)
 class LlmProviderSpec:
@@ -43,9 +74,17 @@ class LlmProviderSpec:
     reasoning_model: str
     fast_model: str
     protocol: LlmProtocol = "openai_compatible"
+    #: Conservative floors per tier; see :class:`ModelLimits` for why they are
+    #: floors.  The defaults suit a mainstream 2026 long-context model and are
+    #: overridden per vendor below where a vendor is known to differ.
+    reasoning_limits: ModelLimits = ModelLimits(context=128_000, output=32_000)
+    fast_limits: ModelLimits = ModelLimits(context=128_000, output=16_000)
 
     def default_model(self, tier: ModelTier) -> str:
         return self.reasoning_model if tier == "reasoning" else self.fast_model
+
+    def default_limits(self, tier: ModelTier) -> ModelLimits:
+        return self.reasoning_limits if tier == "reasoning" else self.fast_limits
 
     def api_key(self, environ: Mapping[str, str] | None = None) -> str:
         source = os.environ if environ is None else environ
@@ -74,6 +113,13 @@ LLM_PROVIDERS: tuple[LlmProviderSpec, ...] = (
         reasoning_model="claude-opus-5",
         fast_model="claude-haiku-4-5",
         protocol="anthropic",
+        # The reasoning tier is long-context, which is what keeps the Reviewer --
+        # the largest role, because it reads the whole evidence set including what
+        # the report did not cite -- inside one request at the scale this system
+        # actually runs at.  The fast tier is a smaller window, and the
+        # Investigator sits there precisely because its work is per-assignment.
+        reasoning_limits=ModelLimits(context=1_000_000, output=64_000),
+        fast_limits=ModelLimits(context=200_000, output=16_000),
     ),
     LlmProviderSpec(
         name="openai",
@@ -116,6 +162,11 @@ LLM_PROVIDERS: tuple[LlmProviderSpec, ...] = (
         key_env_var="OPENROUTER_API_KEY",
         reasoning_model="anthropic/claude-opus-5",
         fast_model="anthropic/claude-haiku-4.5",
+        # A gateway's ceilings follow whichever model is routed to, so the floor
+        # is kept deliberately low: too low costs a readable early pause, too high
+        # costs a request the upstream silently truncates.
+        reasoning_limits=ModelLimits(context=200_000, output=32_000),
+        fast_limits=ModelLimits(context=200_000, output=16_000),
     ),
 )
 
@@ -145,8 +196,11 @@ def configured_llm_providers(
 __all__ = [
     "LLM_PROVIDERS",
     "LLM_PROVIDER_BY_NAME",
+    "MODEL_EFFORTS",
     "MODEL_TIERS",
     "LlmProviderSpec",
+    "ModelEffort",
+    "ModelLimits",
     "ModelTier",
     "configured_llm_providers",
     "resolve_llm_provider",

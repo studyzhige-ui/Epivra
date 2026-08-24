@@ -41,7 +41,10 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 from .providers.llm import (
+    MODEL_EFFORTS,
     LlmProviderSpec,
+    ModelEffort,
+    ModelLimits,
     ModelTier,
     resolve_llm_provider,
 )
@@ -75,6 +78,21 @@ DEFAULT_ROLE_TIERS: Mapping[Role, ModelTier] = {
     "analyst": "reasoning",
     "author": "reasoning",
     "reviewer": "reasoning",
+}
+
+#: Default reasoning effort per role.  The split follows the tier split for the
+#: same reason: the Investigator makes the most calls on the most bounded work, so
+#: it is where lowering effort saves the most and costs the least.  Author and
+#: Reviewer sit one step above the rest because long-form structure and catching
+#: what a strong Author got wrong are the two hardest judgments in the system.
+DEFAULT_ROLE_EFFORT: Mapping[Role, ModelEffort] = {
+    "architect": "high",
+    "lead": "high",
+    "investigator": "low",
+    "curator": "high",
+    "analyst": "high",
+    "author": "xhigh",
+    "reviewer": "xhigh",
 }
 
 #: Web search adapters an operator may enable, by provider id.
@@ -125,6 +143,11 @@ class RoleModel:
     provider: LlmProviderSpec
     model_id: str
     tier: ModelTier
+    #: Input and output ceilings this role runs under.  Carried per role rather
+    #: than looked up per call, because an operator may raise one role's output
+    #: ceiling (an Author writing a deep report) without touching the others.
+    limits: ModelLimits = ModelLimits(context=128_000, output=32_000)
+    effort: ModelEffort = "high"
 
     @property
     def api_base(self) -> str:
@@ -158,6 +181,55 @@ class RuntimeConfig:
         return self.role_models[role]
 
 
+def _env_positive_int(environ: Mapping[str, str], name: str) -> int | None:
+    """Read a positive integer override, or None when unset."""
+
+    raw = _env(environ, name)
+    if not raw:
+        return None
+    try:
+        value = int(raw)
+    except ValueError as error:
+        raise ConfigError(
+            f"{_ENV_PREFIX}_{name} must be a positive integer, got {raw!r}"
+        ) from error
+    if value < 1:
+        raise ConfigError(f"{_ENV_PREFIX}_{name} must be positive, got {value}")
+    return value
+
+
+def _resolve_limits(
+    environ: Mapping[str, str], role: Role, spec: LlmProviderSpec, tier: ModelTier
+) -> ModelLimits:
+    """The ceilings this role runs under: registry floor, then any override.
+
+    Both are overridable per role because they answer different questions an
+    operator legitimately has: "how much can this vendor actually take" (the
+    registry only knows a floor) and "how long a report is this role allowed to
+    emit" (a delivery decision).
+    """
+
+    floor = spec.default_limits(tier)
+    return ModelLimits(
+        context=_env_positive_int(environ, f"{role.upper()}_CONTEXT_LIMIT")
+        or floor.context,
+        output=_env_positive_int(environ, f"{role.upper()}_OUTPUT_CEILING")
+        or floor.output,
+    )
+
+
+def _resolve_effort(environ: Mapping[str, str], role: Role) -> ModelEffort:
+    declared = _env(environ, f"{role.upper()}_EFFORT").casefold()
+    if not declared:
+        return DEFAULT_ROLE_EFFORT[role]
+    if declared not in MODEL_EFFORTS:
+        raise ConfigError(
+            f"{_ENV_PREFIX}_{role.upper()}_EFFORT must be one of "
+            f"{list(MODEL_EFFORTS)}, got {declared!r}"
+        )
+    return declared  # type: ignore[return-value]
+
+
 def load_config(environ: Mapping[str, str] | None = None) -> RuntimeConfig:
     """Build the runtime configuration from the environment.
 
@@ -171,6 +243,10 @@ def load_config(environ: Mapping[str, str] | None = None) -> RuntimeConfig:
     ``DEEP_RESEARCH_<ROLE>_PROVIDER`` allowing a role to use a different vendor
     entirely -- so a deployment can run cheap local investigation against one
     vendor and expensive synthesis against another.
+
+    Execution limits resolve the same way: ``DEEP_RESEARCH_<ROLE>_CONTEXT_LIMIT``,
+    ``DEEP_RESEARCH_<ROLE>_OUTPUT_CEILING`` and ``DEEP_RESEARCH_<ROLE>_EFFORT``
+    override the registry's conservative floors and the per-role effort defaults.
     """
 
     source = os.environ if environ is None else environ
@@ -203,7 +279,12 @@ def load_config(environ: Mapping[str, str] | None = None) -> RuntimeConfig:
             or provider.default_model(tier)
         )
         role_models[role] = RoleModel(
-            role=role, provider=provider, model_id=model_id, tier=tier
+            role=role,
+            provider=provider,
+            model_id=model_id,
+            tier=tier,
+            limits=_resolve_limits(source, role, provider, tier),
+            effort=_resolve_effort(source, role),
         )
 
     declared_search = _env_list(source, "SEARCH_PROVIDERS")
@@ -239,6 +320,7 @@ def load_config(environ: Mapping[str, str] | None = None) -> RuntimeConfig:
 
 __all__ = [
     "ACADEMIC_SEARCH_PROVIDERS",
+    "DEFAULT_ROLE_EFFORT",
     "DEFAULT_ROLE_TIERS",
     "ROLES",
     "WEB_SEARCH_PROVIDERS",

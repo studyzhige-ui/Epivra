@@ -116,6 +116,12 @@ class RoleRuntime:
 
     model: ChatModel
     execution: ExecutionIdentity
+    #: Input ceiling this role must fit inside, in tokens.  Carried here because
+    #: the runner needs it before every provider call (§8.3) and the transport is
+    #: the wrong place to ask -- a ``ChatModel`` is a protocol with no opinion
+    #: about how much its vendor will accept.  Zero means "unknown", which
+    #: disables the check rather than guessing a ceiling.
+    context_limit: int = 0
 
 
 async def run_reporting(

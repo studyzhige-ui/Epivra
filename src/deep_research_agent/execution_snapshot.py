@@ -47,11 +47,25 @@ _TIERS: frozenset[str] = frozenset(get_args(ModelTier))
 
 @dataclass(frozen=True, slots=True)
 class RoleBinding:
-    """One role's resolved model, in terms that survive a restart."""
+    """One role's resolved model, in terms that survive a restart.
+
+    ``effort`` is frozen alongside the model because it changes the answer: the
+    same role on the same evidence at a different effort is different work, and a
+    study whose early waves ran deeper than its later ones would have no record
+    saying so.
+
+    The **ceilings are deliberately absent.**  They are operational limits, not a
+    description of what ran: an input ceiling only decides whether a request is
+    sent, and an output ceiling only decides how much fits in one reply.  Freezing
+    them would recreate exactly the trap §9.3 avoids for credentials -- a study
+    that stopped because its output ceiling was too low could never be repaired,
+    since raising the setting would not reach it.
+    """
 
     provider: str
     model_id: str
     tier: str
+    effort: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,6 +101,11 @@ class ExecutionSnapshot:
                 provider=resolve_llm_provider(binding.provider),
                 model_id=binding.model_id,
                 tier=tier,  # type: ignore[arg-type]
+                # Ceilings come from the live configuration on purpose: they are
+                # the operator's current limits, and a task must remain repairable
+                # by raising one.  See RoleBinding for why effort is not.
+                limits=existing.limits,
+                effort=binding.effort or existing.effort,  # type: ignore[arg-type]
             )
         return RuntimeConfig(
             role_models=role_models,
@@ -114,6 +133,7 @@ class ExecutionSnapshot:
                         "provider": binding.provider,
                         "model_id": binding.model_id,
                         "tier": binding.tier,
+                        "effort": binding.effort,
                     }
                     for role, binding in sorted(self.role_models.items())
                 },
@@ -136,6 +156,10 @@ class ExecutionSnapshot:
                     provider=str(entry.get("provider", "")),
                     model_id=str(entry.get("model_id", "")),
                     tier=str(entry.get("tier", "")),
+                    # Absent in snapshots written before effort was recorded; the
+                    # empty string means "whatever the installation says now",
+                    # which is the honest answer for a task that never had one.
+                    effort=str(entry.get("effort", "")),
                 )
                 for role, entry in roles.items()
                 if isinstance(entry, Mapping)
@@ -160,6 +184,7 @@ def capture(
                 provider=chosen.provider.name,
                 model_id=chosen.model_id,
                 tier=chosen.tier,
+                effort=chosen.effort,
             )
             for role, chosen in config.role_models.items()
         },

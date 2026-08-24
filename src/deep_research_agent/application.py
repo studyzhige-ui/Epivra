@@ -22,6 +22,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 from .config import ROLES, Role, RuntimeConfig, load_config
+from .model import STREAMING_THRESHOLD_TOKENS
 from .operations import ExecutionIdentity
 from .providers import build_chat_model
 from .reporting import RoleRuntime
@@ -56,28 +57,51 @@ def build_runtimes(
 ) -> dict[str, RoleRuntime]:
     """Bind each role to the model its tier resolves to.
 
-    The execution identity records provider, endpoint, and model id because the
-    operation ledger keys replay on them: the same request against a different
-    model is different work, and replaying one as the other would attribute a
-    verdict to a model that never produced it.
+    The execution identity records provider, endpoint, model id **and the limits
+    the call runs under**, because the operation ledger keys replay on them: the
+    same request against a different model is different work, and replaying one as
+    the other would attribute a verdict to a model that never produced it.  The
+    limits are there for the same reason plus one more -- it is what makes a
+    capacity failure escapable.  Raising an output ceiling to unblock a truncated
+    report has to open a *new* operation, or the fix would replay the failure it
+    was meant to repair (see §8.2).
+
+    Streaming and the output ceiling are decided together here rather than in the
+    transports.  They are one decision: a ceiling above the safe threshold is only
+    safe when the response streams, and the transports refuse the unsafe pairing
+    rather than silently downgrading it.
     """
 
     resolved = config or load_config(environ)
-    return {
-        role: RoleRuntime(
+    runtimes: dict[str, RoleRuntime] = {}
+    for role in roles:
+        chosen = resolved.model_for(role)
+        limits = chosen.limits
+        runtimes[role] = RoleRuntime(
             model=build_chat_model(
-                (chosen := resolved.model_for(role)).provider,
+                chosen.provider,
                 chosen.model_id,
                 api_key=chosen.api_key(environ),
+                max_output_tokens=limits.output,
+                stream=limits.output > STREAMING_THRESHOLD_TOKENS,
+                effort=chosen.effort,
             ),
             execution=ExecutionIdentity(
                 provider=chosen.provider.name,
                 endpoint=chosen.api_base,
                 model_id=chosen.model_id,
+                # Named "ceiling" rather than "*_tokens": the ledger bars any
+                # field whose name contains "token" as credential-like, and that
+                # guard is worth more than the tidier name.
+                limits={
+                    "context_ceiling": str(limits.context),
+                    "output_ceiling": str(limits.output),
+                    "effort": chosen.effort,
+                },
             ),
+            context_limit=limits.context,
         )
-        for role in roles
-    }
+    return runtimes
 
 
 def render_role_models(config: RuntimeConfig, roles: Sequence[Role] = ROLES) -> str:

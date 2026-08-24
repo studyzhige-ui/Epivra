@@ -55,6 +55,7 @@ def build_chat_model(
     *,
     api_key: str,
     client: httpx.AsyncClient | None = None,
+    effort: str = "high",
     **kwargs: object,
 ) -> object:
     """Build the transport that matches a vendor's declared protocol.
@@ -62,13 +63,25 @@ def build_chat_model(
     Selecting by protocol rather than by base URL is what stops an
     OpenAI-shaped request from being sent to an API that speaks something else --
     a mistake that surfaces as an opaque 404 rather than a useful error.
+
+    ``effort`` reaches only the transport that has a parameter for it.  The
+    OpenAI-compatible endpoints in this registry vary in whether they accept a
+    reasoning-effort field and what they call it, and sending an unknown field to
+    a vendor that validates strictly is a 400 -- so it is dropped there rather
+    than guessed at.  That asymmetry is a protocol fact, which is exactly the kind
+    of thing this function exists to own.
     """
 
     from ..model import OpenAICompatibleClient
 
     if spec.protocol == "anthropic":
         return AnthropicClient(
-            api_key, model=model_id, api_base=spec.api_base, client=client, **kwargs  # type: ignore[arg-type]
+            api_key,
+            model=model_id,
+            api_base=spec.api_base,
+            client=client,
+            effort=effort,
+            **kwargs,  # type: ignore[arg-type]
         )
     if spec.protocol == "openai_compatible":
         return OpenAICompatibleClient(

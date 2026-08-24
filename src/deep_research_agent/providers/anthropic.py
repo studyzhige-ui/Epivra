@@ -29,6 +29,7 @@ from typing import Any, Literal
 import httpx
 
 from ..model import (
+    STREAMING_THRESHOLD_TOKENS,
     ModelAuthError,
     ModelOutputTruncated,
     ModelProtocolError,
@@ -224,6 +225,91 @@ def parse_reply(payload: Mapping[str, Any]) -> ModelReply:
     )
 
 
+def _assemble_stream(lines: Sequence[str]) -> dict[str, Any]:
+    """Rebuild a whole Messages response from its server-sent event lines.
+
+    The result is the same object shape a non-streaming POST returns, so exactly
+    one parser interprets stop reasons, content blocks and usage.  Two transports
+    already disagreed once about what a stop reason meant; a second parser here
+    would be the same mistake in a new place.
+    """
+
+    message: dict[str, Any] = {"content": [], "stop_reason": "", "usage": {}}
+    blocks: list[dict[str, Any]] = []
+    partials: dict[int, list[str]] = {}
+
+    for line in lines:
+        if not line.startswith("data:"):
+            continue
+        raw = line[len("data:") :].strip()
+        if not raw or raw == "[DONE]":
+            continue
+        try:
+            event = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise ModelProtocolError("anthropic stream sent invalid JSON") from exc
+        if not isinstance(event, dict):
+            continue
+        kind = event.get("type")
+
+        if kind == "message_start":
+            start = event.get("message")
+            if isinstance(start, dict):
+                message["stop_reason"] = start.get("stop_reason") or ""
+                usage = start.get("usage")
+                if isinstance(usage, dict):
+                    message["usage"] = dict(usage)
+        elif kind == "content_block_start":
+            block = event.get("content_block")
+            index = event.get("index")
+            if isinstance(block, dict) and isinstance(index, int):
+                while len(blocks) <= index:
+                    blocks.append({})
+                blocks[index] = dict(block)
+                partials.setdefault(index, [])
+        elif kind == "content_block_delta":
+            delta = event.get("delta")
+            index = event.get("index")
+            if not isinstance(delta, dict) or not isinstance(index, int):
+                continue
+            partials.setdefault(index, [])
+            # Text arrives as text_delta; a tool call's arguments arrive as
+            # input_json_delta, one JSON fragment at a time.
+            for key in ("text", "partial_json"):
+                piece = delta.get(key)
+                if isinstance(piece, str):
+                    partials[index].append(piece)
+        elif kind == "message_delta":
+            delta = event.get("delta")
+            if isinstance(delta, dict) and delta.get("stop_reason"):
+                message["stop_reason"] = delta["stop_reason"]
+            usage = event.get("usage")
+            if isinstance(usage, dict):
+                message["usage"] = {**message["usage"], **usage}
+        elif kind == "error":
+            detail = event.get("error")
+            reason = ""
+            if isinstance(detail, dict):
+                reason = str(detail.get("message", ""))
+            raise ModelUnavailableError(
+                f"anthropic stream ended with an error: {reason or 'no reason given'}"
+            )
+
+    for index, block in enumerate(blocks):
+        joined = "".join(partials.get(index, ()))
+        if block.get("type") == "text":
+            message["content"].append({"type": "text", "text": joined or block.get("text", "")})
+        elif block.get("type") == "tool_use":
+            try:
+                arguments = json.loads(joined) if joined.strip() else {}
+            except json.JSONDecodeError as exc:
+                raise ModelProtocolError(
+                    "anthropic stream sent an unparseable tool call"
+                ) from exc
+            message["content"].append({**block, "input": arguments})
+    return message
+
+
 @dataclass(slots=True)
 class AnthropicClient:
     """ChatModel over the native Messages API."""
@@ -231,9 +317,26 @@ class AnthropicClient:
     api_key: str = field(repr=False)
     model: str = "claude-opus-5"
     api_base: str = "https://api.anthropic.com"
+    #: Kept at a value that is safe to send without streaming, because a direct
+    #: construction should never be a trap.  The composition root raises it and
+    #: turns ``stream`` on together -- the two belong to one decision.
     max_output_tokens: int = 16_000
-    timeout_seconds: float = 180.0
+    timeout_seconds: float = 600.0
     client: httpx.AsyncClient | None = field(default=None, repr=False)
+    #: How much thinking to spend.  Sent as ``output_config.effort``; the fixed
+    #: thinking-budget parameter it replaced is rejected outright by current
+    #: models, so it must never be reintroduced here.
+    effort: str = "high"
+    #: Whether to stream.  A large non-streaming completion holds one connection
+    #: for minutes and eventually trips the read timeout -- and a timeout is an
+    #: *unknown* outcome, so §8.2 can only freeze it.  Streaming is what keeps a
+    #: long report from becoming an operation a human has to adjudicate.
+    stream: bool = False
+    #: Cache the stable prefix (tools, then system) so the parts that are
+    #: byte-identical across every call of one role are not re-charged in full.
+    #: Billing only -- it changes nothing the model sees, which is why it stays
+    #: out of the operation fingerprint.
+    cache_prompt: bool = True
 
     def __post_init__(self) -> None:
         if not self.api_key.strip():
@@ -244,6 +347,44 @@ class AnthropicClient:
             raise ValueError("api_base must be an HTTPS origin")
         if self.max_output_tokens < 1:
             raise ValueError("max_output_tokens must be positive")
+        if self.max_output_tokens > STREAMING_THRESHOLD_TOKENS and not self.stream:
+            # Refused rather than silently downgraded: the failure it produces is
+            # a timeout, which the ledger can only read as an unknown outcome.
+            raise ValueError(
+                f"max_output_tokens={self.max_output_tokens} requires stream=True; "
+                f"a non-streaming request above {STREAMING_THRESHOLD_TOKENS} tokens "
+                "trips the read timeout, which freezes the operation"
+            )
+
+    def _payload(
+        self,
+        messages: Sequence[Mapping[str, Any]],
+        tools: Sequence[ToolSpec],
+        tool_choice: Literal["auto", "none", "required"] | None,
+    ) -> dict[str, Any]:
+        system, conversation = translate_messages(messages)
+        payload: dict[str, Any] = {
+            "model": self.model,
+            # Required by this API; omitting it is a 400.
+            "max_tokens": self.max_output_tokens,
+            "messages": conversation,
+            # Adaptive thinking is the only supported on-mode on current models,
+            # and effort is what controls its depth.  A fixed token budget is
+            # rejected with a 400, so it is deliberately absent.
+            "output_config": {"effort": self.effort},
+        }
+        if system:
+            block: dict[str, Any] = {"type": "text", "text": system}
+            if self.cache_prompt:
+                block["cache_control"] = {"type": "ephemeral"}
+            payload["system"] = [block]
+        if tools:
+            payload["tools"] = [_tool_payload(tool) for tool in tools]
+            if tool_choice is not None:
+                payload["tool_choice"] = _TOOL_CHOICE[tool_choice]
+        # temperature / top_p / top_k are deliberately never sent: current Claude
+        # models reject them outright rather than ignoring them.
+        return payload
 
     async def complete(
         self,
@@ -255,35 +396,21 @@ class AnthropicClient:
         if not messages:
             raise ValueError("messages must not be empty")
 
-        system, conversation = translate_messages(messages)
-        payload: dict[str, Any] = {
-            "model": self.model,
-            # Required by this API; omitting it is a 400.
-            "max_tokens": self.max_output_tokens,
-            "messages": conversation,
+        payload = self._payload(messages, tools, tool_choice)
+        headers = {
+            "x-api-key": self.api_key,
+            "anthropic-version": ANTHROPIC_VERSION,
+            "content-type": "application/json",
         }
-        if system:
-            payload["system"] = system
-        if tools:
-            payload["tools"] = [_tool_payload(tool) for tool in tools]
-            if tool_choice is not None:
-                payload["tool_choice"] = _TOOL_CHOICE[tool_choice]
-        # temperature / top_p / top_k are deliberately never sent: current Claude
-        # models reject them outright rather than ignoring them.
 
         owns_client = self.client is None
         transport = self.client or httpx.AsyncClient(timeout=self.timeout_seconds)
+        url = f"{self.api_base.rstrip('/')}/v1/messages"
         try:
+            if self.stream:
+                return await self._stream_reply(transport, url, headers, payload)
             try:
-                response = await transport.post(
-                    f"{self.api_base.rstrip('/')}/v1/messages",
-                    headers={
-                        "x-api-key": self.api_key,
-                        "anthropic-version": ANTHROPIC_VERSION,
-                        "content-type": "application/json",
-                    },
-                    json=payload,
-                )
+                response = await transport.post(url, headers=headers, json=payload)
             except (httpx.TimeoutException, httpx.NetworkError) as exc:
                 raise ModelUnavailableError("anthropic request unavailable") from exc
         finally:
@@ -300,6 +427,36 @@ class AnthropicClient:
         # Refusal and truncation are both successful HTTP 200s whose content must
         # not be used; parse_reply checks stop_reason before reading it.
         return parse_reply(body)
+
+    async def _stream_reply(
+        self,
+        transport: httpx.AsyncClient,
+        url: str,
+        headers: Mapping[str, str],
+        payload: Mapping[str, Any],
+    ) -> ModelReply:
+        """Accumulate a streamed response into the same reply a POST would give.
+
+        Streaming is a transport concern only.  The assembled message goes through
+        :func:`parse_reply` exactly as the non-streaming body does, so the ledger,
+        replay, and every stop-reason check stay in one place.
+        """
+
+        body = {**payload, "stream": True}
+        try:
+            async with transport.stream(
+                "POST", url, headers=dict(headers), json=body
+            ) as response:
+                if response.status_code >= 400:
+                    await response.aread()
+                    _raise_for_status(response.status_code)
+                return parse_reply(
+                    _assemble_stream(
+                        [line async for line in response.aiter_lines()]
+                    )
+                )
+        except (httpx.TimeoutException, httpx.NetworkError) as exc:
+            raise ModelUnavailableError("anthropic stream unavailable") from exc
 
 
 def _raise_for_status(status_code: int) -> None:
