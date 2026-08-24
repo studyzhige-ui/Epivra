@@ -16,6 +16,7 @@ import httpx
 
 from deep_research_agent.model import (
     ModelAuthError,
+    ModelOutputTruncated,
     ModelRateLimitError,
     ModelRequestRejected,
     ModelUnavailableError,
@@ -250,6 +251,33 @@ class FailureMappingTest(unittest.IsolatedAsyncioTestCase):
                 await client.complete([{"role": "user", "content": "..."}])
         finally:
             await client.client.aclose()
+
+    async def test_truncation_is_detected_before_content_is_read(self) -> None:
+        """Truncation is HTTP 200 with usable-looking content, which is the trap.
+
+        This transport checked only ``refusal``, so a report cut off at the output
+        ceiling came back as an ordinary reply: it passed the Author's validator,
+        became a report artifact, went through review, and could publish.  The
+        OpenAI transport raised on the same event, so the two vendors disagreed
+        about whether a half-written report was publishable.
+        """
+
+        client, _ = capture(
+            lambda _r: httpx.Response(
+                200,
+                json={
+                    "content": [{"type": "text", "text": "报告写到一半就断了"}],
+                    "stop_reason": "max_tokens",
+                },
+            )
+        )
+        try:
+            with self.assertRaises(ModelOutputTruncated) as raised:
+                await client.complete([{"role": "user", "content": "..."}])
+        finally:
+            await client.client.aclose()
+        # The message has to name the setting, because raising it is the only fix.
+        self.assertIn("输出上限", str(raised.exception))
 
     async def test_the_api_key_never_appears_in_the_repr(self) -> None:
         self.assertNotIn("secret", repr(AnthropicClient("secret")))

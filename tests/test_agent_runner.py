@@ -19,14 +19,19 @@ from typing import Any
 
 import aiosqlite
 
-from deep_research_agent.agents import AgentSpec, invoke_agent
+from deep_research_agent.agents import AgentProtocolError, AgentSpec, invoke_agent
 from deep_research_agent.agents.lead import MemoryBody as LeadMemory
 from deep_research_agent.agents.lead import make_validator as lead_make_validator
 from deep_research_agent.agents.lead import memory_after
 from deep_research_agent.content_store import SqliteContentStore
 from deep_research_agent.context import RoleContext
 from deep_research_agent.contract import build_contract
-from deep_research_agent.model import ModelReply, ModelToolCall, ToolSpec
+from deep_research_agent.model import (
+    ModelProtocolError,
+    ModelReply,
+    ModelToolCall,
+    ToolSpec,
+)
 from deep_research_agent.operations import ExecutionIdentity, SqliteOperationLedger
 
 SUBMIT = ToolSpec(
@@ -168,6 +173,98 @@ class ReplayScopeTest(unittest.IsolatedAsyncioTestCase):
             "select count(*) from operations where kind='model_call'"
         )
         self.assertEqual(2, rows[0][0], "the edit must open a second operation")
+
+
+class UntrustworthyReplyTest(unittest.IsolatedAsyncioTestCase):
+    """A billed reply whose shape cannot be parsed earns one correction.
+
+    ARCHITECTURE §8.2 calls for a bounded structural self-correction here, but the
+    protocol error used to escape to the ledger's catch-all and freeze the
+    operation for reconciliation -- permanently, since the fingerprint is
+    deterministic.  The call really did happen and really was charged, so the
+    honest record is a completed operation whose outcome is the failure, which is
+    also what makes recovery replay the same verdict rather than pay again.
+    """
+
+    async def asyncSetUp(self) -> None:
+        self._directory = tempfile.TemporaryDirectory()
+        path = Path(self._directory.name) / "runner.sqlite3"
+        self._connection = await aiosqlite.connect(path)
+        content = SqliteContentStore(self._connection)
+        await content.setup()
+        self.ledger = SqliteOperationLedger(self._connection, content)
+        await self.ledger.setup()
+        self.execution = ExecutionIdentity(provider="scripted", model_id="test")
+
+    async def asyncTearDown(self) -> None:
+        await self._connection.close()
+        self._directory.cleanup()
+
+    class Flaky:
+        """Fails to produce a parseable reply once, then answers properly."""
+
+        def __init__(self) -> None:
+            self.calls = 0
+            self.prompts: list[object] = []
+
+        async def complete(self, messages, **_kwargs):  # noqa: ANN001, ANN202
+            self.calls += 1
+            self.prompts.append([dict(m) for m in messages])
+            if self.calls == 1:
+                raise ModelProtocolError("model returned neither content nor tool calls")
+            return ModelReply(
+                tool_calls=(
+                    ModelToolCall(
+                        call_id="t1",
+                        name="submit",
+                        arguments=json.dumps({"answer": "结论"}, ensure_ascii=False),
+                    ),
+                )
+            )
+
+    async def _run(self, model: object) -> object:
+        return await invoke_agent(
+            SPEC,
+            CONTEXT,
+            model=model,  # type: ignore[arg-type]
+            ledger=self.ledger,
+            task_id="task-1",
+            execution=self.execution,
+        )
+
+    async def test_one_correction_recovers_without_freezing(self) -> None:
+        model = self.Flaky()
+        action = await self._run(model)
+
+        self.assertEqual("submit", action.name)
+        self.assertEqual(2, model.calls)
+        # The correction is a plain turn: there is no trustworthy assistant
+        # content to echo back, so none is fabricated.
+        self.assertEqual("user", model.prompts[1][-1]["role"])
+        # And nothing is waiting on a human.
+        self.assertEqual((), await self.ledger.pending_reconciliation("task-1"))
+
+    async def test_the_billed_call_is_recorded_as_completed(self) -> None:
+        await self._run(self.Flaky())
+
+        rows = await self._connection.execute_fetchall(
+            "select status from operations where kind='model_call' order by rowid"
+        )
+        # Two operations, both settled: the unusable one is completed because it
+        # happened and was paid for, not failed and not frozen.
+        self.assertEqual(["completed", "completed"], [str(r[0]) for r in rows])
+
+    async def test_a_second_unparseable_reply_pauses_instead_of_looping(self) -> None:
+        class AlwaysBroken:
+            calls = 0
+
+            async def complete(self, _messages, **_kwargs):  # noqa: ANN001, ANN202
+                type(self).calls += 1
+                raise ModelProtocolError("model response has an invalid shape")
+
+        with self.assertRaises(AgentProtocolError):
+            await self._run(AlwaysBroken())
+        self.assertEqual(2, AlwaysBroken.calls, "exactly one correction, then stop")
 
 
 class BudgetNoticeTest(unittest.IsolatedAsyncioTestCase):

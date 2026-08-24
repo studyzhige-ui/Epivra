@@ -37,6 +37,24 @@ class ModelProtocolError(RuntimeError):
     """A reply arrived but its shape cannot be trusted; the call was billed."""
 
 
+class ModelOutputTruncated(RuntimeError):
+    """The reply is complete as far as it goes and stops mid-thought.
+
+    Its own category because it is the one model failure whose cause is a
+    *setting* rather than the request: the output ceiling was too low for what
+    the role was asked to produce.  That makes it decided (the provider told us
+    plainly), billed, and fixable only by raising the ceiling -- so it must never
+    reach reconciliation, which exists for outcomes nobody can determine.
+
+    Truncated text must never be accepted as a finished product.  One transport
+    used to return it as an ordinary reply, so a report cut off halfway had
+    nothing left to stop it: it passed the Author's validator, became a report
+    artifact, went through review, and could publish.  A report missing its
+    limitations section is exactly the over-confident document this architecture
+    exists to prevent.
+    """
+
+
 class ModelRequestRejected(RuntimeError):
     """The provider refused the request before running it, so nothing was billed.
 
@@ -53,11 +71,38 @@ class ModelRequestRejected(RuntimeError):
 #: billing, and a set assembled from memory somewhere else would drift.
 MODEL_FAILURES: tuple[type[Exception], ...] = (
     ModelAuthError,
+    ModelOutputTruncated,
     ModelProtocolError,
     ModelRateLimitError,
     ModelRequestRejected,
     ModelUnavailableError,
 )
+
+#: Output ceiling above which a request must stream.  A non-streaming call this
+#: large sits on one HTTP connection for minutes and eventually trips the read
+#: timeout -- and a timeout is an *unknown* outcome, so §8.2 can only freeze it
+#: for reconciliation.  That turns a report the model was writing correctly into
+#: an operation a human has to adjudicate, which is why the threshold exists
+#: rather than being left to each vendor's defaults.
+STREAMING_THRESHOLD_TOKENS = 16_000
+
+
+def truncation_problem(stop: str) -> str:
+    """Describe a stop signal that means "the output was cut off", or "".
+
+    One definition, two transports.  The OpenAI protocol says ``length`` and the
+    Messages API says ``max_tokens`` for the same event, and only one of them was
+    ever checked -- so the same truncation raised on one vendor and published
+    silently on the other.  Naming both here is what keeps the two paths from
+    disagreeing again.
+    """
+
+    if stop in ("length", "max_tokens"):
+        return (
+            "模型输出撞到 max_tokens 上限，回复不完整。这是执行配置问题，不是研究结论："
+            "请提高该角色的输出上限后重跑（提高上限会产生一次新的调用，不需要对账）。"
+        )
+    return ""
 
 
 def _redacted_error(response: "httpx.Response") -> str:
@@ -315,10 +360,9 @@ class OpenAICompatibleClient:
             message = choice["message"]
         except (ValueError, KeyError, IndexError, TypeError) as exc:
             raise ModelProtocolError("model response has an invalid shape") from exc
-        if choice.get("finish_reason") == "length":
-            raise ModelProtocolError(
-                "model output reached max_output_tokens and was not accepted"
-            )
+        truncated = truncation_problem(str(choice.get("finish_reason") or ""))
+        if truncated:
+            raise ModelOutputTruncated(truncated)
         calls: list[ModelToolCall] = []
         for item in message.get("tool_calls") or ():
             try:
@@ -346,9 +390,11 @@ class OpenAICompatibleClient:
 
 __all__ = [
     "MODEL_FAILURES",
+    "STREAMING_THRESHOLD_TOKENS",
     "ChatModel",
     "OpenAICompatibleClient",
     "ModelAuthError",
+    "ModelOutputTruncated",
     "ModelProtocolError",
     "ModelRequestRejected",
     "ModelRateLimitError",
@@ -357,4 +403,5 @@ __all__ = [
     "ModelUnavailableError",
     "TokenUsage",
     "ToolSpec",
+    "truncation_problem",
 ]

@@ -24,6 +24,8 @@ from ..context import RoleContext
 from ..model import (
     ChatModel,
     ModelAuthError,
+    ModelOutputTruncated,
+    ModelProtocolError,
     ModelRateLimitError,
     ModelReply,
     ModelRequestRejected,
@@ -267,24 +269,49 @@ async def invoke_agent(
         )
 
         async def send() -> str:
-            reply = await model.complete(
-                messages, tools=spec.tools, tool_choice=spec.tool_choice
-            )
+            try:
+                reply = await model.complete(
+                    messages, tools=spec.tools, tool_choice=spec.tool_choice
+                )
+            except ModelProtocolError as error:
+                # The provider was paid for a reply whose shape cannot be
+                # trusted.  Recording it as the operation's real outcome is the
+                # honest entry -- the call happened and was billed -- and it
+                # makes recovery replay the same unusable answer deterministically
+                # instead of freezing the operation for a human to adjudicate.
+                return _encode_unusable(str(error))
             return _encode_reply(reply)
 
-        reply = _decode_reply(
-            await run_once(
-                ledger,
-                request,
-                send,
-                not_executed=(
-                    ModelRequestRejected,
-                    ModelAuthError,
-                    ModelRateLimitError,
-                ),
-                usage_of=_usage_of,
-            )
+        payload = await run_once(
+            ledger,
+            request,
+            send,
+            not_executed=(
+                ModelRequestRejected,
+                ModelAuthError,
+                ModelRateLimitError,
+            ),
+            # Decided and billed: the output ceiling was too low.  Never frozen,
+            # because raising the ceiling is a different operation (§8.2).
+            capacity=(ModelOutputTruncated,),
+            usage_of=_usage_of,
         )
+
+        unusable = _unusable_reason(payload)
+        if unusable is not None:
+            # §8.2's bounded structural self-correction: ask once for a
+            # well-formed reply, then pause.  No assistant turn is echoed back --
+            # there is no trustworthy assistant content to echo.
+            if unusable in seen_errors or corrections >= _MAX_CORRECTIONS:
+                raise AgentProtocolError(
+                    f"{spec.role} could not return a usable reply: {unusable}"
+                )
+            seen_errors.append(unusable)
+            corrections += 1
+            messages.append({"role": "user", "content": _UNUSABLE_CORRECTION})
+            continue
+
+        reply = _decode_reply(payload)
 
         error = _reject_multiple_terminals(reply.tool_calls, spec.terminal_tools)
         call = None
@@ -409,6 +436,39 @@ def _encode_reply(reply: ModelReply) -> str:
             "cached_input_tokens": reply.usage.cached_input_tokens,
         }
     return json.dumps(payload, ensure_ascii=False)
+
+
+#: What the role is told after an untrustworthy reply.  Deliberately says nothing
+#: about the malformed content: the fault is in the wire shape, and quoting a
+#: broken payload back at a model invites it to reason about the payload instead
+#: of simply answering again.
+_UNUSABLE_CORRECTION = (
+    "上一次回复的结构无法解析（运行时事实，不是对你判断的评价）。"
+    "请重新提交一次格式正确的工具调用，内容不必改变。"
+)
+
+
+def _encode_unusable(reason: str) -> str:
+    """Record a billed call whose reply could not be trusted.
+
+    Stored as the operation's outcome rather than raised, so the ledger keeps its
+    at-most-once guarantee: the call really did happen and really was charged,
+    and a later replay returns this same verdict instead of paying again.
+    """
+
+    return json.dumps({"unusable": reason}, ensure_ascii=False)
+
+
+def _unusable_reason(payload: str) -> str | None:
+    """The recorded reason a reply was unusable, or None for a normal reply."""
+
+    try:
+        value = json.loads(payload)
+    except json.JSONDecodeError:
+        return "provider outcome was not valid JSON"
+    if isinstance(value, Mapping) and value.get("unusable"):
+        return str(value["unusable"])
+    return None
 
 
 def _usage_of(outcome: str) -> Mapping[str, int] | None:

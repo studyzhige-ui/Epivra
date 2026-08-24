@@ -705,6 +705,7 @@ async def run_once(
     send: Callable[[], Awaitable[str]],
     *,
     not_executed: tuple[type[BaseException], ...] = (),
+    capacity: tuple[type[BaseException], ...] = (),
     usage_of: Callable[[str], Mapping[str, int] | None] | None = None,
 ) -> str:
     """Perform one external call at most once, across crashes and restarts.
@@ -713,13 +714,29 @@ async def run_once(
     the only place that gets the commit-before-send ordering right, and it turns
     every unknown outcome into a pause instead of a second charge.
 
-    ``send`` must raise on failure.  Any exception raised out of ``send`` is
-    treated as *possibly executed* -- the honest default for a network call --
-    and freezes the operation for reconciliation.  ``not_executed`` names the
-    exception types the caller can prove never reached execution (a provider
-    rejecting a malformed request, say); those record a retryable failure
-    instead, because freezing an operation nobody was billed for turns a typo
-    into a dead task.
+    ``send`` must raise on failure.  Which of three things happens next depends
+    entirely on what the caller can *prove* about the failure:
+
+    ``not_executed``
+        Types the caller can prove never reached execution -- a provider
+        rejecting a malformed request, say.  Recorded as a retryable failure,
+        because freezing an operation nobody was billed for turns a typo into a
+        dead task.
+
+    ``capacity``
+        Types the provider reported plainly and already billed: the output hit
+        its ceiling, the request did not fit.  **Decided, so never frozen.**
+        These used to fall through to reconciliation, which made them
+        unrecoverable: the fix for a truncated reply is to raise the ceiling, and
+        because execution limits are part of the fingerprint (§8.2) that produces
+        a *new* operation.  Freezing the old one therefore stranded the task for
+        good -- one live probe showed a healthy model still raising the frozen
+        error on every retry.
+
+    Anything else
+        Treated as *possibly executed* -- the honest default for a network call
+        -- and freezes the operation for reconciliation.  This is the only
+        correct use of that state: nobody can say whether the provider ran.
     """
 
     record = await ledger.reserve(request)
@@ -754,6 +771,16 @@ async def run_once(
         await ledger.fail(
             record.operation_id,
             category="not_executed",
+            detail=f"{type(error).__name__}: {error}"[:300],
+        )
+        raise
+    except capacity as error:
+        # Decided and billed.  Recorded as a settled failure rather than frozen,
+        # so the caller sees the real cause and changing the limit that caused it
+        # is a different operation rather than a locked one.
+        await ledger.fail(
+            record.operation_id,
+            category="capacity",
             detail=f"{type(error).__name__}: {error}"[:300],
         )
         raise

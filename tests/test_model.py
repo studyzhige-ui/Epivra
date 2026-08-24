@@ -7,7 +7,7 @@ import httpx
 
 from deep_research_agent.model import (
     ModelAuthError,
-    ModelProtocolError,
+    ModelOutputTruncated,
     OpenAICompatibleClient,
     TokenUsage,
     ToolSpec,
@@ -121,6 +121,15 @@ class DeepSeekTransportTest(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("secret-key", message)
 
     async def test_truncated_output_is_never_committed_as_a_role_result(self) -> None:
+        """And it says which setting caused it, since that is the only fix.
+
+        Truncation used to raise ``ModelProtocolError``, which the ledger read as
+        "a reply arrived that may or may not have executed" and froze for
+        reconciliation -- so one over-long report made a study permanently
+        unadvanceable.  Its own type is what lets the ledger record a decided
+        capacity failure instead.
+        """
+
         async def handler(_request: httpx.Request) -> httpx.Response:
             return httpx.Response(
                 200,
@@ -137,10 +146,12 @@ class DeepSeekTransportTest(unittest.IsolatedAsyncioTestCase):
         client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
         model = OpenAICompatibleClient("secret", client=client)
         try:
-            with self.assertRaisesRegex(ModelProtocolError, "not accepted"):
+            with self.assertRaises(ModelOutputTruncated) as raised:
                 await model.complete([{"role": "user", "content": "write"}])
         finally:
             await client.aclose()
+        self.assertIn("max_tokens", str(raised.exception))
+        self.assertIn("输出上限", str(raised.exception))
 
 
 class TokenUsageTest(unittest.TestCase):

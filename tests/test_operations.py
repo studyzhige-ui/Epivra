@@ -219,6 +219,93 @@ class UnknownOutcomeTest(LedgerFixture):
             await self.ledger.flag_reconciliation(request().operation_id())
 
 
+class DecidedCapacityFailureTest(LedgerFixture):
+    """A failure the provider stated plainly must never reach reconciliation.
+
+    This is the regression test for the worst defect the audit found.  Truncation
+    used to fall through to the catch-all, so the ledger froze the operation as
+    "we cannot know whether the provider ran" -- when in fact the provider had
+    said exactly what happened.  Frozen is terminal for automation, and the
+    fingerprint is deterministic, so **retrying with a perfectly healthy model
+    raised the same frozen error forever**: one over-long report made a study
+    permanently unadvanceable, recoverable only through a developer script.
+    """
+
+    class Truncated(RuntimeError):
+        pass
+
+    async def test_capacity_failures_settle_instead_of_freezing(self) -> None:
+        async def send() -> str:
+            raise self.Truncated("output hit the ceiling")
+
+        with self.assertRaises(self.Truncated):
+            await run_once(
+                self.ledger, request(), send, capacity=(self.Truncated,)
+            )
+
+        record = await self.ledger.get(request().operation_id())
+        assert record is not None
+        self.assertEqual("failed", record.status)
+        self.assertEqual("capacity", record.failure)
+        # Nothing to reconcile: a human has no question to answer here.
+        self.assertEqual((), await self.ledger.pending_reconciliation("task-1"))
+
+    async def test_raising_the_limit_is_a_new_operation(self) -> None:
+        """The fix for a capacity failure has to be reachable, and this is how.
+
+        Execution limits are part of the fingerprint, so raising the output
+        ceiling is different work rather than a retry of work that cannot
+        succeed.  Without this the settled failure would be just as terminal as
+        the frozen one -- same key, same outcome, forever.
+        """
+
+        async def send() -> str:
+            raise self.Truncated("output hit the ceiling")
+
+        with self.assertRaises(self.Truncated):
+            await run_once(
+                self.ledger, request(), send, capacity=(self.Truncated,)
+            )
+
+        raised = request(
+            execution=ExecutionIdentity(
+                provider="deepseek",
+                endpoint="https://api.example.test/v1/chat",
+                model_id="test-model",
+                # Named "ceiling" rather than "max_output_tokens" because the
+                # ledger bars any field whose name contains "token" as
+                # credential-like.  That guard is deliberately blunt and worth
+                # more than the nicer name.
+                limits={"max_input_chars": "400000", "output_ceiling": "64000"},
+            )
+        )
+        self.assertNotEqual(request().operation_id(), raised.operation_id())
+
+        async def succeed() -> str:
+            return "the whole report, this time"
+
+        self.assertEqual(
+            "the whole report, this time",
+            await run_once(self.ledger, raised, succeed, capacity=(self.Truncated,)),
+        )
+
+    async def test_an_unknown_outcome_still_freezes(self) -> None:
+        """The narrowing must not weaken the case reconciliation exists for.
+
+        The caller sees the real exception -- a timeout is more useful to report
+        than a wrapper -- while the ledger records the freeze.
+        """
+
+        async def send() -> str:
+            raise TimeoutError("no answer came back")
+
+        with self.assertRaises(TimeoutError):
+            await run_once(
+                self.ledger, request(), send, capacity=(self.Truncated,)
+            )
+        self.assertEqual(1, len(await self.ledger.pending_reconciliation("task-1")))
+
+
 class RetryTest(LedgerFixture):
     async def test_a_provably_unexecuted_failure_retries_on_the_same_key(self) -> None:
         record = await self.ledger.reserve(request(max_attempts=2))

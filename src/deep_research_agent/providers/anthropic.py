@@ -30,6 +30,7 @@ import httpx
 
 from ..model import (
     ModelAuthError,
+    ModelOutputTruncated,
     ModelProtocolError,
     ModelRateLimitError,
     ModelReply,
@@ -38,6 +39,7 @@ from ..model import (
     ModelUnavailableError,
     TokenUsage,
     ToolSpec,
+    truncation_problem,
 )
 
 #: Required on every request; the API rejects calls without it.
@@ -175,7 +177,23 @@ def translate_messages(
 
 
 def parse_reply(payload: Mapping[str, Any]) -> ModelReply:
-    """Turn a Messages API response into the runtime's neutral reply."""
+    """Turn a Messages API response into the runtime's neutral reply.
+
+    ``stop_reason`` is inspected before the content, because two of its values
+    mean the content must not be used at all.  A refusal arrives as a successful
+    HTTP 200, and so does a truncation -- this transport used to check only the
+    first, so a report cut off at the output ceiling came back looking like a
+    finished one.
+    """
+
+    stop = str(payload.get("stop_reason") or "")
+    if stop == "refusal":
+        raise ModelRequestRejected(
+            "anthropic declined the request (stop_reason=refusal)"
+        )
+    truncated = truncation_problem(stop)
+    if truncated:
+        raise ModelOutputTruncated(truncated)
 
     blocks = payload.get("content", ())
     if not isinstance(blocks, list):
@@ -279,13 +297,8 @@ class AnthropicClient:
             raise ModelProtocolError("anthropic returned invalid JSON") from exc
         if not isinstance(body, dict):
             raise ModelProtocolError("anthropic response is not an object")
-
-        # A refusal is a successful HTTP 200 with an empty or partial content
-        # list, so it must be checked before the content is read.
-        if body.get("stop_reason") == "refusal":
-            raise ModelRequestRejected(
-                "anthropic declined the request (stop_reason=refusal)"
-            )
+        # Refusal and truncation are both successful HTTP 200s whose content must
+        # not be used; parse_reply checks stop_reason before reading it.
         return parse_reply(body)
 
 
