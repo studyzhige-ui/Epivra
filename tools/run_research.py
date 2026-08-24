@@ -186,7 +186,6 @@ async def _propose_contract(
         source_access=commission.source_access,
         language=commission.language,
         constraints=commission.constraints,
-        pack_menu="（本次运行不启用任何能力包。）",
     )
     action = await invoke_agent(
         architect_agent.SPEC,

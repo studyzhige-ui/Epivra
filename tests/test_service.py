@@ -21,6 +21,7 @@ from unittest import mock
 import aiosqlite
 
 import deep_research_agent.service as service_module
+from deep_research_agent.agents import architect as architect_module
 from deep_research_agent.approval import (
     ApprovalBody,
     ApprovalError,
@@ -94,15 +95,30 @@ def _call(name: str, **arguments: object) -> ModelToolCall:
 
 
 class ScriptedModel:
-    def __init__(self, *replies: ModelReply) -> None:
-        self._replies = list(replies)
+    """Replies in order, and records the prompt each call was given.
+
+    ``prompts`` is what makes "the Architect was told X" testable at all: the
+    invariants worth pinning here are about the body a role receives, and a mock
+    that only counts calls cannot see a section going missing.  A queued
+    ``Exception`` is raised instead of returned, so a provider that fails part-way
+    through a sequence -- the case every recovery path exists for -- needs no
+    second stand-in class.
+    """
+
+    def __init__(self, *replies: ModelReply | Exception) -> None:
+        self._replies: list[ModelReply | Exception] = list(replies)
         self.calls = 0
+        self.prompts: list[str] = []
 
     async def complete(self, messages, **kwargs):  # noqa: ANN001, ANN201
         self.calls += 1
+        self.prompts.append("\n".join(str(item) for item in messages))
         if not self._replies:
             raise AssertionError("scripted model ran out of replies")
-        return self._replies.pop(0)
+        reply = self._replies.pop(0)
+        if isinstance(reply, Exception):
+            raise reply
+        return reply
 
 
 def _architect_reply() -> ModelReply:
@@ -138,7 +154,7 @@ class ServiceFixture(unittest.IsolatedAsyncioTestCase):
         await self._connection.close()
         self._directory.cleanup()
 
-    def _use(self, *replies: ModelReply) -> ScriptedModel:
+    def _use(self, *replies: ModelReply | Exception) -> ScriptedModel:
         """Run the whole service against a scripted model.
 
         Substituting the composition root rather than a private cache is what
@@ -146,6 +162,12 @@ class ServiceFixture(unittest.IsolatedAsyncioTestCase):
         service resolves each task's frozen configuration and then asks
         ``build_runtimes`` to bind it, so ``self.bound`` records the configuration
         every task was actually bound with.
+
+        One model object serves the whole test, which is also why a queued
+        exception is the honest way to script a provider failure: the transports
+        are cached per task, so a *replacement* model would not be picked up until
+        credentials are rebound -- and the failures worth testing do not wait for
+        that.
         """
 
         model = ScriptedModel(*replies)
@@ -716,30 +738,13 @@ class PlanLifecycleTest(ServiceFixture):
     ) -> None:
         """Invariant: a revision is "change this plan", not "here is a new brief"."""
 
-        seen: list[str] = []
-
-        class Recording(ScriptedModel):
-            async def complete(self, messages, **kwargs):  # noqa: ANN001, ANN202
-                seen.append("\n".join(str(item) for item in messages))
-                return await super().complete(messages, **kwargs)
-
-        model = Recording(_architect_reply(), self._revised("只看中美市场。"))
-        execution = ExecutionIdentity(provider="scripted", model_id="test")
-        runtimes = {
-            role: RoleRuntime(model=model, execution=execution) for role in ROLES
-        }
-        patcher = mock.patch.object(
-            service_module, "build_runtimes", lambda *a, **k: dict(runtimes)
-        )
-        patcher.start()
-        self.addCleanup(patcher.stop)
-
+        model = self._use(_architect_reply(), self._revised("只看中美市场。"))
         task = await self._open()
         await self.service.request_revision(
             task.task_id, task.plan_id, "中美市场详细，欧洲简要。"
         )
 
-        revision_prompt = seen[-1]
+        revision_prompt = model.prompts[-1]
         self.assertIn("上一份候选", revision_prompt)
         self.assertIn("用户要求的修改", revision_prompt)
         self.assertIn("中美市场详细，欧洲简要。", revision_prompt)
@@ -755,26 +760,9 @@ class PlanLifecycleTest(ServiceFixture):
         undo an answer the user had already given.
         """
 
-        seen: list[str] = []
-
-        class Recording(ScriptedModel):
-            async def complete(self, messages, **kwargs):  # noqa: ANN001, ANN202
-                seen.append("\n".join(str(item) for item in messages))
-                return await super().complete(messages, **kwargs)
-
-        model = Recording(
+        model = self._use(
             _clarify_reply(), _architect_reply(), self._revised("只看中美市场。")
         )
-        execution = ExecutionIdentity(provider="scripted", model_id="test")
-        runtimes = {
-            role: RoleRuntime(model=model, execution=execution) for role in ROLES
-        }
-        patcher = mock.patch.object(
-            service_module, "build_runtimes", lambda *a, **k: dict(runtimes)
-        )
-        patcher.start()
-        self.addCleanup(patcher.stop)
-
         asked = await self._open()
         planned = await self.service.answer_clarification(
             asked.task_id, asked.clarification_id, "为采购选型。"
@@ -783,7 +771,7 @@ class PlanLifecycleTest(ServiceFixture):
             planned.task_id, planned.plan_id, "中美市场详细，欧洲简要。"
         )
 
-        revision_prompt = seen[-1]
+        revision_prompt = model.prompts[-1]
         self.assertIn("为采购选型。", revision_prompt)
         self.assertIn("这份研究是为选型还是为科普？", revision_prompt)
         self.assertIn("上一份候选", revision_prompt)
@@ -1128,28 +1116,11 @@ class ClarificationLifecycleTest(ServiceFixture):
     ) -> None:
         """Invariant 7, verified against the real prompt rather than a mock call."""
 
-        seen: list[str] = []
-
-        class Recording(ScriptedModel):
-            async def complete(self, messages, **kwargs):  # noqa: ANN001, ANN202
-                seen.append("\n".join(str(item) for item in messages))
-                return await super().complete(messages, **kwargs)
-
-        model = Recording(
+        model = self._use(
             self._question("为选型还是科普？"),
             self._question("要覆盖哪些市场？"),
             _architect_reply(),
         )
-        execution = ExecutionIdentity(provider="scripted", model_id="test")
-        runtimes = {
-            role: RoleRuntime(model=model, execution=execution) for role in ROLES
-        }
-        patcher = mock.patch.object(
-            service_module, "build_runtimes", lambda *a, **k: dict(runtimes)
-        )
-        patcher.start()
-        self.addCleanup(patcher.stop)
-
         task = await self._open("调研 AI Agent 行业。")
         second = await self.service.answer_clarification(
             task.task_id, task.clarification_id, "为选型。"
@@ -1158,7 +1129,7 @@ class ClarificationLifecycleTest(ServiceFixture):
             second.task_id, second.clarification_id, "中国和美国。"
         )
 
-        final_prompt = seen[-1]
+        final_prompt = model.prompts[-1]
         self.assertIn("用户原始委托", final_prompt)
         self.assertIn("调研 AI Agent 行业。", final_prompt)
         self.assertIn("澄清问题与用户的回答", final_prompt)
@@ -1321,8 +1292,8 @@ class PlanningFailureTest(ServiceFixture):
     continue -- so deleting it and retyping the request was the only way out.
     """
 
-    def _failing(self) -> None:
-        """A provider that refuses the call before running it.
+    def _failing(self) -> ScriptedModel:
+        """A provider that refuses every call before running it.
 
         An expired key, which is a failure the ledger can safely mark retryable
         because nothing was billed.  ``ModelUnavailableError`` deliberately is not
@@ -1330,19 +1301,9 @@ class PlanningFailureTest(ServiceFixture):
         one needs ``tools/reconcile.py`` and a human judgment.
         """
 
-        class Failing:
-            async def complete(self, messages, **kwargs):  # noqa: ANN001, ANN202
-                raise ModelAuthError("model authentication failed with HTTP 401")
-
-        execution = ExecutionIdentity(provider="scripted", model_id="test")
-        runtimes = {
-            role: RoleRuntime(model=Failing(), execution=execution) for role in ROLES
-        }
-        patcher = mock.patch.object(
-            service_module, "build_runtimes", lambda *a, **k: dict(runtimes)
+        return self._use(
+            *[ModelAuthError("model authentication failed with HTTP 401")] * 4
         )
-        patcher.start()
-        self.addCleanup(patcher.stop)
 
     async def test_a_failed_plan_leaves_a_task_with_no_open_question(self) -> None:
         self._failing()
@@ -1399,6 +1360,118 @@ class PlanningFailureTest(ServiceFixture):
         again = await self.service.replan(task.task_id)
         self.assertEqual("clarification_requested", again.state)
         self.assertEqual(task.clarification_id, again.clarification_id)
+
+    async def test_replan_does_not_lose_what_the_user_already_answered(self) -> None:
+        """The worst shape for this: answered, *then* the planning call failed.
+
+        The answer is committed and the plan is not, so retrying has to rebuild the
+        context from the store rather than from anything a caller kept.  If it did
+        not, the retry would plan from the bare commission -- and the user would be
+        asked the same question again, or get a plan that ignores their answer.
+        """
+
+        model = self._use(
+            _clarify_reply(),
+            ModelAuthError("model authentication failed with HTTP 401"),
+            _architect_reply(),
+        )
+        asked = await self._open()
+
+        with self.assertRaises(ModelAuthError):
+            await self.service.answer_clarification(
+                asked.task_id, asked.clarification_id, "为采购选型。"
+            )
+        stranded = await self.service.task(asked.task_id)
+        self.assertEqual("clarification_requested", stranded.state)
+        self.assertEqual("", stranded.plan_id)
+
+        recovered = await self.service.replan(asked.task_id)
+
+        self.assertEqual("awaiting_approval", recovered.state)
+        self.assertEqual(asked.task_id, recovered.task_id)
+        replan_prompt = model.prompts[-1]
+        self.assertIn("比较 CRDT 与 OT。", replan_prompt)
+        self.assertIn("这份研究是为选型还是为科普？", replan_prompt)
+        self.assertIn("为采购选型。", replan_prompt)
+        # And the answer is part of what the plan descends from, not only of what
+        # the model was shown.
+        store = self.service._store(recovered.task_id)  # noqa: SLF001
+        self.assertIn(
+            asked.clarification_id,
+            (await store.get(recovered.plan_id)).parent_refs,
+        )
+
+
+class ArchitectContextTest(ServiceFixture):
+    """Three paths reach the Architect; exactly one builds its context.
+
+    Plan v1, a revision and a replan differ only in what they add to the same
+    body.  When each built its own, the difference was invisible: the revision
+    silently lacked the clarification history, and neither call site read as
+    wrong -- each looked complete on its own.
+    """
+
+    def test_only_one_place_in_the_package_builds_that_context(self) -> None:
+        package = Path(service_module.__file__).parent
+        callers = sorted(
+            path.relative_to(package).as_posix()
+            for path in package.rglob("*.py")
+            if "architect_context_body(" in path.read_text(encoding="utf-8")
+            and path.name != "architect.py"
+        )
+        self.assertEqual(["service.py"], callers)
+        self.assertEqual(
+            1,
+            (package / "service.py")
+            .read_text(encoding="utf-8")
+            .count("architect_context_body("),
+        )
+
+    async def test_all_three_paths_go_through_the_one_builder(self) -> None:
+        """Recorded at the builder itself, so no path can reach the model past it."""
+
+        built: list[str] = []
+        original = architect_module.architect_context_body
+
+        def recording(*args: object, **kwargs: object) -> str:
+            built.append("revision" if kwargs.get("revision_note") else "plan")
+            return original(*args, **kwargs)  # type: ignore[arg-type]
+
+        self._use(
+            _clarify_reply(),
+            _architect_reply(),
+            ModelReply(
+                tool_calls=(
+                    _call(
+                        "propose_contract",
+                        contract_markdown=CONTRACT_BODY.replace(
+                            "不评测具体实现的性能。", "不评测具体实现的性能。只看中美。"
+                        ),
+                    ),
+                )
+            ),
+        )
+        patcher = mock.patch.object(
+            architect_module, "architect_context_body", recording
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+        asked = await self._open()
+        self.assertEqual(["plan"], built)
+
+        # Replanning while a question is open must not reach the Architect at all:
+        # planning waits for the user, not for the model.
+        await self.service.replan(asked.task_id)
+        self.assertEqual(["plan"], built)
+
+        planned = await self.service.answer_clarification(
+            asked.task_id, asked.clarification_id, "为采购选型。"
+        )
+        await self.service.request_revision(
+            planned.task_id, planned.plan_id, "只看中美市场。"
+        )
+        self.assertEqual(["plan", "plan", "revision"], built)
 
 
 class ReviewHaltTest(ServiceFixture):

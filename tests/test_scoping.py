@@ -7,6 +7,7 @@ from pathlib import Path
 import aiosqlite
 
 from deep_research_agent.agents.architect import (
+    NO_PACKS,
     SPEC,
     architect_context_body,
     contract_from_action,
@@ -233,10 +234,32 @@ class ContextTest(unittest.TestCase):
         self.assertIn("完整替代候选", body)
         self.assertIn("不要在旧正文后追加", body)
 
-    def test_the_pack_menu_is_passed_through_and_optional(self) -> None:
+    def test_the_pack_menu_has_one_wording_and_one_home(self) -> None:
+        """The same fact had been written two ways in two places.
+
+        Whatever a caller passes lands in the stable region of the prompt, and a
+        caller that passes nothing gets the one sentence -- not a second sentence
+        that means the same thing and re-fingerprints every call.
+        """
+
+        default = architect_context_body(
+            "x", source_access=["public_web"], language="zh"
+        )
+        self.assertIn(NO_PACKS, default)
+        self.assertEqual(
+            default,
+            architect_context_body(
+                "x", source_access=["public_web"], language="zh", pack_menu=""
+            ),
+        )
         self.assertIn(
-            "未安装能力包",
-            architect_context_body("x", source_access=["public_web"], language="zh"),
+            "domain.medicine@1.0.0",
+            architect_context_body(
+                "x",
+                source_access=["public_web"],
+                language="zh",
+                pack_menu="domain.medicine@1.0.0",
+            ),
         )
 
     def test_every_later_call_extends_the_previous_prompt_rather_than_editing_it(

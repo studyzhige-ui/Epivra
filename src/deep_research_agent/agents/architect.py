@@ -164,6 +164,12 @@ SPEC = AgentSpec(
     terminal_tools=frozenset({"propose_contract", "ask_scope_question"}),
 )
 
+#: What the Architect is told when no capability pack is offered.  One sentence,
+#: here, because it is part of the prompt prefix every plan version of a task
+#: shares: a prefix that differs by a character is a prefix no vendor cache can
+#: reuse, and this fact had already been written two different ways in two places.
+NO_PACKS = "（本次运行不启用任何能力包。）"
+
 
 def contract_from_action(
     arguments: Mapping[str, Any], *, language: str = "zh"
@@ -261,7 +267,7 @@ def architect_context_body(
     source_access: Sequence[str],
     language: str,
     constraints: Sequence[str] = (),
-    pack_menu: str = "",
+    pack_menu: str = NO_PACKS,
     clarifications: Sequence[tuple[str, str]] = (),
     revision_note: str = "",
     previous_contract: str = "",
@@ -307,9 +313,7 @@ def architect_context_body(
             "## 用户明确约束\n\n"
             + "\n".join(f"- {item}" for item in constraints)
         )
-    parts.append(
-        "## 可选能力包\n\n" + (pack_menu or "（未安装能力包，本次不使用包）")
-    )
+    parts.append("## 可选能力包\n\n" + (pack_menu.strip() or NO_PACKS))
     if clarifications:
         exchange = "\n\n".join(
             f"Q{index}. {question.strip()}\nA{index}. {answer.strip()}"
@@ -333,6 +337,7 @@ def architect_context_body(
 
 __all__ = [
     "ASK_SCOPE_QUESTION",
+    "NO_PACKS",
     "PROPOSE_CONTRACT",
     "SPEC",
     "SYSTEM_PROMPT",

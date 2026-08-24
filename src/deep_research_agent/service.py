@@ -172,12 +172,6 @@ STALL_TOLERANCE = 2
 #: deepest so far used three waves).  Reaching it is a pause, never "finished".
 RUNAWAY_WAVE_GUARD = 24
 
-#: What the Architect is told about capability packs.  One string, because it is
-#: part of the prompt prefix every plan version shares: two copies of the same
-#: sentence would eventually become two different sentences, and a prefix that
-#: differs by a character is a prefix the vendor cache cannot reuse.
-PACK_MENU = "（本次运行不启用任何能力包。）"
-
 
 @dataclass(frozen=True, slots=True)
 class Event:
@@ -921,7 +915,6 @@ class ResearchService:
             source_access=commission.source_access,
             language=commission.language,
             constraints=commission.constraints,
-            pack_menu=PACK_MENU,
             clarifications=tuple(
                 (item.question, item.answer) for item in exchanges if item.answered
             ),
@@ -1378,7 +1371,6 @@ class ResearchService:
 
 __all__ = [
     "EXPECTED_FAILURES",
-    "PACK_MENU",
     "RUNAWAY_WAVE_GUARD",
     "STALL_TOLERANCE",
     "Event",
