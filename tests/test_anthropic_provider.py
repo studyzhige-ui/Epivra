@@ -419,6 +419,101 @@ class AnthropicStreamingTest(unittest.IsolatedAsyncioTestCase):
             AnthropicClient("secret", max_output_tokens=64_000)
 
 
+class PromptCacheTest(unittest.IsolatedAsyncioTestCase):
+    """The context ordering was designed for prefix caching; nothing sent it.
+
+    §4.3.1 orders each role's context stable-first precisely so a vendor prefix
+    cache can reuse it, and `TokenUsage.cached_input_tokens` was already plumbed to
+    account for the result -- but no `cache_control` ever left the process, so the
+    design was inert.  These pin that it is sent, and where.
+    """
+
+    async def test_the_stable_prefix_carries_a_breakpoint(self) -> None:
+        client, seen = capture(text_response)
+        try:
+            await client.complete(
+                [
+                    {"role": "system", "content": "你是分析者。"},
+                    {"role": "user", "content": "分析。"},
+                ],
+                tools=(TOOL,),
+                tool_choice="auto",
+            )
+        finally:
+            await client.client.aclose()
+
+        # One breakpoint on system covers the tool schemas too: caching is a
+        # prefix match and tools are rendered before system.
+        self.assertEqual(
+            {"type": "ephemeral"}, seen["payload"]["system"][0]["cache_control"]
+        )
+        self.assertNotIn("cache_control", seen["payload"]["tools"][0])
+
+    async def test_an_accumulated_tool_loop_caches_its_settled_history(self) -> None:
+        """The largest repeated cost in the system: a loop resending its history."""
+
+        client, seen = capture(text_response)
+        try:
+            await client.complete(
+                [
+                    {"role": "system", "content": "你是调查者。"},
+                    {"role": "user", "content": "调查。"},
+                    {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [
+                            {
+                                "id": "c1",
+                                "function": {"name": "search", "arguments": "{}"},
+                            }
+                        ],
+                    },
+                    {"role": "tool", "tool_call_id": "c1", "content": "检索结果"},
+                ]
+            )
+        finally:
+            await client.client.aclose()
+
+        messages = seen["payload"]["messages"]
+        # Second to last: the settled history is cacheable, the turn being asked
+        # about is not.
+        self.assertEqual(
+            {"type": "ephemeral"}, messages[-2]["content"][-1]["cache_control"]
+        )
+        self.assertNotIn("cache_control", messages[-1]["content"][-1])
+
+    async def test_the_opening_turn_gets_no_second_breakpoint(self) -> None:
+        """Nothing would reuse it, and breakpoints are a limited budget."""
+
+        client, seen = capture(text_response)
+        try:
+            await client.complete([{"role": "user", "content": "分析。"}])
+        finally:
+            await client.client.aclose()
+
+        for message in seen["payload"]["messages"]:
+            content = message["content"]
+            if isinstance(content, list):
+                for block in content:
+                    self.assertNotIn("cache_control", block)
+
+    async def test_caching_can_be_turned_off_without_changing_the_request(self) -> None:
+        client, seen = capture(text_response)
+        client.cache_prompt = False
+        try:
+            await client.complete(
+                [
+                    {"role": "system", "content": "你是分析者。"},
+                    {"role": "user", "content": "分析。"},
+                ]
+            )
+        finally:
+            await client.client.aclose()
+
+        self.assertNotIn("cache_control", seen["payload"]["system"][0])
+        self.assertEqual("你是分析者。", seen["payload"]["system"][0]["text"])
+
+
 class ProtocolRoutingTest(unittest.TestCase):
     def test_each_vendor_gets_the_transport_its_protocol_declares(self) -> None:
         anthropic = resolve_llm_provider("anthropic")

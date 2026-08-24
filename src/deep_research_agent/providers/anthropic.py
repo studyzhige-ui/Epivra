@@ -312,6 +312,34 @@ def _assemble_stream(lines: Sequence[str]) -> dict[str, Any]:
     return message
 
 
+def _mark_conversation_prefix(conversation: list[dict[str, Any]]) -> None:
+    """Cache the history a tool loop keeps resending.
+
+    A role with working tools resends its entire accumulated conversation on every
+    turn -- an Investigator may do that twenty-four times -- so the history is by
+    far the largest thing repeatedly paid for.  Marking the end of the settled
+    history means each turn re-reads what the previous turn already established and
+    pays full price only for what is new.
+
+    The breakpoint sits on the **second to last** message rather than the last:
+    everything before the final turn is settled, while the final turn is what this
+    request is asking about.  It moves forward each turn, which is exactly right
+    for a prefix match -- the previous prefix stays valid and the new breakpoint
+    extends it.
+
+    Nothing the model sees changes, so this stays out of the operation fingerprint;
+    §9.1.1 keeps caching on the billing side of that line.
+    """
+
+    if len(conversation) < 3:
+        # Just the opening turn: the system breakpoint already covers everything
+        # stable, and a second one here would cache a prefix nothing reuses.
+        return
+    content = conversation[-2].get("content")
+    if isinstance(content, list) and content and isinstance(content[-1], dict):
+        content[-1]["cache_control"] = {"type": "ephemeral"}
+
+
 @dataclass(slots=True)
 class AnthropicClient:
     """ChatModel over the native Messages API."""
@@ -378,12 +406,17 @@ class AnthropicClient:
         if system:
             block: dict[str, Any] = {"type": "text", "text": system}
             if self.cache_prompt:
+                # Caching is a prefix match and the wire order is tools, then
+                # system, then messages -- so one breakpoint here covers the tool
+                # schemas too, which is why they get none of their own.
                 block["cache_control"] = {"type": "ephemeral"}
             payload["system"] = [block]
         if tools:
             payload["tools"] = [_tool_payload(tool) for tool in tools]
             if tool_choice is not None:
                 payload["tool_choice"] = _TOOL_CHOICE[tool_choice]
+        if self.cache_prompt:
+            _mark_conversation_prefix(conversation)
         # temperature / top_p / top_k are deliberately never sent: current Claude
         # models reject them outright rather than ignoring them.
         return payload
