@@ -1619,6 +1619,124 @@ class ReviewHaltTest(ServiceFixture):
         self.assertEqual("halted", (await self.service.task(task_id)).state)
 
 
+class GovernancePauseTest(ServiceFixture):
+    """Every exit from governance must report the state the store derives.
+
+    ``_report`` already read the state back, and its comment said why: it is the
+    only way ``advance()`` and ``task()`` cannot disagree about the same study.  The
+    four governance exits returned a hardcoded ``"paused"`` instead, so a study
+    that stopped before gathering any evidence announced itself as paused and then
+    reported itself as researching -- two accounts of one truth, which is precisely
+    what ``ReviewHaltTest`` was written to stamp out for ``halted``.
+    """
+
+    def _prose_only(self) -> ModelReply:
+        """A Lead reply with no tool call: it cannot act, so governance pauses."""
+
+        return ModelReply(content="我认为应该继续检索，但没有提交动作。")
+
+    async def test_advance_and_task_agree_when_nothing_was_gathered(self) -> None:
+        self._use(_architect_reply(), self._prose_only(), self._prose_only())
+        task = await self._open()
+        await self.service.approve(task.task_id, task.plan_id)
+
+        returned = await self.service.advance(task.task_id)
+        derived = (await self.service.task(task.task_id)).state
+
+        self.assertEqual(derived, returned)
+
+    async def test_the_announced_event_names_the_derived_state(self) -> None:
+        """An interface keys off the event kind, so it must match too."""
+
+        self._use(_architect_reply(), self._prose_only(), self._prose_only())
+        task = await self._open()
+        await self.service.approve(task.task_id, task.plan_id)
+
+        events: list[Event] = []
+        state = await self.service.advance(task.task_id, listen=events.append)
+
+        self.assertEqual(state, events[-1].kind)
+
+    async def test_a_lead_asking_for_a_human_agrees_too(self) -> None:
+        self._use(
+            _architect_reply(),
+            ModelReply(
+                tool_calls=(
+                    _call(
+                        "request_user_input",
+                        question="需要你确认适用的司法辖区。",
+                        reason="不同辖区会导致完全不同的证据集合。",
+                    ),
+                )
+            ),
+        )
+        task = await self._open()
+        await self.service.approve(task.task_id, task.plan_id)
+
+        returned = await self.service.advance(task.task_id)
+        self.assertEqual((await self.service.task(task.task_id)).state, returned)
+
+
+class FrozenOperationTest(ServiceFixture):
+    """A frozen operation is its own state, and it is derived like the others.
+
+    ARCHITECTURE §8.1 always listed ``needs_reconciliation``, but ``TaskState`` did
+    not and nothing asked the ledger -- so a study with a frozen operation reported
+    ``researching`` and the interface kept offering to continue, which could only
+    raise the same frozen error.  The ledger already knew; nobody read it.
+    """
+
+    async def _freeze(self) -> str:
+        """Drive one study into a frozen operation the way a real one gets there."""
+
+        self._use(_architect_reply(), TimeoutError("no answer came back"))
+        task = await self._open()
+        await self.service.approve(task.task_id, task.plan_id)
+        with self.assertRaises(TimeoutError):
+            await self.service.advance(task.task_id)
+        return task.task_id
+
+    async def test_the_state_says_a_human_is_needed(self) -> None:
+        task_id = await self._freeze()
+        self.assertEqual(
+            "needs_reconciliation", (await self.service.task(task_id)).state
+        )
+
+    async def test_it_is_not_offered_as_something_to_continue(self) -> None:
+        """The whole point: resuming cannot work, so it must not be suggested."""
+
+        from deep_research_agent.cli.workspace import CONTINUABLE
+
+        task_id = await self._freeze()
+        state = (await self.service.task(task_id)).state
+        self.assertNotIn(state, CONTINUABLE)
+
+    async def test_it_survives_reopening_the_database(self) -> None:
+        """Derived from the ledger, so a second service reaches the same answer."""
+
+        task_id = await self._freeze()
+        other = ResearchService(
+            connection=self._connection, environ={"DEEPSEEK_API_KEY": "k"}
+        )
+        await other.setup()
+        self.assertEqual("needs_reconciliation", (await other.task(task_id)).state)
+
+    async def test_a_published_study_is_not_dragged_back_by_a_stray_freeze(
+        self,
+    ) -> None:
+        """Publication is terminal; a frozen operation cannot un-publish it."""
+
+        task_id = await self._freeze()
+        store = self.service._store(task_id)  # noqa: SLF001
+        report = await store.put(kind="report", body="# 报告\n\n正文。\n")
+        await store.put(
+            kind="publication_receipt",
+            body="# 报告\n\n正文。\n",
+            parent_refs=(report.artifact_id,),
+        )
+        self.assertEqual("published", (await self.service.task(task_id)).state)
+
+
 class TaskOrderTest(ServiceFixture):
     async def test_the_newest_study_is_listed_first(self) -> None:
         """Ordering by task_id sorted by hash, so the list was arbitrary."""

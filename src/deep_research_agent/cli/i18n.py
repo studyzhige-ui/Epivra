@@ -274,7 +274,33 @@ _CATALOGUE: Final[Mapping[str, Mapping[str, str]]] = {
     # revision it was entitled to is spent.  Saying "paused" would suggest that
     # simply continuing would finish it.
     "state.halted": {"zh-CN": "审查阻断发布", "en": "Blocked by review"},
+    # Also distinct from paused: an operation's outcome is genuinely unknown, and
+    # continuing would raise the same frozen error every time.  It needs a person
+    # to decide what the provider actually did, which no amount of retrying does.
+    "state.needs_reconciliation": {
+        "zh-CN": "等待人工对账",
+        "en": "Awaiting reconciliation",
+    },
     "state.paused": {"zh-CN": "已暂停", "en": "Paused"},
+    "reconcile.title": {
+        "zh-CN": "有一次调用的结果无法确定",
+        "en": "One call's outcome cannot be determined",
+    },
+    "reconcile.body": {
+        "zh-CN": (
+            "系统已经把请求发出去，但没能确认厂商到底执行了没有。"
+            "它不会自动重发——那可能让你付两次钱。\n"
+            "  需要有人判断这次调用实际发生了什么，然后运行：\n"
+            "    python tools/reconcile.py --database <库> --resolve <操作 id> --note \"依据\""
+        ),
+        "en": (
+            "The request was sent, but whether the provider ran it could not be "
+            "confirmed.  It will not be resent automatically -- that risks paying "
+            "twice.\n"
+            "  Someone has to decide what actually happened, then run:\n"
+            "    python tools/reconcile.py --database <db> --resolve <op id> --note \"why\""
+        ),
+    },
     # --- lists / detail ---------------------------------------------------
     "list.title": {"zh-CN": "我的研究", "en": "My research"},
     "list.empty": {"zh-CN": "还没有任何研究。", "en": "No research yet."},

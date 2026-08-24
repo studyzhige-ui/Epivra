@@ -53,6 +53,9 @@ STATE_GLYPH: Mapping[str, str] = {
     "researching": "◐",
     "published": GLYPH["done"],
     "halted": GLYPH["blocked"],
+    # Blocked rather than pending: nothing the user does in this interface will
+    # move it, so it must not look like something that resumes on its own.
+    "needs_reconciliation": GLYPH["blocked"],
     "paused": GLYPH["pending"],
 }
 

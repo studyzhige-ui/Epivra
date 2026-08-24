@@ -117,12 +117,21 @@ from .wave import run_wave
 #: unaided will change that verdict.  Both are derived from what is committed, so
 #: neither is a flag anyone can set: see
 #: :func:`~deep_research_agent.reporting.publication_blocked`.
+#:
+#: ``needs_reconciliation`` is the third of that family and the one that was
+#: missing.  ARCHITECTURE §8.1 has always listed it as a derived state, but it was
+#: absent from this type and nothing ever asked the ledger for it -- so a study
+#: with a frozen operation reported itself as ``researching`` and the interface
+#: kept offering to continue, which could only ever raise the same frozen error.
+#: A study cannot be advanced past an operation whose outcome nobody can
+#: determine; saying so is the difference between a dead end and an instruction.
 TaskState = Literal[
     "clarification_requested",
     "awaiting_approval",
     "researching",
     "published",
     "halted",
+    "needs_reconciliation",
     "paused",
 ]
 
@@ -763,6 +772,11 @@ class ResearchService:
                 # states for the steps between would put the lifecycle in two
                 # places at once.
                 state = "awaiting_approval"
+            elif await self.ledger.pending_reconciliation(task_id):
+                # Ranked above every other approved state because it blocks all of
+                # them: a frozen operation cannot be advanced past, so reporting
+                # anything else here would invite an action that must fail.
+                state = "needs_reconciliation"
             elif await publication_blocked(store):
                 state = "halted"
             else:
@@ -1218,15 +1232,13 @@ class ResearchService:
                 # and a later call to advance() continues from here.  Capacity is
                 # grouped here rather than left to escape because the alternative
                 # -- trimming the basis to fit -- is what §8.3 forbids.
-                listen(
-                    Event(
-                        "paused",
-                        f"治理暂停：{error}。已保全 {len(evidence.materials)} 份素材，"
-                        "重新继续同一任务即可。",
-                        {"round": round_index},
-                    )
+                return await self._pause(
+                    store,
+                    listen,
+                    f"治理暂停：{error}。已保全 {len(evidence.materials)} 份素材，"
+                    "重新继续同一任务即可。",
+                    {"round": round_index},
                 )
-                return "paused"
 
             await self._commit_memory(store, action.arguments, previous)
 
@@ -1234,29 +1246,22 @@ class ResearchService:
                 return await self._report(store, action.arguments, runtimes, listen)
 
             if action.name != "commission_wave":
-                listen(
-                    Event(
-                        "paused",
-                        "研究负责人请求人工判断。",
-                        dict(action.arguments),
-                    )
+                return await self._pause(
+                    store, listen, "研究负责人请求人工判断。", dict(action.arguments)
                 )
-                return "paused"
 
             if len(progress) >= STALL_TOLERANCE and not any(
                 progress[-STALL_TOLERANCE:]
             ):
                 # Measured from the Trust Plane's MaterialDelta, never from the
                 # Lead's own claim to be making progress.
-                listen(
-                    Event(
-                        "paused",
-                        f"连续 {STALL_TOLERANCE} 个批次没有产生任何素材，"
-                        "研究已停止发现新证据。",
-                        {"round": round_index},
-                    )
+                return await self._pause(
+                    store,
+                    listen,
+                    f"连续 {STALL_TOLERANCE} 个批次没有产生任何素材，"
+                    "研究已停止发现新证据。",
+                    {"round": round_index},
                 )
-                return "paused"
 
             drafts = lead_agent.parse_assignments(
                 contract, action.arguments["assignments"]
@@ -1298,14 +1303,38 @@ class ResearchService:
                 )
             )
 
-        listen(
-            Event(
-                "paused",
-                f"已达 {RUNAWAY_WAVE_GUARD} 个批次的失控保护上限；这是暂停，不是完成。",
-                {},
-            )
+        return await self._pause(
+            store,
+            listen,
+            f"已达 {RUNAWAY_WAVE_GUARD} 个批次的失控保护上限；这是暂停，不是完成。",
+            {},
         )
-        return "paused"
+
+    async def _pause(
+        self,
+        store: SqliteArtifactStore,
+        listen: Listener,
+        message: str,
+        detail: Mapping[str, Any],
+    ) -> TaskState:
+        """Stop governing, and report the state the store actually derives.
+
+        Every exit reads the state back rather than asserting one.  ``_report``
+        already did this and its comment explained why -- it is the only way
+        ``advance()`` and ``task()`` cannot disagree about the same study -- but the
+        governance exits returned a hardcoded ``"paused"``, so a study that stopped
+        before gathering any evidence was announced as paused by one and reported
+        as researching by the other.  ``ReviewHaltTest`` pinned this invariant for
+        ``halted`` and it was never extended to the paths that reach it first.
+
+        Reading back also means a frozen operation surfaces here as
+        ``needs_reconciliation`` rather than being flattened into a pause the user
+        would be invited to retry forever.
+        """
+
+        state = (await self.task(store.task_id)).state
+        listen(Event(state, message, dict(detail)))
+        return state
 
     async def _report(
         self,

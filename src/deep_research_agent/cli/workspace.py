@@ -87,6 +87,10 @@ STAGES: tuple[tuple[str, str], ...] = (
 #: navigation while staying its own state in the list: review's refusal is not a
 #: pause, but what the user can do about it is the same -- hand it back to the
 #: Lead, which is what resuming does.
+#:
+#: ``needs_reconciliation`` is deliberately **not** here.  It is the one state
+#: where continuing cannot work: a frozen operation raises the same error on every
+#: attempt, so offering to resume would be inviting the user to retry forever.
 CONTINUABLE: tuple[str, ...] = ("paused", "researching", "halted")
 
 
@@ -223,6 +227,7 @@ class Workspace:
         ]
         awaiting = [item for item in tasks if item.state == "awaiting_approval"]
         paused = [item for item in tasks if item.state in CONTINUABLE]
+        frozen = [item for item in tasks if item.state == "needs_reconciliation"]
         done = [item for item in tasks if item.state == "published"]
 
         options: list[tuple[str, str]] = []
@@ -251,6 +256,13 @@ class Workspace:
             self.console.print()
             self._preview(paused[0])
             options.append(("resume", self.t("action.resume")))
+        elif frozen:
+            # Shown rather than hidden, and with no resume: it is stuck on a human
+            # decision, and a study that needs one must not be invisible just
+            # because this screen has no button for it.
+            self.console.print()
+            self._preview(frozen[0])
+            options.append(("frozen", self.t("action.view_plan")))
         elif done:
             self.console.print()
             theme.dim(self.console, self.t("home.recent_done"))
@@ -332,6 +344,8 @@ class Workspace:
                     await self._first_of("awaiting_approval")
                 elif action == "resume":
                     await self._first_of(*CONTINUABLE)
+                elif action == "frozen":
+                    await self._first_of("needs_reconciliation")
                 elif action == "report":
                     await self._first_of("published")
                 elif action == "tasks":
@@ -661,6 +675,15 @@ class Workspace:
             rows.append((self.t("detail.task_id"), task.task_id))
             theme.fields(self.console, rows)
 
+            if task.state == "needs_reconciliation":
+                # The one state this interface cannot resolve, so it says what
+                # would resolve it rather than offering an action that must fail.
+                self.console.print()
+                theme.status_line(
+                    self.console, theme.GLYPH["warn"], self.t("reconcile.title")
+                )
+                theme.dim(self.console, self.t("reconcile.body"))
+
             action = await prompts.choose("", self._actions_for(task))
             if action in (None, "back"):
                 return
@@ -725,6 +748,15 @@ class Workspace:
                 if task.clarification_id
                 else ("replan", self.t("action.replan")),
                 ("back", self.t("action.save_for_later")),
+                ("delete", self.t("action.delete_running")),
+            ]
+        elif task.state == "needs_reconciliation":
+            # No resume offered, because resuming cannot work: the operation is
+            # frozen and every attempt raises the same error.  What the study needs
+            # is a person deciding what the provider actually did, so the page says
+            # that instead of presenting an action doomed to fail.
+            options += [
+                ("back", self.t("action.back_workspace")),
                 ("delete", self.t("action.delete_running")),
             ]
         else:
@@ -981,9 +1013,15 @@ class Workspace:
             if self.args.verbose:
                 for finding in event.detail.get("findings", ()):
                     theme.dim(self.console, f"    {str(finding).splitlines()[0]}")
-        elif event.kind in ("paused", "halted"):
+        elif event.kind in ("paused", "halted", "researching"):
             theme.status_line(self.console, theme.GLYPH["pending"], event.message)
             journal.record("research_" + event.kind, message=event.message)
+        elif event.kind == "needs_reconciliation":
+            # Its own branch because it is the one stop that will not clear by
+            # running again, and the message has to say so.
+            theme.status_line(self.console, theme.GLYPH["blocked"], event.message)
+            theme.dim(self.console, self.t("reconcile.body"))
+            journal.record("research_needs_reconciliation", message=event.message)
         elif event.kind == "configuration_not_frozen":
             # A warning, so never behind --verbose: it says this study may
             # continue on a model that did not produce its existing evidence.
