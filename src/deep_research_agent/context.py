@@ -33,6 +33,91 @@ class ContextCapacityError(RuntimeError):
     """The basis a role needs cannot be expressed within the provider's limit."""
 
 
+#: Tokens per character, by script.
+#:
+#: Calibrated against the largest real basis in the calibration corpus (a 198-material
+#: Reviewer context: 121,978 characters, 97,670 of them CJK) and, crucially, against
+#: the fact that **that run succeeded** -- all eight 1e fixtures ran on a 128k-window
+#: vendor and seven published.  So the basis provably fits 128k, and any estimate that
+#: rejects it is wrong.
+#:
+#: That is the trap worth recording: "be conservative" reads as "estimate high", but a
+#: high estimate here does not fail safe.  It blocks research that works, and blocking
+#: real work is a worse outcome than the vendor rejection this check replaces -- which
+#: is itself now classified as a capacity failure (:mod:`~deep_research_agent.model`),
+#: so the residual case pauses readably rather than retrying to death.  One token per
+#: CJK character is the common case across tokenizers and several are better; the
+#: pre-flight check catches the ordinary overflow cheaply and the vendor's own refusal
+#: remains the backstop for the rest.
+#:
+#: A tokenizer dependency was rejected: it would have to match whichever of seven
+#: vendors is configured.  Where an exact count matters, the vendors that publish a
+#: count-tokens endpoint are asked directly, which is diagnostics, not a hot path.
+_CJK_TOKENS_PER_CHAR = 1.00
+_OTHER_TOKENS_PER_CHAR = 0.30
+
+#: Fraction of the ceiling left for the reply and the provider's own framing.  A
+#: request that fits with nothing to spare still fails, because the answer has to
+#: go somewhere.
+_HEADROOM = 0.10
+
+
+def _is_cjk(character: str) -> bool:
+    code = ord(character)
+    return (
+        0x3000 <= code <= 0x303F  # CJK punctuation
+        or 0x3400 <= code <= 0x4DBF  # extension A
+        or 0x4E00 <= code <= 0x9FFF  # unified ideographs
+        or 0xF900 <= code <= 0xFAFF  # compatibility ideographs
+        or 0xFF00 <= code <= 0xFFEF  # fullwidth forms
+        or 0xAC00 <= code <= 0xD7AF  # Hangul
+        or 0x3040 <= code <= 0x30FF  # Hiragana and Katakana
+    )
+
+
+def estimate_tokens(text: str) -> int:
+    """A deliberately high estimate of what ``text`` will cost to send."""
+
+    cjk = sum(1 for character in text if _is_cjk(character))
+    return int(
+        cjk * _CJK_TOKENS_PER_CHAR + (len(text) - cjk) * _OTHER_TOKENS_PER_CHAR
+    )
+
+
+def require_fits(role: str, payload: str, limit: int) -> None:
+    """Fail before the call rather than truncate the basis to fit.
+
+    Called once per provider call with **everything about to be sent** -- system
+    prompt, tool schemas, and the whole accumulated message list -- not merely the
+    role's opening context.  Overflow has two sources and the opening context is
+    only one of them: a Curator's tool loop can accumulate far more than its
+    initial projection ever contained, twenty-four reads of twelve thousand
+    characters at a time.
+
+    ``limit`` of zero means the ceiling is unknown, and an unknown ceiling
+    disables the check rather than inventing one.  Guessing would be the worse
+    failure: too low blocks legitimate research, and this function's whole purpose
+    is to be trustworthy enough that nobody is tempted to route around it.
+
+    Dropping counter-evidence to make a request fit would produce a confident
+    report built on a quietly narrowed evidence base -- the exact failure this
+    architecture exists to prevent -- so there is deliberately no branch here that
+    shortens anything.
+    """
+
+    if limit <= 0:
+        return
+    needed = estimate_tokens(payload)
+    usable = int(limit * (1 - _HEADROOM))
+    if needed > usable:
+        raise ContextCapacityError(
+            f"{role} 的上下文约需 {needed:,} token，超过可用上限 {usable:,}"
+            f"（模型上限 {limit:,}，预留 {int(_HEADROOM * 100)}% 给回复）。"
+            "这是容量失败，不是研究结论：证据不会被裁剪来迁就请求。"
+            "请收窄研究范围、提高该角色的上下文上限，或换用窗口更大的模型。"
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class MaterialView:
     """One material as a role sees it: claim, boundaries, and citable handles."""
@@ -112,15 +197,6 @@ class RoleContext:
 
         payload = f"{self.role}\n{self.purpose}\n{self.body}"
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()
-
-    def require_fits(self, limit: int) -> None:
-        """Fail before the call rather than truncate the basis to fit."""
-
-        if self.char_count > limit:
-            raise ContextCapacityError(
-                f"{self.role} context needs {self.char_count} characters but the "
-                f"limit is {limit}; reduce scope rather than dropping evidence"
-            )
 
 
 async def load_contract(store: SqliteArtifactStore) -> ResearchContract:
@@ -469,9 +545,13 @@ __all__ = [
     "RoleContext",
     "analyst_context",
     "author_context",
+    "curator_context",
+    "estimate_tokens",
+    "investigator_context",
     "latest_body",
     "lead_context",
     "load_contract",
     "load_evidence",
+    "require_fits",
     "reviewer_context",
 ]

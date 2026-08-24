@@ -215,12 +215,17 @@ async def judge_report(
     *,
     model: Any,
     execution: ExecutionIdentity,
+    context_limit: int = 0,
 ) -> Judgement:
     """Judge the published report a database holds.
 
     Routed through the operation ledger like any other paid call, so re-running
     the judge on an unchanged report replays instead of paying again -- and
     editing the judge's prompt correctly counts as different work.
+
+    The judge reads a whole report plus the whole evidence set, so it is one of
+    the largest contexts this repository builds and gets the same capacity red
+    line as any role (§8.3).
     """
 
     contract = await load_contract(store)
@@ -237,6 +242,7 @@ async def judge_report(
         ledger=ledger,
         task_id=store.task_id,
         execution=execution,
+        context_limit=context_limit,
         validate=make_validator(),
     )
     return Judgement(

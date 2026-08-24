@@ -65,17 +65,38 @@ class ModelRequestRejected(RuntimeError):
     """
 
 
+class ModelContextOverflow(RuntimeError):
+    """The provider refused the request because it did not fit.
+
+    Decided and unbilled -- nothing was generated -- but **not retryable**, which
+    is what separates it from :class:`ModelRequestRejected`: the same request will
+    not fit next time either.  Grouped with truncation as a capacity failure so
+    both pause readably and both become new work once the ceiling changes.
+    """
+
+
 #: Every way a model call can fail.  Declared beside the classes so a caller that
 #: has to handle "the model did not answer" cannot list four of the five: the
 #: whole point of splitting them was that each says something different about
 #: billing, and a set assembled from memory somewhere else would drift.
 MODEL_FAILURES: tuple[type[Exception], ...] = (
     ModelAuthError,
+    ModelContextOverflow,
     ModelOutputTruncated,
     ModelProtocolError,
     ModelRateLimitError,
     ModelRequestRejected,
     ModelUnavailableError,
+)
+
+#: Failures the provider decided and described, where the cause is a ceiling
+#: rather than the request's content.  The ledger records these as settled
+#: capacity failures: never frozen, because the provider said what happened, and
+#: never retried on the same key, because the same ceiling gives the same answer.
+#: Changing the ceiling changes the fingerprint, which is the escape route.
+CAPACITY_FAILURES: tuple[type[Exception], ...] = (
+    ModelContextOverflow,
+    ModelOutputTruncated,
 )
 
 #: Output ceiling above which a request must stream.  A non-streaming call this
@@ -101,6 +122,44 @@ def truncation_problem(stop: str) -> str:
         return (
             "模型输出撞到 max_tokens 上限，回复不完整。这是执行配置问题，不是研究结论："
             "请提高该角色的输出上限后重跑（提高上限会产生一次新的调用，不需要对账）。"
+        )
+    return ""
+
+
+#: Phrases vendors use when a request exceeds the context window.  Matched on the
+#: provider's own error text because the HTTP status does not distinguish it: a
+#: too-large request and a malformed one are both 400.
+_CONTEXT_OVERFLOW_HINTS: tuple[str, ...] = (
+    "context length",
+    "context_length",
+    "context window",
+    "maximum context",
+    "too many tokens",
+    "too long",
+    "prompt is too long",
+    "reduce the length",
+    "input length",
+)
+
+
+def context_overflow_problem(reason: str) -> str:
+    """Describe a rejection that means "the request did not fit", or "".
+
+    The pre-flight estimate in :mod:`~deep_research_agent.context` is deliberately
+    calibrated not to block workloads that are known to fit, which leaves a
+    residual band where the vendor is the one that discovers the overflow.  Without
+    this the rejection would be classified as "provably not executed" and retried
+    to its budget -- three identical oversized requests, then a dead task whose
+    error named nothing useful.  Recognising it turns that into the same readable
+    capacity pause the pre-flight check produces.
+    """
+
+    lowered = reason.casefold()
+    if any(hint in lowered for hint in _CONTEXT_OVERFLOW_HINTS):
+        return (
+            "请求超过了模型的上下文窗口。这是容量失败，不是研究结论："
+            "证据不会被裁剪来迁就请求。请收窄研究范围、提高该角色的上下文上限，"
+            "或换用窗口更大的模型。"
         )
     return ""
 
@@ -427,9 +486,13 @@ class OpenAICompatibleClient:
                     await self.sleep(min(2**attempt, 8))
                     continue
                 if response.status_code >= 400:
+                    reason = _redacted_error(response)
+                    overflow = context_overflow_problem(reason)
+                    if overflow:
+                        raise ModelContextOverflow(overflow)
                     raise ModelRequestRejected(
                         f"model request rejected with HTTP {response.status_code}: "
-                        f"{_redacted_error(response)}"
+                        f"{reason}"
                     )
                 return self._parse_response(response)
             raise AssertionError("unreachable retry state")
@@ -506,11 +569,13 @@ class OpenAICompatibleClient:
 
 
 __all__ = [
+    "CAPACITY_FAILURES",
     "MODEL_FAILURES",
     "STREAMING_THRESHOLD_TOKENS",
     "ChatModel",
     "OpenAICompatibleClient",
     "ModelAuthError",
+    "ModelContextOverflow",
     "ModelOutputTruncated",
     "ModelProtocolError",
     "ModelRequestRejected",
@@ -520,5 +585,6 @@ __all__ = [
     "ModelUnavailableError",
     "TokenUsage",
     "ToolSpec",
+    "context_overflow_problem",
     "truncation_problem",
 ]

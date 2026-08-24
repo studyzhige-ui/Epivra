@@ -933,6 +933,7 @@ class ResearchService:
             ledger=self.ledger,
             task_id=store.task_id,
             execution=runtimes["architect"].execution,
+            context_limit=runtimes["architect"].context_limit,
             validate=architect_agent.make_validator(None),
         )
 
@@ -1207,12 +1208,16 @@ class ResearchService:
                     ledger=self.ledger,
                     task_id=store.task_id,
                     execution=runtimes["lead"].execution,
+                    context_limit=runtimes["lead"].context_limit,
                     validate=lead_agent.make_validator(contract),
                 )
-            except AgentProtocolError as error:
-                # A role that cannot act is the recoverable pause §8.2 requires.
-                # Every artifact is already committed, so nothing is lost and a
-                # later call to advance() continues from here.
+            except (AgentProtocolError, ContextCapacityError) as error:
+                # A role that cannot act is the recoverable pause §8.2 requires,
+                # and a basis that does not fit is the same situation for the same
+                # reason: every artifact is already committed, so nothing is lost
+                # and a later call to advance() continues from here.  Capacity is
+                # grouped here rather than left to escape because the alternative
+                # -- trimming the basis to fit -- is what §8.3 forbids.
                 listen(
                     Event(
                         "paused",

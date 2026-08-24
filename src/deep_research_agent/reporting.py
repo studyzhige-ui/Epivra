@@ -163,6 +163,7 @@ async def run_reporting(
         ledger=ledger,
         task_id=task_id,
         execution=runtimes["author"].execution,
+        context_limit=runtimes["author"].context_limit,
         validate=author_agent.make_validator(handles),
     )
     if action.name == "raise_evidence_issue":
@@ -190,6 +191,7 @@ async def run_reporting(
             ledger=ledger,
             task_id=task_id,
             execution=runtimes["author"].execution,
+            context_limit=runtimes["author"].context_limit,
             validate=author_agent.make_validator(
                 handles, finding_count=len(verdict.findings)
             ),
@@ -257,6 +259,7 @@ async def synthesise(
         ledger=ledger,
         task_id=task_id,
         execution=runtime.execution,
+        context_limit=runtime.context_limit,
         validate=analyst_agent.validate,
     )
     text = str(action.arguments["synthesis_markdown"])
@@ -295,6 +298,7 @@ async def _review(
         ledger=ledger,
         task_id=task_id,
         execution=runtime.execution,
+        context_limit=runtime.context_limit,
         validate=reviewer_agent.validate,
     )
     approved = action.name == "approve_report"

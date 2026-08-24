@@ -70,7 +70,11 @@ async def judge_one(database: Path, task_id: str, environ: dict[str, str]) -> bo
 
         try:
             judgement = await judge.judge_report(
-                store, ledger, model=runtime.model, execution=runtime.execution
+                store,
+                ledger,
+                model=runtime.model,
+                execution=runtime.execution,
+                context_limit=runtime.context_limit,
             )
         except ArtifactValidationError as error:
             print(f"  跳过：{error}")

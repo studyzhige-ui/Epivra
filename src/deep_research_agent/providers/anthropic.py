@@ -31,6 +31,7 @@ import httpx
 from ..model import (
     STREAMING_THRESHOLD_TOKENS,
     ModelAuthError,
+    ModelContextOverflow,
     ModelOutputTruncated,
     ModelProtocolError,
     ModelRateLimitError,
@@ -40,6 +41,7 @@ from ..model import (
     ModelUnavailableError,
     TokenUsage,
     ToolSpec,
+    context_overflow_problem,
     truncation_problem,
 )
 
@@ -417,7 +419,7 @@ class AnthropicClient:
             if owns_client:
                 await transport.aclose()
 
-        _raise_for_status(response.status_code)
+        _raise_for_status(response.status_code, _error_reason(response))
         try:
             body = response.json()
         except ValueError as exc:
@@ -449,7 +451,7 @@ class AnthropicClient:
             ) as response:
                 if response.status_code >= 400:
                     await response.aread()
-                    _raise_for_status(response.status_code)
+                    _raise_for_status(response.status_code, _error_reason(response))
                 return parse_reply(
                     _assemble_stream(
                         [line async for line in response.aiter_lines()]
@@ -459,7 +461,17 @@ class AnthropicClient:
             raise ModelUnavailableError("anthropic stream unavailable") from exc
 
 
-def _raise_for_status(status_code: int) -> None:
+def _error_reason(response: httpx.Response) -> str:
+    """The vendor's own explanation, without echoing the payload it refused."""
+
+    try:
+        detail = response.json().get("error", {})
+    except ValueError:
+        return ""
+    return str(detail.get("message", ""))[:200] if isinstance(detail, dict) else ""
+
+
+def _raise_for_status(status_code: int, reason: str = "") -> None:
     """Map HTTP status onto the runtime's billing-relevant failure vocabulary."""
 
     if status_code < 400:
@@ -471,6 +483,12 @@ def _raise_for_status(status_code: int) -> None:
         raise ModelRateLimitError(message)
     if status_code >= 500:
         raise ModelUnavailableError(message)
+    # A too-large request and a malformed one are both 400, so the vendor's own
+    # text is what tells them apart.  Left unrecognised, an overflow would be
+    # retried as "provably not executed" until the budget ran out.
+    overflow = context_overflow_problem(reason)
+    if overflow:
+        raise ModelContextOverflow(overflow)
     # A 4xx here means the request was refused before any generation ran, so it
     # is provably unbilled and the ledger may retry it on the same key.
     raise ModelRequestRejected(message)

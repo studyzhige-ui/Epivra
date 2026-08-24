@@ -20,11 +20,11 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
-from ..context import RoleContext
+from ..context import RoleContext, require_fits
 from ..model import (
+    CAPACITY_FAILURES,
     ChatModel,
     ModelAuthError,
-    ModelOutputTruncated,
     ModelProtocolError,
     ModelRateLimitError,
     ModelReply,
@@ -226,6 +226,7 @@ async def invoke_agent(
     execution: ExecutionIdentity,
     validate: TerminalValidator | None = None,
     handlers: Mapping[str, ToolHandler] | None = None,
+    context_limit: int = 0,
 ) -> TerminalAction:
     """Run one role until it submits a valid terminal action.
 
@@ -236,6 +237,11 @@ async def invoke_agent(
     Each provider call goes through the operation ledger, so a crash replays a
     completed call rather than paying for it twice, and an unknown outcome
     freezes the operation instead of being retried.
+
+    ``context_limit`` is the input ceiling this role runs under, and the capacity
+    red line is checked against the **whole outgoing request** before every call
+    (§8.3).  Inside the loop rather than once at entry, because a tool loop grows:
+    the opening context is not the largest thing this function ever sends.
     """
 
     messages: list[dict[str, Any]] = [
@@ -246,9 +252,19 @@ async def invoke_agent(
     corrections = 0
     tool_turns = 0
     seen_errors: list[str] = []
+    # The tool schemas travel with every request, so they count against the
+    # ceiling.  Hashed already for the spec digest; measured here for capacity.
+    instructions = json.dumps(
+        [tool.as_api_value() for tool in spec.tools], ensure_ascii=False
+    )
 
     while True:
         attempt = len(messages)
+        require_fits(
+            spec.role,
+            instructions + "".join(str(message.get("content", "")) for message in messages),
+            context_limit,
+        )
         request = OperationRequest(
             task_id=task_id,
             kind="model_call",
@@ -291,9 +307,10 @@ async def invoke_agent(
                 ModelAuthError,
                 ModelRateLimitError,
             ),
-            # Decided and billed: the output ceiling was too low.  Never frozen,
-            # because raising the ceiling is a different operation (§8.2).
-            capacity=(ModelOutputTruncated,),
+            # Decided and billed, or decided and unbillable: either way the cause
+            # is a ceiling.  Never frozen, because raising the ceiling is a
+            # different operation (§8.2).
+            capacity=CAPACITY_FAILURES,
             usage_of=_usage_of,
         )
 

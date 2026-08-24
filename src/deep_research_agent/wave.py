@@ -522,6 +522,7 @@ async def _run_branch(
             ledger=ledger,
             task_id=store.task_id,
             execution=runtimes["investigator"].execution,
+            context_limit=runtimes["investigator"].context_limit,
             validate=investigator_agent.make_validator(tools.candidates),
             handlers={
                 "search": tools,
@@ -585,6 +586,7 @@ async def _run_branch(
         ledger=ledger,
         task_id=store.task_id,
         execution=runtimes["curator"].execution,
+        context_limit=runtimes["curator"].context_limit,
         validate=curator_agent.make_validator(curation.handled, len(candidates)),
         handlers={
             "read_saved_source": curation,
