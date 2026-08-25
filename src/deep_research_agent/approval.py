@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from .artifact_store import SqliteArtifactStore
+from .artifacts import Provenance
 from .contract import ResearchContract
 from .sources import ArtifactValidationError
 
@@ -144,6 +145,11 @@ async def record_decision(
     beyond the receipt's own provenance: an "operator approval" variant would be a
     second kind of approval, and the moment two exist, one of them is the one that
     skips a check.
+
+    The provenance that sentence refers to was never actually written, so every
+    receipt carried an empty producer while the docstring claimed otherwise.  It
+    says ``user`` because that is the only thing a decision can come from -- the
+    trust plane records it, but it does not make it.
     """
 
     await store.get(contract_ref)
@@ -151,6 +157,7 @@ async def record_decision(
         kind="approval_receipt",
         body=body.encode(),
         parent_refs=(contract_ref,),
+        provenance=Provenance(producer="user"),
     )
     return envelope.artifact_id
 

@@ -105,6 +105,8 @@ async def revalidate(environ: Mapping[str, str], console) -> int:  # noqa: ANN00
                 theme.GLYPH["done"],
                 f"{spec.name}：可用，{len(result.models)} 个模型可选",
             )
+            for line in _limit_notes(spec, result):
+                theme.dim(console, f"    {line}")
         else:
             failures += 1
             theme.status_line(
@@ -124,6 +126,43 @@ async def revalidate(environ: Mapping[str, str], console) -> int:  # noqa: ANN00
                 console, theme.GLYPH["blocked"], f"{name}：{result.reason}"
             )
     return failures
+
+
+def _limit_notes(spec, result) -> list[str]:  # noqa: ANN001
+    """Compare the registry's conservative floor against what the vendor publishes.
+
+    The registry deliberately records a floor rather than the real ceiling, for the
+    same reason it records no prices: context windows change faster than this
+    repository does, and a stale optimistic number would let the capacity red line
+    wave through a request that cannot fit (§9.1.1).  A floor is safe but not
+    informative, so this is where the truth gets checked -- and a floor far below
+    reality is worth telling an operator about, since it is spend they could be
+    using.
+
+    Silent when the vendor publishes nothing.  "The vendor did not say" and "the
+    vendor said a small number" must not look the same.
+    """
+
+    if not result.context_limits:
+        return []
+    notes: list[str] = []
+    for tier in ("reasoning", "fast"):
+        model = spec.default_model(tier)
+        published = result.context_limits.get(model)
+        if published is None:
+            continue
+        floor = spec.default_limits(tier).context
+        if published > floor:
+            notes.append(
+                f"{model}：厂商公布上下文 {published:,}，注册表下限 {floor:,}"
+                f"（可用 DEEP_RESEARCH_<ROLE>_CONTEXT_LIMIT 提高）"
+            )
+        elif published < floor:
+            notes.append(
+                f"{model}：厂商公布上下文 {published:,} **低于**注册表下限 {floor:,}"
+                "——容量红线可能放过装不下的请求，应下调下限"
+            )
+    return notes
 
 
 async def run(args: argparse.Namespace) -> int:

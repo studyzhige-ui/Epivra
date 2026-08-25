@@ -6,8 +6,10 @@ ancestry stay distinct and a downstream product can never silently adopt the
 wrong basis.  Provenance (time, producer, model) is audit metadata and is
 deliberately excluded from identity.
 
-This module is pure domain logic.  It must not import LangGraph, providers,
-HTTP clients, or database drivers; persistence lives in ``artifact_store``.
+This module is pure domain logic.  It must not import providers, HTTP clients,
+or database drivers; persistence lives in ``artifact_store``.  The static gate
+enforces that (``tools/check_architecture.py``), so the rule is checked rather
+than merely stated here.
 """
 
 from __future__ import annotations

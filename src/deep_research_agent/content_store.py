@@ -1,6 +1,6 @@
 """Immutable, content-addressed storage for exact source bodies.
 
-Large source text is deliberately kept outside LangGraph state.  Durable
+Large source text is deliberately kept out of every role's context.  Durable
 artifacts carry only :class:`BodyRef`; agents hydrate a source at the narrow
 runtime boundary where exact text is actually needed.
 """

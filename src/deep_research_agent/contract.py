@@ -14,8 +14,7 @@ precisely the class of runtime-identity bookkeeping that models fail at.  A
 question label is authored once, is visible in the approved Contract the user
 read, and survives editing of the surrounding prose.
 
-This module is pure domain logic: no LangGraph, provider, HTTP, or database
-imports.
+This module is pure domain logic: no provider, HTTP, or database imports.
 """
 
 from __future__ import annotations

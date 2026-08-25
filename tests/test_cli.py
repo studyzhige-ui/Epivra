@@ -45,6 +45,7 @@ from deep_research_agent.cli.workspace import Workspace
 from deep_research_agent.model import ModelUnavailableError
 from deep_research_agent.operations import OperationReconciliationRequired
 from deep_research_agent.providers import validation
+from deep_research_agent.providers.llm import resolve_llm_provider
 from deep_research_agent.service import EXPECTED_FAILURES, Task, TaskState
 
 
@@ -1489,6 +1490,67 @@ class DoctorLiveTest(unittest.IsolatedAsyncioTestCase):
         with llm, search, environ, contextlib.redirect_stdout(buffer):
             self.assertEqual(1, await doctor.run(self._args(live=True)))
         self.assertIn("密钥无效", buffer.getvalue())
+
+
+class ContextLimitReconciliationTest(unittest.IsolatedAsyncioTestCase):
+    """The registry records a floor; ``--live`` is where the truth gets checked.
+
+    Floors are deliberate (§9.1.1): a context window changes faster than this
+    repository, and a stale optimistic number would let the capacity red line wave
+    through a request that cannot fit.  But a floor is safe rather than informative,
+    so an operator should be told when it is far below reality -- that gap is spend
+    they could be using -- and told loudly when it is *above* reality, because then
+    the red line is not protecting anything.
+    """
+
+    def _args(self) -> argparse.Namespace:
+        return argparse.Namespace(database="unused.sqlite3", live=True)
+
+    async def _run(self, limits: dict[str, int]) -> str:
+        spec = resolve_llm_provider("anthropic")
+        result = validation.ValidationResult(
+            provider="anthropic",
+            ok=True,
+            models=(spec.reasoning_model, spec.fast_model),
+            context_limits=limits,
+        )
+        buffer = io.StringIO()
+        with (
+            mock.patch.object(
+                doctor,
+                "validate_llm_credentials",
+                mock.AsyncMock(return_value=result),
+            ),
+            mock.patch.object(
+                doctor,
+                "load_environment",
+                return_value={"ANTHROPIC_API_KEY": "k"},
+            ),
+            contextlib.redirect_stdout(buffer),
+        ):
+            await doctor.run(self._args())
+        return buffer.getvalue()
+
+    async def test_a_floor_below_reality_is_reported_as_headroom(self) -> None:
+        spec = resolve_llm_provider("anthropic")
+        floor = spec.default_limits("reasoning").context
+        printed = await self._run({spec.reasoning_model: floor * 2})
+        self.assertIn("厂商公布上下文", printed)
+        self.assertIn("CONTEXT_LIMIT", printed)
+
+    async def test_a_floor_above_reality_is_called_out(self) -> None:
+        """The dangerous direction: the red line would pass an oversized request."""
+
+        spec = resolve_llm_provider("anthropic")
+        floor = spec.default_limits("reasoning").context
+        printed = await self._run({spec.reasoning_model: floor // 4})
+        self.assertIn("低于", printed)
+
+    async def test_a_vendor_that_publishes_nothing_says_nothing(self) -> None:
+        """Absent must not be reported as a small number."""
+
+        printed = await self._run({})
+        self.assertNotIn("厂商公布上下文", printed)
 
 
 if __name__ == "__main__":

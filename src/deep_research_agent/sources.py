@@ -10,7 +10,7 @@ Anchors are verified against saved text, never against a live URL.  A page that
 changed after it was read cannot silently repair a citation.
 
 This module is pure domain logic and the lowest layer of the package: it must
-not import LangGraph, providers, HTTP clients, or database drivers.
+not import providers, HTTP clients, or database drivers.
 """
 
 from __future__ import annotations

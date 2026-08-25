@@ -19,7 +19,7 @@ new model the tool silently cannot use it.
 from __future__ import annotations
 
 import re
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 
 import httpx
@@ -69,6 +69,12 @@ class ValidationResult:
     ok: bool
     reason: str = ""
     models: tuple[str, ...] = field(default_factory=tuple)
+    #: Input ceiling per model, for the vendors that publish one in their
+    #: catalogue.  The registry only records a conservative floor (§9.1.1) because
+    #: context windows change faster than this repository does, so this is how the
+    #: real number gets checked instead of guessed.  Empty for vendors that do not
+    #: publish it, which is the honest answer rather than a default.
+    context_limits: Mapping[str, int] = field(default_factory=dict)
 
     @property
     def model_count(self) -> int:
@@ -130,6 +136,37 @@ def _extract_models(payload: object) -> tuple[str, ...]:
     return tuple(dict.fromkeys(found))
 
 
+def _extract_limits(payload: object) -> Mapping[str, int]:
+    """Read each model's published input ceiling, where the vendor states one.
+
+    Anthropic's catalogue carries ``max_input_tokens``; most OpenAI-compatible
+    endpoints carry nothing comparable, and one of them uses ``context_length``.
+    Absent means absent -- a model with no published ceiling is simply not in the
+    result, so a caller can tell "the vendor did not say" from "the vendor said a
+    small number".
+    """
+
+    if not isinstance(payload, dict):
+        return {}
+    rows = payload.get("data")
+    if not isinstance(rows, list):
+        return {}
+    found: dict[str, int] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        identifier = row.get("id") or row.get("name")
+        if not isinstance(identifier, str):
+            continue
+        for key in ("max_input_tokens", "context_length", "context_window"):
+            value = row.get(key)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                continue
+            found[identifier.strip().removeprefix("models/")] = value
+            break
+    return found
+
+
 def _listing_request(spec: LlmProviderSpec, api_key: str) -> tuple[str, dict[str, str]]:
     base = spec.api_base.rstrip("/")
     if spec.protocol == "anthropic":
@@ -182,7 +219,13 @@ async def validate_llm_credentials(
         payload = response.json()
     except ValueError:
         return ValidationResult(spec.name, True, "", ())
-    return ValidationResult(spec.name, True, "", _extract_models(payload))
+    return ValidationResult(
+        spec.name,
+        True,
+        "",
+        _extract_models(payload),
+        _extract_limits(payload),
+    )
 
 
 def suggest_models(
