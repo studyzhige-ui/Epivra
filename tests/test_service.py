@@ -1676,6 +1676,38 @@ class GovernancePauseTest(ServiceFixture):
         returned = await self.service.advance(task.task_id)
         self.assertEqual((await self.service.task(task.task_id)).state, returned)
 
+    async def test_a_study_that_stopped_does_not_read_as_still_running(self) -> None:
+        """Agreement is not enough; the agreed value has to be the true one.
+
+        Evidence is a poor proxy for "has this been driven".  A Lead that asks for
+        a human on its first turn gathers nothing, so keying on materials reported
+        a stopped study as ``researching`` -- and once ``advance()`` read the state
+        back, both accounts agreed on the misleading answer.  The Lead commits a
+        ResearchMemory on every action, which is the durable record of governance
+        having run.
+        """
+
+        self._use(
+            _architect_reply(),
+            ModelReply(
+                tool_calls=(
+                    _call(
+                        "request_user_input",
+                        question="需要你确认适用的司法辖区。",
+                        reason="不同辖区会导致完全不同的证据集合。",
+                    ),
+                )
+            ),
+        )
+        task = await self._open()
+        await self.service.approve(task.task_id, task.plan_id)
+
+        # Approved and never driven: nothing has happened yet.
+        self.assertEqual("researching", (await self.service.task(task.task_id)).state)
+
+        self.assertEqual("paused", await self.service.advance(task.task_id))
+        self.assertEqual(0, (await self.service.task(task.task_id)).materials)
+
 
 class FrozenOperationTest(ServiceFixture):
     """A frozen operation is its own state, and it is derived like the others.

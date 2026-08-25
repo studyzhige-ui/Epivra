@@ -780,7 +780,14 @@ class ResearchService:
             elif await publication_blocked(store):
                 state = "halted"
             else:
-                state = "paused" if materials or sources else "researching"
+                # "Has governance run at all" rather than "is there evidence yet".
+                # The Lead commits a ResearchMemory on every action it takes, so
+                # its presence is the durable record that a study has been driven;
+                # evidence is a poor proxy, because a run that stopped before
+                # gathering any -- the Lead asking for a human on its first turn --
+                # would report itself as still researching.
+                governed = view.head("research_memory") is not None
+                state = "paused" if governed or materials or sources else "researching"
         return Task(
             task_id=task_id,
             request=commission.request,
