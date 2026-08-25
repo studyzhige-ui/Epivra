@@ -17,14 +17,6 @@ from ..citations import citation_syntax_problem, extract_handles
 from ..model import ToolSpec
 from . import AgentSpec, ToolError
 
-#: Delivery profiles in Chinese characters.  Falling short because the evidence
-#: is thin is correct; padding to reach a number is not.
-LENGTH_PROFILES: Mapping[str, tuple[int, int]] = {
-    "quick": (2_000, 4_000),
-    "standard": (5_000, 12_000),
-    "deep": (12_000, 30_000),
-}
-
 SYSTEM_PROMPT = """\
 你是 Report Author。你根据已批准的研究合同、当前综合和可引用素材，写出一份完整报告。
 
@@ -218,7 +210,6 @@ def make_validator(
 
 
 __all__ = [
-    "LENGTH_PROFILES",
     "REVISION_SPEC",
     "SPEC",
     "SYSTEM_PROMPT",

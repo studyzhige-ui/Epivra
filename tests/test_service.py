@@ -1619,6 +1619,42 @@ class ReviewHaltTest(ServiceFixture):
         self.assertEqual("halted", (await self.service.task(task_id)).state)
 
 
+class DecisionTargetTest(ServiceFixture):
+    """A decision has to name the body it is about.
+
+    An empty id used to skip the staleness check entirely, so a caller that simply
+    omitted it authorised whatever the current head happened to be -- which is the
+    "approving a body the user never read" the guard exists to prevent, reachable by
+    leaving an argument blank.  The workspace always passes one, but the service is
+    the contract every interface shares.
+    """
+
+    async def test_approving_without_naming_a_plan_is_refused(self) -> None:
+        self._use(_architect_reply())
+        task = await self._open()
+
+        with self.assertRaises(StalePlanError):
+            await self.service.approve(task.task_id, "")
+        self.assertEqual(
+            "awaiting_approval", (await self.service.task(task.task_id)).state
+        )
+
+    async def test_naming_the_current_plan_still_works(self) -> None:
+        self._use(_architect_reply())
+        task = await self._open()
+        await self.service.approve(task.task_id, task.plan_id)
+        self.assertEqual(
+            "researching", (await self.service.task(task.task_id)).state
+        )
+
+    async def test_answering_without_naming_a_question_is_refused(self) -> None:
+        self._use(_clarify_reply())
+        task = await self._open()
+
+        with self.assertRaises(StaleClarificationError):
+            await self.service.answer_clarification(task.task_id, "", "为选型。")
+
+
 class GovernancePauseTest(ServiceFixture):
     """Every exit from governance must report the state the store derives.
 

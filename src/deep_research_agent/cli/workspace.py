@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -795,8 +796,17 @@ class Workspace:
 
     async def _run_research(self, task_id: str) -> None:
         assert self.service is not None
+        # A local capture rather than session state: the published event carries
+        # counts only the renderer knows, and they are wanted one screen later.
+        published: dict[str, object] = {}
+
+        def watch(event: Event) -> None:
+            if event.kind == "published":
+                published.update(event.detail)
+            self._render_progress(event)
+
         try:
-            state = await self.service.advance(task_id, listen=self._render_progress)
+            state = await self.service.advance(task_id, listen=watch)
         except KeyboardInterrupt:
             self.console.print()
             theme.status_line(
@@ -806,14 +816,18 @@ class Workspace:
             await self.hold()
             return
         if state == "published":
-            await self._completion(task_id)
+            await self._completion(task_id, published)
         await self.hold()
 
-    async def _completion(self, task_id: str) -> None:
+    async def _completion(self, task_id: str, published: Mapping[str, object]) -> None:
         assert self.service is not None
         task = await self.service.task(task_id)
         report = await self.service.report(task_id)
         theme.rule_title(self.console, self.t("done.title"))
+        # The cited count comes from the renderer, not from the evidence set: they
+        # are different numbers, and this line used to show the second under a
+        # label that promised the first.
+        cited = int(published.get("cited_materials", task.materials))
         theme.fields(
             self.console,
             [
@@ -822,7 +836,7 @@ class Workspace:
                     self.t("done.chars", count=len(report or "")),
                 ),
                 (self.t("run.collected"), self.t("run.sources", count=task.sources)),
-                (self.t("done.cited"), self.t("run.materials", count=task.materials)),
+                (self.t("done.cited"), self.t("run.materials", count=cited)),
             ],
         )
 

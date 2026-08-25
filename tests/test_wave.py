@@ -343,6 +343,171 @@ class CaptureTimeTest(WaveFixture):
         )
 
 
+class CuratorHarvestTest(WaveFixture):
+    """A Curator that cannot close its turn still committed what it recorded.
+
+    Materials are durable artifacts the moment `record_material` returns, not
+    pending work.  Letting the protocol error escape reported the branch as having
+    produced nothing while the wave's own MaterialDelta counted them -- so the Lead
+    read a branch summary and an evidence count that contradicted each other.  The
+    Investigator side already harvested for exactly this reason; the Curator side
+    did not.
+    """
+
+    async def test_a_curator_that_cannot_close_keeps_its_materials(self) -> None:
+        # Two candidates, one curated.  Closing with the other untouched is what
+        # the validator refuses, so the role burns its single correction and the
+        # runner gives up -- with one Material already committed.
+        self.reader = StubReader(
+            {
+                "https://cdc.example/acip": PAGE,
+                "https://cdc.example/second": PAGE,
+            }
+        )
+
+        class TwoResults:
+            async def search(self, request):  # noqa: ANN001, ANN202
+                return SearchResponse(
+                    results=(
+                        SearchResult(title="a", url="https://cdc.example/acip"),
+                        SearchResult(title="b", url="https://cdc.example/second"),
+                    )
+                )
+
+        incomplete = ModelReply(
+            tool_calls=(call("complete_curation", summary="草率结束，还有候选没处置。"),)
+        )
+        runtimes = self.runtimes(
+            investigator=[
+                ModelReply(tool_calls=(call("search", query="rsv", intent="d"),)),
+                ModelReply(tool_calls=(call("read", url="https://cdc.example/acip"),)),
+                ModelReply(
+                    tool_calls=(call("read", url="https://cdc.example/second"),)
+                ),
+                ModelReply(
+                    tool_calls=(
+                        call(
+                            "save_candidate_source",
+                            url="https://cdc.example/acip",
+                            relevance_note="ACIP 的正式建议原文。",
+                        ),
+                    )
+                ),
+                ModelReply(
+                    tool_calls=(
+                        call(
+                            "save_candidate_source",
+                            url="https://cdc.example/second",
+                            relevance_note="第二份候选来源。",
+                        ),
+                    )
+                ),
+                ModelReply(
+                    tool_calls=(
+                        call(
+                            "complete_investigation",
+                            summary="保存了两份候选来源。",
+                            attempted_paths=["ACIP 官方记录"],
+                        ),
+                    )
+                ),
+            ],
+            curator=[curator_script()[0], incomplete, incomplete],
+            analyst=[ANALYST_REPLY],
+        )
+
+        outcome = await run_wave(
+            self.store,
+            self.ledger,
+            runtimes,
+            contract=CONTRACT,
+            wave_intent="建立机制层面的基线证据",
+            assignments=[
+                AssignmentDraft(
+                    question_labels=("Q1",),
+                    focus="ACIP 当前对婴儿 RSV 预防的正式建议是什么",
+                    why_it_matters="它决定本院可选路径的合规基线",
+                    evidence_sought="ACIP 或 CDC 的一手记录",
+                )
+            ],
+            broker=TwoResults(),
+            reader=self.reader,
+        )
+
+        branch = outcome.branches[0]
+        # The verdict is not softened: it failed, and says why.
+        self.assertEqual("operational_failure", branch.status)
+        self.assertTrue(any("curator" in item for item in branch.limitations))
+        # But the paid-for, committed evidence is reported rather than orphaned,
+        # and the branch agrees with the wave.
+        self.assertEqual(1, len(branch.material_refs))
+        self.assertEqual(
+            set(outcome.new_material_refs), set(branch.material_refs)
+        )
+
+
+class FetchGuardTest(WaveFixture):
+    """A source identity the domain will refuse must not be paid for first.
+
+    `SourceSnapshotBody` canonicalises its own url, so a URL carrying credentials
+    is refused either way -- but refused *after* the fetch it means the text is
+    already bought and has nowhere to go, and the role is told only that "the tool
+    failed".  Checking the shape first is the same discipline as refusing an
+    unauthorised source family before the ledger records anything.
+    """
+
+    async def test_an_unusable_url_is_refused_before_the_fetch(self) -> None:
+        runtimes = self.runtimes(
+            investigator=[
+                ModelReply(
+                    tool_calls=(
+                        call("read", url="https://example.org/doc?api_key=secret"),
+                    )
+                ),
+                ModelReply(
+                    tool_calls=(
+                        call(
+                            "complete_investigation",
+                            summary="候选来源的标识不可用，未能取得正文。",
+                            attempted_paths=["带凭据参数的直链"],
+                            limitations=["该 URL 携带凭据参数，不能作为来源身份"],
+                        ),
+                    )
+                ),
+            ],
+            curator=curator_script(),
+            analyst=[ANALYST_REPLY],
+        )
+
+        await run_wave(
+            self.store,
+            self.ledger,
+            runtimes,
+            contract=CONTRACT,
+            wave_intent="尝试读取一个不合规的来源标识",
+            assignments=[
+                AssignmentDraft(
+                    question_labels=("Q1",),
+                    focus="能否读取带凭据的直链",
+                    why_it_matters="它决定来源身份是否可用",
+                    evidence_sought="一手文件",
+                )
+            ],
+            broker=self.broker,
+            reader=self.reader,
+        )
+
+        # Never fetched, so never charged, and no orphan snapshot.
+        self.assertEqual([], self.reader.reads)
+        self.assertEqual(
+            (), (await self.store.active_view()).active("source_snapshot")
+        )
+        rows = await self._connection.execute_fetchall(
+            "select count(*) from operations where kind = 'fetch'"
+        )
+        self.assertEqual(0, rows[0][0])
+
+
 class DeltaTest(WaveFixture):
     async def test_a_material_changing_wave_runs_exactly_one_analyst(self) -> None:
         curator_replies = curator_script()

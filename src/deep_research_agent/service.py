@@ -106,7 +106,7 @@ from .reporting import (
 )
 from .sources import ArtifactValidationError
 from .tools import TransparentSearchBroker
-from .wave import run_wave
+from .wave import STALL_TOLERANCE, run_wave, stalled
 
 #: Where a study stands, derived from committed artifacts and never stored.
 #:
@@ -172,13 +172,14 @@ EXPECTED_FAILURES: tuple[type[Exception], ...] = (
     *MODEL_FAILURES,
 )
 
-#: Consecutive Waves that may add no Material before governance pauses.  This is
-#: not a research budget: the Lead decides when evidence is sufficient, and this
-#: only catches the case where waves have stopped producing anything at all.
-STALL_TOLERANCE = 2
-
 #: Runaway guard only, set far above anything an observed run has needed (the
 #: deepest so far used three waves).  Reaching it is a pause, never "finished".
+#:
+#: The stall rule that does the real stopping lives in
+#: :func:`~deep_research_agent.wave.stalled`, beside the MaterialDelta it reads.
+#: It used to be duplicated here as a second constant and an inline comparison,
+#: which is two definitions of one rule -- and the fixture runner used one while
+#: the product used the other.
 RUNAWAY_WAVE_GUARD = 24
 
 
@@ -659,7 +660,13 @@ class ResearchService:
         )
         if open_question is None:
             raise ApprovalError("这项研究现在没有待回答的问题。")
-        if clarification_id and clarification_id != open_question.clarification_id:
+        if not clarification_id:
+            # The same rule as a plan decision: an answer has to name the question
+            # it answers, or it could be recorded against one the user never read.
+            raise StaleClarificationError(
+                "必须指明回答的是哪一个澄清问题。"
+            )
+        if clarification_id != open_question.clarification_id:
             raise StaleClarificationError(
                 "这个澄清问题已经发生变化。请查看最新的问题后回答。"
             )
@@ -897,12 +904,25 @@ class ResearchService:
     async def _require_current_plan(
         self, store: SqliteArtifactStore, plan_id: str
     ) -> str:
-        """Return the head plan, refusing any decision aimed at an older one."""
+        """Return the head plan, refusing any decision aimed at an older one.
+
+        An empty ``plan_id`` is a missing one, not a wildcard.  It used to skip the
+        staleness check entirely, so a caller that simply omitted it authorised
+        whatever the current head happened to be -- exactly the "approving a body
+        the user never read" this guard exists to prevent.  The interactive
+        workspace always passes it, but the service is the shared contract, and the
+        next interface should not be able to lose the check by leaving an argument
+        blank.
+        """
 
         head = (await store.active_view()).head("research_contract")
         if head is None:
             raise ValueError(f"task {store.task_id} has no Contract to decide on")
-        if plan_id and plan_id != head:
+        if not plan_id:
+            raise StalePlanError(
+                "必须指明要决定的是哪一版方案：批准的必须是用户实际读过的正文。"
+            )
+        if plan_id != head:
             raise StalePlanError(
                 "当前研究方案已经发生变化。请查看最新方案后重新操作。"
             )
@@ -1257,11 +1277,10 @@ class ResearchService:
                     store, listen, "研究负责人请求人工判断。", dict(action.arguments)
                 )
 
-            if len(progress) >= STALL_TOLERANCE and not any(
-                progress[-STALL_TOLERANCE:]
-            ):
+            if stalled(progress):
                 # Measured from the Trust Plane's MaterialDelta, never from the
-                # Lead's own claim to be making progress.
+                # Lead's own claim to be making progress.  One definition, in
+                # wave.py beside the delta it reads.
                 return await self._pause(
                     store,
                     listen,
@@ -1391,6 +1410,11 @@ class ResearchService:
                     "publication_ref": outcome.publication_ref,
                     "characters": len(outcome.rendered.markdown),
                     "references": len(outcome.rendered.references),
+                    # How much of the evidence the report actually used.  Computed
+                    # by the renderer and previously discarded, which left the
+                    # interface reporting the evidence-set size under a label that
+                    # said "cited" -- two different numbers, one of them wrong.
+                    "cited_materials": len(outcome.rendered.used_material_refs),
                 },
             )
         )

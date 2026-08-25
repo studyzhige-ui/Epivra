@@ -71,22 +71,6 @@ SINGLETON_KINDS: frozenset[str] = frozenset(
     }
 )
 
-#: Kinds that accumulate: the whole active set matters, not the newest member.
-#: Clarifications accumulate because the exchange is a history -- the Architect may
-#: need more than one answer, and every question and reply stays readable as part
-#: of how the study's intent was settled.
-COLLECTION_KINDS: frozenset[str] = frozenset(
-    {
-        "source_snapshot",
-        "material",
-        "review",
-        "approval_receipt",
-        "review_receipt",
-        "clarification",
-        "clarification_reply",
-    }
-)
-
 _ID_HASH_LENGTH = 24
 _ARTIFACT_ID_RE = re.compile(
     rf"^(?:{'|'.join(sorted(_KIND_PREFIX.values()))})_[0-9a-f]{{{_ID_HASH_LENGTH}}}$"
@@ -372,7 +356,6 @@ def lineage_closure(
 
 __all__ = [
     "ARTIFACT_KINDS",
-    "COLLECTION_KINDS",
     "SINGLETON_KINDS",
     "ActiveView",
     "ArtifactDisposition",

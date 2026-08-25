@@ -24,7 +24,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from .agents import AgentToolBudgetExhausted, invoke_agent
+from .agents import AgentProtocolError, AgentToolBudgetExhausted, invoke_agent
 from .agents import curator as curator_agent
 from .agents import investigator as investigator_agent
 from .agents.lead import AssignmentDraft
@@ -43,6 +43,7 @@ from .operations import (
 )
 from .providers._http import (
     ProviderAuthError,
+    ProviderQuotaError,
     ProviderRateLimitError,
     ProviderUnavailableError,
     SourceReadError,
@@ -56,6 +57,7 @@ from .sources import (
     SourceSnapshotBody,
     is_local_source,
     locate_quote,
+    source_locator,
 )
 from .tools import SearchRequest, SearchRouting
 
@@ -64,8 +66,17 @@ from .tools import SearchRequest, SearchRouting
 #: refused never left the process; a provider that returned an error served
 #: no billable result.  Treating these as unknown outcomes would strand one
 #: dead link as a terminal state for the rest of the task.
+#:
+#: An exhausted quota belongs here for the same reason -- "payment required" means
+#: nothing was served.  It is currently unreachable through the broker, which
+#: catches every provider exception upstream and reports it as a failed attempt
+#: (:meth:`~deep_research_agent.tools.TransparentSearchBroker._call_provider`), so
+#: this list carries no weight on the search path.  It is listed anyway because the
+#: fetch path has no such catch, and because a reader should not have to discover
+#: that the classification is load-bearing in one direction only.
 _UNBILLED_SEARCH = (
     ProviderAuthError,
+    ProviderQuotaError,
     ProviderRateLimitError,
     ProviderUnavailableError,
 )
@@ -344,6 +355,20 @@ class _InvestigationTools:
         if source_reader is None:
             return "该来源族在本次部署中没有可用的读取器。"
 
+        try:
+            # Checked before the ledger reserves anything, for the same reason the
+            # permission check above is: a URL the domain will refuse cannot become
+            # a snapshot, so fetching it first would pay for text that has nowhere
+            # to go.  The refusal happens later regardless -- SourceSnapshotBody
+            # canonicalises its own url -- but by then the fetch is billed and the
+            # role sees only "the tool failed".
+            source_locator(url)
+        except ArtifactValidationError as error:
+            return (
+                f"这个来源标识无法作为正式来源身份：{error}（运行事实，不是证据判断）。"
+                "请改用检索结果里给出的规范 URL。"
+            )
+
         request = OperationRequest(
             task_id=self._store.task_id,
             kind="fetch",
@@ -583,26 +608,39 @@ async def _run_branch(
         for ref in sorted(tools.candidates)
     }
     curation = _CurationTools(store, candidates)
-    await invoke_agent(
-        curator_agent.SPEC,
-        curator_context(
-            contract,
-            assignment=brief,
-            candidates=candidates,
-            notes=tools.candidates,
-        ),
-        model=runtimes["curator"].model,
-        ledger=ledger,
-        task_id=store.task_id,
-        execution=runtimes["curator"].execution,
-        context_limit=runtimes["curator"].context_limit,
-        validate=curator_agent.make_validator(curation.handled, len(candidates)),
-        handlers={
-            "read_saved_source": curation,
-            "record_material": curation,
-            "reject_candidate": curation,
-        },
-    )
+    try:
+        await invoke_agent(
+            curator_agent.SPEC,
+            curator_context(
+                contract,
+                assignment=brief,
+                candidates=candidates,
+                notes=tools.candidates,
+            ),
+            model=runtimes["curator"].model,
+            ledger=ledger,
+            task_id=store.task_id,
+            execution=runtimes["curator"].execution,
+            context_limit=runtimes["curator"].context_limit,
+            validate=curator_agent.make_validator(curation.handled, len(candidates)),
+            handlers={
+                "read_saved_source": curation,
+                "record_material": curation,
+                "reject_candidate": curation,
+            },
+        )
+    except AgentProtocolError as error:
+        # The same harvest the Investigator side already does, for the same
+        # reason.  A Curator that cannot close its turn has still committed every
+        # Material it recorded -- those are durable artifacts, not pending work --
+        # and letting the exception escape reported the branch as having produced
+        # nothing while the wave's own delta counted them.  The Lead then read a
+        # branch summary and an evidence count that disagreed.
+        #
+        # As on the Investigator side, harvesting does not soften the verdict: the
+        # status stays an operational failure and the reason is reported verbatim.
+        limitations = (*limitations, str(error))
+        status = "operational_failure"
 
     return BranchOutcome(
         index=index,
