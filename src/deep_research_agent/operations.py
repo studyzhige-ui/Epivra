@@ -32,13 +32,15 @@ content-addressed outcome references.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import re
-from collections.abc import Awaitable, Callable, Iterable, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Mapping
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Literal, Protocol
+from typing import Literal
 
 import aiosqlite
 
@@ -51,7 +53,6 @@ OperationStatus = Literal[
     "completed",
     "failed",
     "needs_reconciliation",
-    "cancelled",
 ]
 
 #: Why an attempt ended.  Every category here describes a failure the caller can
@@ -64,11 +65,10 @@ FailureCategory = Literal[
     "capacity",
     "integrity",
     "terminal",
-    "cancelled",
 ]
 
 _TERMINAL_STATUSES: frozenset[str] = frozenset(
-    {"completed", "needs_reconciliation", "cancelled"}
+    {"completed", "needs_reconciliation"}
 )
 _RETRYABLE_CATEGORIES: frozenset[str] = frozenset({"not_executed"})
 _STATUSES: frozenset[str] = frozenset(
@@ -78,11 +78,10 @@ _STATUSES: frozenset[str] = frozenset(
         "completed",
         "failed",
         "needs_reconciliation",
-        "cancelled",
     }
 )
 _CATEGORIES: frozenset[str] = frozenset(
-    {"not_executed", "capacity", "integrity", "terminal", "cancelled"}
+    {"not_executed", "capacity", "integrity", "terminal"}
 )
 
 _ID_HASH_LENGTH = 24
@@ -114,8 +113,7 @@ class OperationReconciliationRequired(OperationError):
     """An external call may have executed; a human or a provider query decides.
 
     Raised instead of retrying.  Clearing this state requires querying the
-    provider for the real outcome, submitting a recovered outcome, or explicitly
-    authorising a new operation with the double-charge risk acknowledged.
+    provider for the real outcome or confirming that it was never executed.
     """
 
     def __init__(self, operation_id: str, detail: str = "") -> None:
@@ -220,8 +218,6 @@ class OperationRequest:
     execution: ExecutionIdentity
     input_refs: tuple[str, ...] = ()
     parameters: Mapping[str, str] = field(default_factory=dict)
-    parent_refs: tuple[str, ...] = ()
-    idempotency_key: str = ""
     max_attempts: int = 3
 
     def __post_init__(self) -> None:
@@ -232,16 +228,12 @@ class OperationRequest:
             raise ArtifactValidationError("execution must be an ExecutionIdentity")
         for ref in self.input_refs:
             _require_text(ref, "input ref")
-        for ref in self.parent_refs:
-            require_operation_id(ref, "parent operation ref")
         if not isinstance(self.parameters, Mapping) or any(
             not isinstance(key, str) or not isinstance(value, str)
             for key, value in self.parameters.items()
         ):
             raise ArtifactValidationError("parameters must map strings to strings")
         _reject_secretlike(self.parameters, "operation parameters")
-        if not isinstance(self.idempotency_key, str):
-            raise ArtifactValidationError("idempotency_key must be a string")
         if (
             isinstance(self.max_attempts, bool)
             or not isinstance(self.max_attempts, int)
@@ -280,11 +272,9 @@ class OperationRecord:
     role: str
     execution: ExecutionIdentity
     input_refs: tuple[str, ...]
-    parent_refs: tuple[str, ...]
     status: OperationStatus
     attempts: int
     max_attempts: int
-    idempotency_key: str = ""
     outcome_ref: BodyRef | None = None
     failure: str = ""
     detail: str = ""
@@ -321,49 +311,8 @@ class OperationRecord:
         )
 
 
-class OperationLedger(Protocol):
-    """Durable at-most-once boundary for external calls."""
-
-    async def get(self, operation_id: str) -> OperationRecord | None:
-        """Return the durable record, or None if the operation is unknown."""
-
-    async def reserve(self, request: OperationRequest) -> OperationRecord:
-        """Persist the intent to call before any request leaves the process."""
-
-    async def mark_sent(self, operation_id: str) -> OperationRecord:
-        """Record that a request is going out and its outcome is not yet known."""
-
-    async def complete(
-        self,
-        operation_id: str,
-        outcome: str,
-        *,
-        usage: Mapping[str, int] | None = None,
-    ) -> OperationRecord:
-        """Store the outcome in the content store, then mark the call done."""
-
-    async def fail(
-        self,
-        operation_id: str,
-        *,
-        category: FailureCategory,
-        detail: str = "",
-    ) -> OperationRecord:
-        """Record a *known* failure; unknown outcomes use flag_reconciliation."""
-
-    async def flag_reconciliation(
-        self, operation_id: str, detail: str = ""
-    ) -> OperationRecord:
-        """Freeze an operation whose provider outcome cannot be determined."""
-
-    async def pending_reconciliation(
-        self, task_id: str
-    ) -> tuple[OperationRecord, ...]:
-        """Every operation in one task that blocks ordinary resume."""
-
-
 class SqliteOperationLedger:
-    """OperationLedger sharing the runtime's aiosqlite connection.
+    """Durable at-most-once boundary sharing the runtime's SQLite connection.
 
     Outcomes live in the content store, so the ledger row stays small and the
     same body is never duplicated across replays.
@@ -374,6 +323,28 @@ class SqliteOperationLedger:
     ) -> None:
         self._connection = connection
         self._content_store = content_store
+        # One ResearchService owns one ledger.  Serialising identical work here
+        # prevents two Agent branches in that process from both sending it.  This
+        # is execution control only: no lock or owner becomes durable task state.
+        self._single_flights: dict[str, tuple[asyncio.Lock, int]] = {}
+
+    @asynccontextmanager
+    async def single_flight(self, operation_id: str) -> AsyncIterator[None]:
+        """Serialise one operation key inside the current Agent process."""
+
+        operation_id = require_operation_id(operation_id)
+        existing = self._single_flights.get(operation_id)
+        lock, users = existing if existing is not None else (asyncio.Lock(), 0)
+        self._single_flights[operation_id] = (lock, users + 1)
+        try:
+            async with lock:
+                yield
+        finally:
+            current_lock, current_users = self._single_flights[operation_id]
+            if current_lock is lock and current_users == 1:
+                del self._single_flights[operation_id]
+            elif current_lock is lock:
+                self._single_flights[operation_id] = (lock, current_users - 1)
 
     async def setup(self) -> None:
         """Create only the ledger table."""
@@ -405,6 +376,10 @@ class SqliteOperationLedger:
             )
             """
         )
+        # parent_refs and idempotency_key are retained only as empty physical
+        # columns so databases created by earlier versions need no table rebuild.
+        # Artifact lineage and deterministic fingerprints are the current facts;
+        # neither column is exposed by the operation domain.
         # Databases written before spend accounting existed are still readable
         # and resumable; the new columns simply stay NULL for their rows, which
         # is the honest record -- those calls really were unmeasured.
@@ -435,8 +410,8 @@ class SqliteOperationLedger:
         require_operation_id(operation_id)
         cursor = await self._connection.execute(
             "SELECT operation_id, fingerprint, task_id, kind, role, execution, "
-            "input_refs, parent_refs, status, attempts, max_attempts, "
-            "idempotency_key, outcome_hash, outcome_chars, failure, detail "
+            "input_refs, status, attempts, max_attempts, outcome_hash, "
+            "outcome_chars, failure, detail "
             "FROM operations WHERE operation_id = ?",
             (operation_id,),
         )
@@ -467,9 +442,9 @@ class SqliteOperationLedger:
                 request.role,
                 execution,
                 _canonical(sorted(set(request.input_refs))),
-                _canonical(sorted(set(request.parent_refs))),
+                _canonical(()),
                 request.max_attempts,
-                request.idempotency_key,
+                "",
             ),
         )
         await self._connection.commit()
@@ -480,8 +455,6 @@ class SqliteOperationLedger:
 
     async def mark_sent(self, operation_id: str) -> OperationRecord:
         record = await self._require(operation_id)
-        if record.status == "in_flight":
-            return record
         if record.status not in ("reserved", "failed"):
             raise OperationError(
                 f"operation {operation_id} cannot be sent from status "
@@ -492,14 +465,22 @@ class SqliteOperationLedger:
                 f"operation {operation_id} exhausted its retry budget "
                 f"({record.attempts}/{record.max_attempts})"
             )
-        await self._update(
-            operation_id,
-            status="in_flight",
-            attempts=record.attempts + 1,
-            started_at=_utc_now(),
-            failure="",
-            detail="",
+        cursor = await self._connection.execute(
+            "UPDATE operations SET status = 'in_flight', attempts = attempts + 1, "
+            "started_at = ?, failure = '' WHERE operation_id = ? AND "
+            "(status = 'reserved' OR (status = 'failed' AND failure = "
+            "'not_executed' AND attempts < max_attempts))",
+            (_utc_now(), operation_id),
         )
+        await self._connection.commit()
+        changed = cursor.rowcount
+        await cursor.close()
+        if changed != 1:
+            current = await self._require(operation_id)
+            raise OperationError(
+                f"operation {operation_id} was claimed concurrently from status "
+                f"{current.status!r}"
+            )
         return await self._require(operation_id)
 
     async def complete(
@@ -553,10 +534,9 @@ class SqliteOperationLedger:
             )
         if category not in _CATEGORIES:
             raise ArtifactValidationError(f"unsupported failure {category!r}")
-        status: OperationStatus = "cancelled" if category == "cancelled" else "failed"
         await self._update(
             operation_id,
-            status=status,
+            status="failed",
             failure=category,
             detail=detail,
             settled_at=_utc_now(),
@@ -674,11 +654,9 @@ def _record_from_row(row: Iterable[object]) -> OperationRecord:
         role,
         execution,
         input_refs,
-        parent_refs,
         status,
         attempts,
         max_attempts,
-        idempotency_key,
         outcome_hash,
         outcome_chars,
         failure,
@@ -701,11 +679,9 @@ def _record_from_row(row: Iterable[object]) -> OperationRecord:
             },
         ),
         input_refs=tuple(json.loads(str(input_refs))),
-        parent_refs=tuple(json.loads(str(parent_refs))),
         status=str(status),  # type: ignore[arg-type]
         attempts=int(attempts),
         max_attempts=int(max_attempts),
-        idempotency_key=str(idempotency_key or ""),
         outcome_ref=(
             BodyRef(content_hash=str(outcome_hash), char_count=int(outcome_chars))
             if outcome_hash is not None
@@ -756,14 +732,34 @@ async def run_once(
         correct use of that state: nobody can say whether the provider ran.
     """
 
+    async with ledger.single_flight(request.operation_id()):
+        return await _run_once_locked(
+            ledger,
+            request,
+            send,
+            not_executed=not_executed,
+            capacity=capacity,
+            usage_of=usage_of,
+        )
+
+
+async def _run_once_locked(
+    ledger: SqliteOperationLedger,
+    request: OperationRequest,
+    send: Callable[[], Awaitable[str]],
+    *,
+    not_executed: tuple[type[BaseException], ...],
+    capacity: tuple[type[BaseException], ...],
+    usage_of: Callable[[str], Mapping[str, int] | None] | None,
+) -> str:
+    """The ledger protocol, entered with this operation's local lock held."""
+
     record = await ledger.reserve(request)
 
     if record.status == "completed":
         return await ledger.outcome(record.operation_id)
     if record.status == "needs_reconciliation":
         raise OperationReconciliationRequired(record.operation_id, record.detail)
-    if record.status == "cancelled":
-        raise OperationError(f"operation {record.operation_id} was cancelled")
     if record.status == "in_flight":
         # A previous process committed "sending" and never recorded an outcome.
         # Whether the provider ran is unknowable from here.
@@ -801,11 +797,19 @@ async def run_once(
             detail=f"{type(error).__name__}: {error}"[:300],
         )
         raise
-    except BaseException as error:
+    except asyncio.CancelledError:
         await ledger.flag_reconciliation(
-            record.operation_id, f"{type(error).__name__} during provider call"
+            record.operation_id, "CancelledError during provider call"
         )
+        # Ctrl-C still has to stop the Agent immediately.  The durable freeze is
+        # enough to make the next run reconcile rather than resend.
         raise
+    except BaseException as error:
+        detail = f"{type(error).__name__} during provider call"
+        await ledger.flag_reconciliation(record.operation_id, detail)
+        raise OperationReconciliationRequired(
+            record.operation_id, detail
+        ) from error
     # Spend is read off the outcome the caller just produced, so the ledger
     # stays generic: it records token counts without knowing what a model is.
     completed = await ledger.complete(
@@ -821,7 +825,6 @@ __all__ = [
     "FailureCategory",
     "OperationBudgetExhausted",
     "OperationError",
-    "OperationLedger",
     "OperationReconciliationRequired",
     "OperationRecord",
     "OperationRequest",

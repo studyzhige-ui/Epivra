@@ -8,7 +8,7 @@ they stay thin adapters over it::
                               │
                   ┌───────────┴───────────┐
                   ▼                       ▼
-        Interactive workspace         MCP (future)
+        Interactive workspace      Other thin adapters
 
 Every capability a caller could need is a method here, not something only one
 interface knows how to do: :meth:`~ResearchService.open_task`,
@@ -35,10 +35,9 @@ after which the state derives as ``paused`` from what is already committed.  A
 of truth about a state the store already answers.
 
 **No interface holds state.**  Everything durable lives in the artifact store and
-the operation ledger, so "resume" is opening the same database again -- proven in
-Phase 1e, where a killed run continued across three separate processes and
-published.  An interface that cached task state would become a second account of
-truth, which §2.3 bars.
+the operation ledger, so "resume" means opening the same database and projecting
+the committed facts again.  An interface that cached task state would become a
+second account of truth.
 
 Progress is emitted as :class:`Event` values rather than printed.  A service that
 writes to stdout cannot be used by a server, and a service that returns only a
@@ -106,7 +105,7 @@ from .reporting import (
 )
 from .sources import ArtifactValidationError
 from .tools import TransparentSearchBroker
-from .wave import STALL_TOLERANCE, run_wave, stalled
+from .wave import STALL_TOLERANCE, WaveOutcome, run_wave, stalled
 
 #: Where a study stands, derived from committed artifacts and never stored.
 #:
@@ -118,13 +117,10 @@ from .wave import STALL_TOLERANCE, run_wave, stalled
 #: neither is a flag anyone can set: see
 #: :func:`~deep_research_agent.reporting.publication_blocked`.
 #:
-#: ``needs_reconciliation`` is the third of that family and the one that was
-#: missing.  ARCHITECTURE §8.1 has always listed it as a derived state, but it was
-#: absent from this type and nothing ever asked the ledger for it -- so a study
-#: with a frozen operation reported itself as ``researching`` and the interface
-#: kept offering to continue, which could only ever raise the same frozen error.
-#: A study cannot be advanced past an operation whose outcome nobody can
-#: determine; saying so is the difference between a dead end and an instruction.
+#: ``needs_reconciliation`` is the third of that family: the ledger contains an
+#: external operation whose outcome cannot be proven.  A study cannot advance
+#: past that fact, and neither the projection nor its actions offer an automatic
+#: retry.  State precedence lives in :func:`project_task_state` below.
 TaskState = Literal[
     "clarification_requested",
     "awaiting_approval",
@@ -134,6 +130,94 @@ TaskState = Literal[
     "needs_reconciliation",
     "paused",
 ]
+
+TaskAction = Literal[
+    "answer",
+    "approve",
+    "back",
+    "delete",
+    "export",
+    "plan",
+    "report",
+    "replan",
+    "resume",
+    "revise",
+]
+
+
+def project_task_state(
+    *,
+    has_contract: bool,
+    has_publication: bool,
+    decision: str,
+    needs_reconciliation: bool,
+    review_blocked: bool,
+    governed: bool,
+    materials: int,
+    sources: int,
+) -> TaskState:
+    """Derive one task state from durable facts, without storing the answer."""
+
+    if not has_contract:
+        return "clarification_requested"
+    if has_publication:
+        return "published"
+    if decision != "approved":
+        return "awaiting_approval"
+    if needs_reconciliation:
+        return "needs_reconciliation"
+    if review_blocked:
+        return "halted"
+    return "paused" if governed or materials or sources else "researching"
+
+
+def task_actions(
+    state: TaskState, *, has_open_clarification: bool = False
+) -> tuple[TaskAction, ...]:
+    """Return the behaviour allowed by a derived state; never a stored policy."""
+
+    if state == "awaiting_approval":
+        # The task page already shows the exact direction in this state, so its
+        # actions are the real decisions -- never a second "view" page whose
+        # apparent choices are only prose.
+        return ("approve", "revise", "back", "delete")
+    if state in {"paused", "researching", "halted"}:
+        return ("resume", "plan", "delete", "back")
+    if state == "published":
+        return ("report", "export", "delete", "back")
+    if state == "clarification_requested":
+        first: TaskAction = "answer" if has_open_clarification else "replan"
+        return (first, "back", "delete")
+    return ("back", "delete")
+
+
+def _memory_after_wave(
+    previous: lead_agent.MemoryBody, outcome: WaveOutcome
+) -> lead_agent.MemoryBody:
+    """Merge only operational facts that can change the Lead's next decision."""
+
+    additions = [f"Wave 目标：{outcome.intent.strip()}"]
+    for branch in outcome.branches:
+        focus = branch.focus.strip() or f"任务 {branch.index}"
+        additions.extend(
+            f"{focus}：已尝试 {path.strip()}"
+            for path in branch.attempted_paths
+            if path.strip()
+        )
+        additions.extend(
+            f"{focus}（运行限制）：{limitation.strip()}"
+            for limitation in branch.limitations
+            if limitation.strip()
+        )
+        if branch.detail.strip():
+            additions.append(f"{focus}（运行失败）：{branch.detail.strip()}")
+
+    return lead_agent.MemoryBody(
+        tried_paths=tuple(dict.fromkeys((*previous.tried_paths, *additions))),
+        decisions=previous.decisions,
+        open_intents=previous.open_intents,
+        user_items=previous.user_items,
+    )
 
 #: Failures an interface is expected to report and carry on from, as opposed to
 #: crash on.  Named one by one on purpose: this used to be ``(ValueError,
@@ -187,8 +271,8 @@ RUNAWAY_WAVE_GUARD = 24
 class Event:
     """One thing worth telling the user about, in their terms.
 
-    ``detail`` carries structured values an interface may want to render richly
-    (a web UI showing a progress bar, say) without parsing the message text.
+    ``detail`` carries structured values an interface may want to render without
+    parsing the message text.
     """
 
     kind: str
@@ -229,6 +313,14 @@ class Task:
     clarification_id: str = ""
     clarification_question: str = ""
     clarification_why: str = ""
+
+    @property
+    def allowed_actions(self) -> tuple[TaskAction, ...]:
+        """Actions projected from this view, not remembered on the task."""
+
+        return task_actions(
+            self.state, has_open_clarification=bool(self.clarification_id)
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -518,18 +610,18 @@ class ResearchService:
         listen(
             Event(
                 "contract_proposed",
-                approval_card(contract, version=task.plan_version),
+                approval_card(contract),
                 {"task_id": task_id, "plan_id": task.plan_id},
             )
         )
         return task
 
     async def approve(self, task_id: str, plan_id: str) -> None:
-        """Approve one exact plan.
+        """Start research from one exact direction.
 
-        ``plan_id`` is required rather than convenient.  A user approves the plan
-        they read, and if a revision has produced a newer one since, applying
-        their "yes" to it would authorise spending on a body they never saw.
+        ``plan_id`` is required rather than convenient.  A user starts the
+        direction they read, and if an adjustment has produced a newer one since,
+        applying their "yes" to it would spend against a body they never saw.
         """
 
         store = self._store(task_id)
@@ -539,7 +631,7 @@ class ResearchService:
             if decided.decision == "approved":
                 return  # already approved; approving twice is not an error
             raise ApprovalError(
-                "这一版方案已经提出过修改，请查看新版方案后再批准。"
+                "这一版方向已经要求调整，请查看新版本后再开始研究。"
             )
         await record_decision(store, current, ApprovalBody(decision="approved"))
 
@@ -551,7 +643,7 @@ class ResearchService:
         *,
         listen: Listener = _ignore,
     ) -> Task:
-        """Send one exact plan back with an instruction, and get the next version.
+        """Adjust one exact direction and get the next complete version.
 
         This is the same Research Task throughout.  The plan iterates; the study's
         identity, its original Commission and its frozen execution configuration
@@ -573,7 +665,7 @@ class ResearchService:
 
         found = await decision_receipt(store, current)
         if found is not None and found[1].decision != "revision_requested":
-            raise ApprovalError("这一版方案已经批准，不能再提出修改。")
+            raise ApprovalError("这一版方向已经开始执行，不能再调整。")
 
         if found is None:
             if not instruction:
@@ -729,6 +821,14 @@ class ResearchService:
         next week cannot pick up a model the study never used.
         """
 
+        projected = await self.task(task_id)
+        if projected.state == "published":
+            raise ApprovalError("a published task cannot be advanced")
+        if projected.state == "needs_reconciliation":
+            raise OperationError(
+                "a task with an unknown provider outcome cannot be advanced"
+            )
+
         execution = await self.execution(task_id, listen=listen)
         store = self._store(task_id)
         _plan_ref, contract = await approved_contract(store)
@@ -758,9 +858,7 @@ class ResearchService:
         plans = view.active("research_contract")
         contract_head = view.head("research_contract")
         open_question: Exchange | None = None
-        state: TaskState
         if contract_head is None:
-            state = "clarification_requested"
             open_question = next(
                 (
                     item
@@ -769,32 +867,22 @@ class ResearchService:
                 ),
                 None,
             )
-        elif view.head("publication_receipt") is not None:
-            state = "published"
-        else:
-            decision = await decision_for(store, contract_head)
-            if decision is None or decision.decision != "approved":
-                # A plan awaiting a decision and a plan sent back for revision are
-                # the same thing to a user: the study is waiting on them.  Adding
-                # states for the steps between would put the lifecycle in two
-                # places at once.
-                state = "awaiting_approval"
-            elif await self.ledger.pending_reconciliation(task_id):
-                # Ranked above every other approved state because it blocks all of
-                # them: a frozen operation cannot be advanced past, so reporting
-                # anything else here would invite an action that must fail.
-                state = "needs_reconciliation"
-            elif await publication_blocked(store):
-                state = "halted"
-            else:
-                # "Has governance run at all" rather than "is there evidence yet".
-                # The Lead commits a ResearchMemory on every action it takes, so
-                # its presence is the durable record that a study has been driven;
-                # evidence is a poor proxy, because a run that stopped before
-                # gathering any -- the Lead asking for a human on its first turn --
-                # would report itself as still researching.
-                governed = view.head("research_memory") is not None
-                state = "paused" if governed or materials or sources else "researching"
+
+        decision = (
+            None if contract_head is None else await decision_for(store, contract_head)
+        )
+        state = project_task_state(
+            has_contract=contract_head is not None,
+            has_publication=view.head("publication_receipt") is not None,
+            decision="" if decision is None else decision.decision,
+            needs_reconciliation=bool(
+                await self.ledger.pending_reconciliation(task_id)
+            ),
+            review_blocked=await publication_blocked(store),
+            governed=view.head("research_memory") is not None,
+            materials=materials,
+            sources=sources,
+        )
         return Task(
             task_id=task_id,
             request=commission.request,
@@ -882,10 +970,7 @@ class ResearchService:
         """The exact card the user must read before deciding on the current plan."""
 
         store = self._store(task_id)
-        view = await store.active_view()
-        return approval_card(
-            await self._contract(store), version=len(view.active("research_contract"))
-        )
+        return approval_card(await self._contract(store))
 
     # ----------------------------------------------------------------- private
 
@@ -908,7 +993,7 @@ class ResearchService:
 
         An empty ``plan_id`` is a missing one, not a wildcard.  It used to skip the
         staleness check entirely, so a caller that simply omitted it authorised
-        whatever the current head happened to be -- exactly the "approving a body
+        whatever the current head happened to be -- exactly the "starting a body
         the user never read" this guard exists to prevent.  The interactive
         workspace always passes it, but the service is the shared contract, and the
         next interface should not be able to lose the check by leaving an argument
@@ -920,11 +1005,11 @@ class ResearchService:
             raise ValueError(f"task {store.task_id} has no Contract to decide on")
         if not plan_id:
             raise StalePlanError(
-                "必须指明要决定的是哪一版方案：批准的必须是用户实际读过的正文。"
+                "必须指明要开始的是哪一版方向：执行的必须是用户实际读过的正文。"
             )
         if plan_id != head:
             raise StalePlanError(
-                "当前研究方案已经发生变化。请查看最新方案后重新操作。"
+                "当前研究方向已经发生变化。请查看最新版本后重新操作。"
             )
         return head
 
@@ -975,7 +1060,7 @@ class ResearchService:
             task_id=store.task_id,
             execution=runtimes["architect"].execution,
             context_limit=runtimes["architect"].context_limit,
-            validate=architect_agent.make_validator(None),
+            validate=architect_agent.make_validator(),
         )
 
     async def _propose_revision(
@@ -1058,7 +1143,7 @@ class ResearchService:
         listen(
             Event(
                 "plan_revised",
-                approval_card(contract, version=version),
+                approval_card(contract),
                 {"task_id": store.task_id, "version": version},
             )
         )
@@ -1083,7 +1168,7 @@ class ResearchService:
             listen(
                 Event(
                     "contract_proposed",
-                    approval_card(contract, version=task.plan_version),
+                    approval_card(contract),
                     {"task_id": task.task_id, "plan_id": task.plan_id},
                 )
             )
@@ -1126,7 +1211,7 @@ class ResearchService:
         action = await self._ask_architect(
             store,
             commission,
-            purpose="把用户委托转化为可审批的研究合同",
+            purpose="把用户委托转化为可直接确认和执行的研究方向",
             input_refs=input_refs,
             exchanges=exchanges,
             listen=listen,
@@ -1267,7 +1352,9 @@ class ResearchService:
                     {"round": round_index},
                 )
 
-            await self._commit_memory(store, action.arguments, previous)
+            current_memory = await self._commit_memory(
+                store, action.arguments, previous
+            )
 
             if action.name == "commission_report":
                 return await self._report(store, action.arguments, runtimes, listen)
@@ -1316,6 +1403,9 @@ class ResearchService:
             )
             progress.append(len(wave.new_material_refs))
             latest_outcome = wave.render()
+            await self._store_memory(
+                store, _memory_after_wave(current_memory, wave)
+            )
             listen(
                 Event(
                     "wave_finished",
@@ -1345,15 +1435,9 @@ class ResearchService:
     ) -> TaskState:
         """Stop governing, and report the state the store actually derives.
 
-        Every exit reads the state back rather than asserting one.  ``_report``
-        already did this and its comment explained why -- it is the only way
-        ``advance()`` and ``task()`` cannot disagree about the same study -- but the
-        governance exits returned a hardcoded ``"paused"``, so a study that stopped
-        before gathering any evidence was announced as paused by one and reported
-        as researching by the other.  ``ReviewHaltTest`` pinned this invariant for
-        ``halted`` and it was never extended to the paths that reach it first.
-
-        Reading back also means a frozen operation surfaces here as
+        Every exit reads the state back rather than asserting one, so
+        ``advance()`` and ``task()`` cannot disagree about the same study.  This
+        also means a frozen operation surfaces here as
         ``needs_reconciliation`` rather than being flattened into a pause the user
         would be invited to retry forever.
         """
@@ -1390,7 +1474,7 @@ class ResearchService:
             )
 
         if not outcome.published:
-            # What stopped the transaction is not always the Reviewer: an Author
+            # What stopped the reporting run is not always the Reviewer: an Author
             # who says the evidence cannot support the report leaves a study that
             # is merely paused.  So the state is read back from what was
             # committed rather than assumed here, which is also the only way
@@ -1425,8 +1509,15 @@ class ResearchService:
         store: SqliteArtifactStore,
         arguments: Mapping[str, Any],
         previous: lead_agent.MemoryBody | None,
-    ) -> None:
+    ) -> lead_agent.MemoryBody:
         body = lead_agent.memory_after(arguments, previous)
+        await self._store_memory(store, body)
+        return body
+
+    @staticmethod
+    async def _store_memory(
+        store: SqliteArtifactStore, body: lead_agent.MemoryBody
+    ) -> None:
         await store.put(
             kind="research_memory",
             body=body.encode(),
@@ -1444,7 +1535,10 @@ __all__ = [
     "PlanVersion",
     "ResearchService",
     "Task",
+    "TaskAction",
     "TaskExecution",
     "TaskState",
     "new_task_id",
+    "project_task_state",
+    "task_actions",
 ]

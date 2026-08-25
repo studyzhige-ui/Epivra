@@ -7,8 +7,8 @@ from pathlib import Path
 import aiosqlite
 
 from deep_research_agent.agents.architect import (
-    NO_PACKS,
     SPEC,
+    SYSTEM_PROMPT,
     architect_context_body,
     contract_from_action,
     make_validator,
@@ -25,51 +25,35 @@ from deep_research_agent.artifact_store import SqliteArtifactStore
 from deep_research_agent.content_store import SqliteContentStore
 from deep_research_agent.contract import (
     CommissionBody,
-    ResearchContract,
     build_contract,
 )
-from deep_research_agent.packs import PackCatalog
 from deep_research_agent.sources import ArtifactValidationError
 
 CONTRACT = """\
-## 目的与用途
+# 婴儿 RSV 预防路径比较
+
+## 研究目标
 
 为医院母婴护理团队选择婴儿 RSV 预防路径提供依据。不支持个体化临床处方。
 
-## 问题模型
+## 重点问题
 
-### Q1. 对本院人群，母源疫苗与单克隆抗体应如何组合使用？
-### Q2. 两条路径在住院与重症终点上的证据强度如何？
-### Q3. 给药时点与季节性如何影响可行性？
+- Q1. 对本院人群，母源疫苗与单克隆抗体应如何组合使用？
+- Q2. 两条路径在住院与重症终点上的证据强度如何？
+- Q3. 给药时点与季节性如何影响可行性？
 
-## 范围与定义
+## 范围与排除
 
 时点为 2026 年 8 月。默认假设：仅考虑已获批产品。
 
-## 证据与分析方法
+## 研究方式
 
-优先监管标签、ACIP 记录与关键试验原文；主动检索反证与撤稿。
+优先监管标签、ACIP 记录与关键试验原文，区分试验效力与真实世界有效性。
 
-## 交付与保证
+## 交付内容
 
-决策简报，中文，独立审查。
-
-## 自适应边界与已知限制
-
-查询与来源顺序由 Lead 自适应；改变人群或时点需重新审批。
+中文决策简报，包含路径比较、适用条件与关键不确定性。
 """
-
-
-def pack_text(kind: str, pack_id: str) -> str:
-    from deep_research_agent.packs import PACK_SECTIONS
-
-    sections = "\n\n".join(
-        f"## {name}\n\nguidance" for name in PACK_SECTIONS[kind]
-    )
-    return (
-        f"---\nid: {pack_id}\nkind: {kind}\nversion: 1.0.0\n"
-        f"title: T\nsummary: \"s\"\n---\n\n# T\n\n{sections}\n"
-    )
 
 
 class CommissionTest(unittest.TestCase):
@@ -109,17 +93,44 @@ class ArchitectValidationTest(unittest.TestCase):
             )
         )
 
-    def test_a_missing_block_names_the_six_titles(self) -> None:
-        trimmed = CONTRACT.split("## 交付与保证")[0]
+    def test_a_missing_block_names_the_five_titles(self) -> None:
+        trimmed = CONTRACT.split("## 交付内容")[0]
         error = self.validate("propose_contract", {"contract_markdown": trimmed})
 
         assert error is not None
-        self.assertIn("交付与保证", error.problem)
-        self.assertIn("自适应边界与已知限制", error.problem)
-        self.assertIn("目的与用途", error.allowed)
+        self.assertIn("交付内容", error.problem)
+        self.assertIn("研究目标", error.allowed)
+
+    def test_an_empty_block_is_rejected(self) -> None:
+        empty = CONTRACT.replace(
+            "为医院母婴护理团队选择婴儿 RSV 预防路径提供依据。"
+            "不支持个体化临床处方。",
+            "",
+        )
+        error = self.validate("propose_contract", {"contract_markdown": empty})
+
+        assert error is not None
+        self.assertIn("研究目标", error.problem)
+
+    def test_a_visible_research_topic_is_required(self) -> None:
+        without_title = CONTRACT.split("\n", 1)[1]
+        error = self.validate(
+            "propose_contract", {"contract_markdown": without_title}
+        )
+
+        assert error is not None
+        self.assertIn("研究主题", error.problem)
+
+    def test_each_question_must_be_a_renderable_list_item(self) -> None:
+        crowded = CONTRACT.replace("- Q2.", "Q2.")
+        error = self.validate("propose_contract", {"contract_markdown": crowded})
+
+        assert error is not None
+        self.assertIn("Q2", error.problem)
+        self.assertIn("Markdown 列表项", error.allowed)
 
     def test_an_incoherent_question_model_is_correctable(self) -> None:
-        broken = CONTRACT.replace("### Q2.", "### Q5.")
+        broken = CONTRACT.replace("- Q2.", "- Q5.")
         error = self.validate("propose_contract", {"contract_markdown": broken})
 
         assert error is not None
@@ -141,66 +152,25 @@ class ArchitectValidationTest(unittest.TestCase):
         self.assertEqual(
             {"propose_contract", "ask_scope_question"}, set(SPEC.terminal_tools)
         )
-        # No search tool: orientation is a later phase, and the Architect must
-        # never be able to start formal research.
+        # No search tool: the Architect defines direction and must never be able
+        # to start formal research itself.
         self.assertEqual(
             {"propose_contract", "ask_scope_question"},
             {tool.name for tool in SPEC.tools},
         )
 
-
-class PackSelectionTest(unittest.TestCase):
-    def setUp(self) -> None:
-        self._directory = tempfile.TemporaryDirectory()
-        root = Path(self._directory.name)
-        for kind, pack_id in (
-            ("domain", "domain.medicine"),
-            ("genre", "genre.decision-brief"),
+    def test_the_prompt_contains_no_fixture_or_current_topic_examples(self) -> None:
+        for task_specific_name in (
+            "RSV",
+            "CRDT",
+            "LangChain",
+            "LangGraph",
+            "AutoGen",
+            "ReAct",
+            "AI Agent",
         ):
-            path = root / pack_id / "PACK.md"
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(pack_text(kind, pack_id), encoding="utf-8")
-        self.catalog = PackCatalog.discover(root)
-
-    def tearDown(self) -> None:
-        self._directory.cleanup()
-
-    def test_choosing_no_pack_is_valid_with_or_without_a_catalog(self) -> None:
-        for validate in (make_validator(), make_validator(self.catalog)):
-            with self.subTest(catalog=validate is not None):
-                self.assertIsNone(
-                    validate("propose_contract", {"contract_markdown": CONTRACT})
-                )
-
-    def test_a_valid_selection_is_accepted(self) -> None:
-        self.assertIsNone(
-            make_validator(self.catalog)(
-                "propose_contract",
-                {
-                    "contract_markdown": CONTRACT,
-                    "pack_refs": ["domain.medicine@1.0.0", "genre.decision-brief@1.0.0"],
-                },
-            )
-        )
-
-    def test_an_unknown_pack_is_answered_with_the_menu(self) -> None:
-        error = make_validator(self.catalog)(
-            "propose_contract",
-            {"contract_markdown": CONTRACT, "pack_refs": ["domain.astrology@1.0.0"]},
-        )
-
-        assert error is not None
-        self.assertIn("domain.medicine@1.0.0", error.allowed)
-        self.assertIn("不选任何包是合法选择", error.allowed)
-
-    def test_selecting_a_pack_with_none_installed_is_refused(self) -> None:
-        error = make_validator()(
-            "propose_contract",
-            {"contract_markdown": CONTRACT, "pack_refs": ["domain.medicine@1.0.0"]},
-        )
-
-        assert error is not None
-        self.assertIn("留空 pack_refs", error.allowed)
+            with self.subTest(task_specific_name=task_specific_name):
+                self.assertNotIn(task_specific_name, SYSTEM_PROMPT)
 
 
 class ContextTest(unittest.TestCase):
@@ -222,6 +192,17 @@ class ContextTest(unittest.TestCase):
         self.assertIn("不可改写", body)
         self.assertIn("原始委托正文。", body)
 
+    def test_the_runtime_date_anchors_relative_time(self) -> None:
+        body = architect_context_body(
+            "整理最新进展。",
+            source_access=["public_web"],
+            language="zh",
+            as_of_date="2031-04-05",
+        )
+
+        self.assertIn("2031-04-05", body)
+        self.assertIn("‘当前’‘最新’‘截至目前’均以此日期为准", body)
+
     def test_a_revision_demands_a_complete_replacement(self) -> None:
         body = architect_context_body(
             "请求",
@@ -234,50 +215,19 @@ class ContextTest(unittest.TestCase):
         self.assertIn("完整替代候选", body)
         self.assertIn("不要在旧正文后追加", body)
 
-    def test_the_pack_menu_has_one_wording_and_one_home(self) -> None:
-        """The same fact had been written two ways in two places.
-
-        Whatever a caller passes lands in the stable region of the prompt, and a
-        caller that passes nothing gets the one sentence -- not a second sentence
-        that means the same thing and re-fingerprints every call.
-        """
-
-        default = architect_context_body(
-            "x", source_access=["public_web"], language="zh"
-        )
-        self.assertIn(NO_PACKS, default)
-        self.assertEqual(
-            default,
-            architect_context_body(
-                "x", source_access=["public_web"], language="zh", pack_menu=""
-            ),
-        )
-        self.assertIn(
-            "domain.medicine@1.0.0",
-            architect_context_body(
-                "x",
-                source_access=["public_web"],
-                language="zh",
-                pack_menu="domain.medicine@1.0.0",
-            ),
-        )
-
     def test_every_later_call_extends_the_previous_prompt_rather_than_editing_it(
         self,
     ) -> None:
         """Sections are ordered stable-first, so the prompt only ever grows.
 
         This is what makes a vendor prefix cache usable across a study's plan
-        versions, and it is a property of the *order* alone -- if the pack menu
-        sat after the clarification exchange, one answer would move it and every
-        later call would pay full price for a prompt it had already sent.
+        versions, and it is a property of the *order* alone.
         """
 
         fixed = {
             "source_access": ["public_web"],
             "language": "zh",
             "constraints": ["只看公开资料"],
-            "pack_menu": "（不启用能力包）",
         }
         first = architect_context_body("原始委托。", **fixed)
         answered = architect_context_body(
@@ -407,28 +357,19 @@ class ApprovalCardTest(unittest.TestCase):
     def setUp(self) -> None:
         self.contract = build_contract(CONTRACT, supports={"Q3": ("Q2",)})
 
-    def test_the_card_shows_the_question_structure_and_pack_choice(self) -> None:
+    def test_the_card_shows_the_exact_direction_once(self) -> None:
         card = approval_card(self.contract)
 
-        self.assertIn("核心", card)
-        self.assertIn("支撑 Q2", card)
-        self.assertIn("（未使用能力包）", card)
-        self.assertIn("批准并开始研究", card)
-        self.assertIn("旧批准自动失效", card)
+        self.assertEqual(CONTRACT.strip(), card)
+        self.assertEqual(1, card.count("Q1. 对本院人群"))
+        self.assertNotIn("支撑 Q2", card)
+        self.assertNotIn("开始研究", card)
+        self.assertNotIn("调整方向", card)
 
-    def test_the_card_carries_the_exact_prose_the_approval_binds(self) -> None:
+    def test_the_card_carries_the_exact_prose_the_start_binds(self) -> None:
         card = approval_card(self.contract)
-        for title in ("目的与用途", "证据与分析方法", "自适应边界与已知限制"):
+        for title in ("研究目标", "范围与排除", "研究方式", "交付内容"):
             self.assertIn(title, card)
-
-    def test_a_selected_pack_is_shown_to_the_user(self) -> None:
-        contract = ResearchContract.decode(
-            build_contract(
-                CONTRACT, pack_refs=("domain.medicine@1.0.0",)
-            ).encode()
-        )
-        self.assertIn("domain.medicine@1.0.0", approval_card(contract))
-
 
 class ActionTranslationTest(unittest.TestCase):
     """One reader of the tool schema, because a second one drifted.
@@ -460,7 +401,7 @@ class ActionTranslationTest(unittest.TestCase):
         with self.assertRaisesRegex(ArtifactValidationError, "must be an object"):
             contract_from_action(arguments)
         # And the Architect sees it as something it can fix in one turn.
-        error = make_validator(None)("propose_contract", arguments)
+        error = make_validator()("propose_contract", arguments)
         self.assertIsNotNone(error)
         self.assertIn("question_supports", error.problem)
 

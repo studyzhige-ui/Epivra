@@ -216,11 +216,9 @@ class TokenUsage:
     """What one provider call actually consumed.
 
     Recorded because a research system that cannot say what it spent cannot be
-    held to a resource budget, and Phase 1e showed the resource axis is invisible
-    inside any single run -- the hundredfold spread in yield per search only
-    appeared across runs.  ``cached_input_tokens`` is reported separately by
-    several vendors and is billed differently, so it is kept rather than folded
-    into the input total.
+    evaluated for resource use across runs.  ``cached_input_tokens`` is reported
+    separately by several vendors and is billed differently, so it is kept
+    rather than folded into the input total.
     """
 
     input_tokens: int = 0
@@ -407,7 +405,7 @@ class OpenAICompatibleClient:
     #: and enables ``stream`` together, because they are one decision.
     max_output_tokens: int = 16_000
     timeout_seconds: float = 600.0
-    transient_retries: int = 2
+    rate_limit_retries: int = 2
     client: httpx.AsyncClient | None = field(default=None, repr=False)
     sleep: Sleep = field(default=asyncio.sleep, repr=False)
     stream: bool = False
@@ -423,8 +421,8 @@ class OpenAICompatibleClient:
             raise ValueError("max_output_tokens must be positive")
         if self.timeout_seconds <= 0:
             raise ValueError("timeout_seconds must be positive")
-        if self.transient_retries < 0:
-            raise ValueError("transient_retries must be non-negative")
+        if self.rate_limit_retries < 0:
+            raise ValueError("rate_limit_retries must be non-negative")
         if self.max_output_tokens > STREAMING_THRESHOLD_TOKENS and not self.stream:
             raise ValueError(
                 f"max_output_tokens={self.max_output_tokens} requires stream=True; "
@@ -461,30 +459,27 @@ class OpenAICompatibleClient:
         owns_client = self.client is None
         client = self.client or httpx.AsyncClient(timeout=self.timeout_seconds)
         try:
-            for attempt in range(self.transient_retries + 1):
+            for attempt in range(self.rate_limit_retries + 1):
                 try:
                     response = await self._post(client, payload)
                 except (httpx.TimeoutException, httpx.NetworkError) as exc:
-                    if attempt >= self.transient_retries:
-                        raise ModelUnavailableError("model request unavailable") from exc
-                    await self.sleep(min(2**attempt, 8))
-                    continue
+                    # The provider may have completed a request whose response was
+                    # lost.  Only the outer operation ledger may decide what to do;
+                    # retrying here would be invisible to its at-most-once record.
+                    raise ModelUnavailableError("model request unavailable") from exc
                 if response.status_code in {401, 403}:
                     raise ModelAuthError(
                         f"model authentication failed with HTTP {response.status_code}"
                     )
                 if response.status_code == 429:
-                    if attempt >= self.transient_retries:
+                    if attempt >= self.rate_limit_retries:
                         raise ModelRateLimitError("model rate limit retry exhausted")
                     await self.sleep(min(2**attempt, 8))
                     continue
                 if response.status_code >= 500:
-                    if attempt >= self.transient_retries:
-                        raise ModelUnavailableError(
-                            f"model unavailable with HTTP {response.status_code}"
-                        )
-                    await self.sleep(min(2**attempt, 8))
-                    continue
+                    raise ModelUnavailableError(
+                        f"model unavailable with HTTP {response.status_code}"
+                    )
                 if response.status_code >= 400:
                     reason = _redacted_error(response)
                     overflow = context_overflow_problem(reason)

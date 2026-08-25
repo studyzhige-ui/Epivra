@@ -8,6 +8,7 @@ import httpx
 from deep_research_agent.model import (
     ModelAuthError,
     ModelOutputTruncated,
+    ModelUnavailableError,
     OpenAICompatibleClient,
     TokenUsage,
     ToolSpec,
@@ -82,7 +83,7 @@ class DeepSeekTransportTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual({"query": "q"}, reply.tool_calls[0].parsed_arguments())
         self.assertNotIn("secret", repr(model))
 
-    async def test_transient_rate_limit_is_retried_finitely(self) -> None:
+    async def test_rate_limit_is_retried_finitely(self) -> None:
         calls = 0
 
         async def handler(_request: httpx.Request) -> httpx.Response:
@@ -97,7 +98,7 @@ class DeepSeekTransportTest(unittest.IsolatedAsyncioTestCase):
 
         client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
         model = OpenAICompatibleClient(
-            "secret", client=client, transient_retries=1, sleep=no_sleep
+            "secret", client=client, rate_limit_retries=1, sleep=no_sleep
         )
         try:
             reply = await model.complete(
@@ -108,6 +109,46 @@ class DeepSeekTransportTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual("{}", reply.content)
         self.assertEqual(2, calls)
+
+    async def test_timeout_is_never_retried_inside_the_transport(self) -> None:
+        calls = 0
+
+        async def handler(_request: httpx.Request) -> httpx.Response:
+            nonlocal calls
+            calls += 1
+            raise httpx.ReadTimeout("response lost")
+
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        model = OpenAICompatibleClient(
+            "secret", client=client, rate_limit_retries=3, sleep=no_sleep
+        )
+        try:
+            with self.assertRaises(ModelUnavailableError):
+                await model.complete([{"role": "user", "content": "work"}])
+        finally:
+            await client.aclose()
+
+        self.assertEqual(1, calls)
+
+    async def test_server_error_is_never_retried_inside_the_transport(self) -> None:
+        calls = 0
+
+        async def handler(_request: httpx.Request) -> httpx.Response:
+            nonlocal calls
+            calls += 1
+            return httpx.Response(503)
+
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        model = OpenAICompatibleClient(
+            "secret", client=client, rate_limit_retries=3, sleep=no_sleep
+        )
+        try:
+            with self.assertRaises(ModelUnavailableError):
+                await model.complete([{"role": "user", "content": "work"}])
+        finally:
+            await client.aclose()
+
+        self.assertEqual(1, calls)
 
     async def test_auth_error_never_includes_upstream_body_or_key(self) -> None:
         async def handler(_request: httpx.Request) -> httpx.Response:

@@ -150,18 +150,12 @@ class ClassificationCompletenessTest(unittest.TestCase):
         self.assertEqual(set(), listed - present, "LAYERS names absent modules")
 
 
-class ReadmeDriftTest(unittest.TestCase):
-    """The README is the one doc that must describe only the current system.
-
-    It drifted the furthest of anything in the repo -- still presenting a
-    deleted role chain, a deleted revision protocol and a CLI that never
-    existed as current fact -- because it duplicated the architecture instead of
-    pointing at it, and the gate only ever read src/.
-    """
+class ActiveDocumentationTest(unittest.TestCase):
+    """Product documentation describes only the current system."""
 
     def test_the_current_readme_names_no_removed_concept(self) -> None:
         self.assertEqual(
-            [], [v.render() for v in gate.check_readme_describes_the_current_system()]
+            [], [v.render() for v in gate.check_active_docs_describe_current_system()]
         )
 
     def test_a_readme_naming_a_removed_concept_is_reported(self) -> None:
@@ -176,14 +170,14 @@ class ReadmeDriftTest(unittest.TestCase):
             try:
                 messages = [
                     v.message
-                    for v in gate.check_readme_describes_the_current_system()
+                    for v in gate.check_active_docs_describe_current_system()
                 ]
             finally:
                 gate.ROOT = original
 
         self.assertEqual(1, len(messages), messages)
         self.assertIn("Supervisor", messages[0])
-        self.assertIn("ARCHITECTURE.md", messages[0])
+        self.assertIn("removed concept", messages[0])
 
 
 class RealPackageTest(unittest.TestCase):

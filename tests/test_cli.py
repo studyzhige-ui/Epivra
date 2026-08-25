@@ -242,7 +242,7 @@ class PauseIsNotDeleteTest(unittest.IsolatedAsyncioTestCase):
 
 
 class PlanRevisionWorkspaceTest(unittest.IsolatedAsyncioTestCase):
-    """The approval page: approve, request changes, or come back later.
+    """The direction page: start, adjust, or come back later.
 
     Requesting changes used to build a longer request string and open a second
     study.  What the user experiences now is one study whose plan has versions,
@@ -254,7 +254,7 @@ class PlanRevisionWorkspaceTest(unittest.IsolatedAsyncioTestCase):
         service = mock.AsyncMock()
         service.task.side_effect = list(tasks)
         service.execution_summary.return_value = "deepseek/x / deepseek/y"
-        service.approval_card.return_value = "# 研究方案待您批准\n\n正文"
+        service.approval_card.return_value = "# 主题\n\n## 研究目标\n\n正文"
         workspace = Workspace(
             args=argparse.Namespace(database="", verbose=False),
             console=theme.console(file=io.StringIO()),
@@ -265,14 +265,15 @@ class PlanRevisionWorkspaceTest(unittest.IsolatedAsyncioTestCase):
         workspace.service = service
         return workspace, service
 
-    def test_the_approval_page_offers_request_changes_not_revise_the_brief(
+    def test_the_direction_page_uses_product_actions(
         self,
     ) -> None:
         workspace, _ = self._workspace([_task("awaiting_approval")])
         labels = dict(workspace._actions_for(_task("awaiting_approval")))
-        self.assertEqual("提出修改", labels["revise"])
+        self.assertEqual("调整方向", labels["revise"])
         self.assertEqual("稍后处理", labels["back"])
-        self.assertIn("批准", labels["approve"])
+        self.assertEqual("开始研究", labels["approve"])
+        self.assertNotIn("plan", labels)
 
     async def test_requesting_changes_revises_the_plan_on_the_same_task(self) -> None:
         first = _task("awaiting_approval", plan_id="ctr_v1", plan_version=1)
@@ -308,7 +309,7 @@ class PlanRevisionWorkspaceTest(unittest.IsolatedAsyncioTestCase):
         task = _task("awaiting_approval", plan_id="ctr_v1", plan_version=1)
         workspace, service = self._workspace([task])
         service.request_revision.side_effect = StalePlanError(
-            "当前研究方案已经发生变化。请查看最新方案后重新操作。"
+            "当前研究方向已经发生变化。请查看最新版本后重新操作。"
         )
         with mock.patch.object(
             prompts_module, "ask_text", mock.AsyncMock(return_value="改一下")
@@ -332,7 +333,7 @@ class PlanRevisionWorkspaceTest(unittest.IsolatedAsyncioTestCase):
     async def test_a_stale_approval_does_not_start_research(self) -> None:
         task = _task("awaiting_approval", plan_id="ctr_v1", plan_version=1)
         workspace, service = self._workspace([task])
-        service.approve.side_effect = StalePlanError("当前研究方案已经发生变化。")
+        service.approve.side_effect = StalePlanError("当前研究方向已经发生变化。")
 
         await workspace._approve_and_run(task)
 
@@ -347,26 +348,42 @@ class PlanRevisionWorkspaceTest(unittest.IsolatedAsyncioTestCase):
         task = _task("awaiting_approval", plan_id="ctr_v1", plan_version=1)
         workspace, service = self._workspace([task, task])
 
-        with mock.patch.object(
-            prompts_module, "choose", mock.AsyncMock(return_value="back")
-        ):
+        choose = mock.AsyncMock(return_value="back")
+        with mock.patch.object(prompts_module, "choose", choose):
             await workspace._task_detail(task.task_id)
 
+        service.approval_card.assert_awaited_once_with(task.task_id)
+        offered = dict(choose.await_args.args[1])
+        self.assertEqual({"approve", "revise", "back", "delete"}, set(offered))
         service.approve.assert_not_called()
         service.request_revision.assert_not_called()
         service.delete_research.assert_not_called()
         self.assertEqual("awaiting_approval", (await service.task(task.task_id)).state)
+
+    def test_the_contract_topic_renders_as_plain_text_not_a_heading_block(self) -> None:
+        workspace, _ = self._workspace([])
+        workspace._render_direction(
+            "# 跨领域研究主题\n\n## 重点问题\n\n"
+            "Q1. 需要回答的完整问题是什么？\n"
+            "Q2. 哪些事实会帮助回答核心问题？"
+        )
+
+        rendered = workspace.console.file.getvalue()
+        self.assertIn("跨领域研究主题", rendered)
+        self.assertIn("Q1.", rendered)
+        self.assertIn("Q2.", rendered)
+        self.assertNotIn("# 跨领域研究主题", rendered)
 
     async def test_the_page_names_the_version_once_there_is_more_than_one(
         self,
     ) -> None:
         workspace, _ = self._workspace([])
         self.assertEqual(
-            "研究方案",
+            "研究方向",
             workspace._plan_title(_task("awaiting_approval", plan_version=1)),
         )
         self.assertEqual(
-            "研究方案 · 第 3 版",
+            "研究方向 · 第 3 版",
             workspace._plan_title(_task("awaiting_approval", plan_version=3)),
         )
 
@@ -413,7 +430,7 @@ class ClarificationWorkspaceTest(unittest.IsolatedAsyncioTestCase):
             task.task_id, "clq_abc", "为选型。"
         )
         service.open_task.assert_not_called()
-        self.assertIn("研究方案已生成", workspace._receipt[1])
+        self.assertIn("研究方向已整理好", workspace._receipt[1])
 
     async def test_a_second_question_is_reported_as_another_question(self) -> None:
         service = mock.AsyncMock()
@@ -627,7 +644,7 @@ class ReplanWorkspaceTest(unittest.IsolatedAsyncioTestCase):
         actions = dict(workspace._actions_for(stranded))
         self.assertIn("replan", actions)
         self.assertNotIn("answer", actions)
-        self.assertEqual("重新生成研究方案", actions["replan"])
+        self.assertEqual("重新整理研究方向", actions["replan"])
 
     def test_a_task_with_a_question_offers_answering_not_replanning(self) -> None:
         workspace = self._workspace(mock.AsyncMock())
@@ -647,7 +664,7 @@ class ReplanWorkspaceTest(unittest.IsolatedAsyncioTestCase):
 
         service.replan.assert_awaited_once_with(stranded.task_id)
         service.open_task.assert_not_called()
-        self.assertIn("研究方案已生成", workspace._receipt[1])
+        self.assertIn("研究方向已整理好", workspace._receipt[1])
 
 
 class SettingsTest(unittest.TestCase):
@@ -747,7 +764,7 @@ class ActionMappingTest(unittest.TestCase):
     def test_awaiting_approval_can_approve_but_not_resume(self) -> None:
         keys = self._keys("awaiting_approval")
         self.assertIn("approve", keys)
-        self.assertIn("plan", keys)
+        self.assertNotIn("plan", keys)
         self.assertIn("revise", keys)
         self.assertNotIn("resume", keys)
         self.assertNotIn("report", keys)
@@ -896,7 +913,7 @@ class HomeSurfaceTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("new", self.blocked)
         self.assertTrue(self.blocked["new"])
         # And no research question is asked when none could be answered.
-        self.assertNotIn("今天想研究点什么", self.output.getvalue())
+        self.assertNotIn("直接输入一句话", self.output.getvalue())
 
     async def test_a_configured_install_shows_what_it_will_use(self) -> None:
         """The two model choices and the search sources, before anything is asked."""
@@ -933,12 +950,9 @@ class HomeSurfaceTest(unittest.IsolatedAsyncioTestCase):
         """No "type new first": a question typed at the prompt starts a study."""
 
         workspace = self._workspace([])
+        ask = mock.AsyncMock(return_value="调研 AI Agent 行业")
         with (
-            mock.patch.object(
-                prompts_module,
-                "ask_text",
-                mock.AsyncMock(return_value="调研 AI Agent 行业"),
-            ),
+            mock.patch.object(prompts_module, "ask_text", ask),
             mock.patch.object(
                 prompts_module, "choose", mock.AsyncMock(return_value="exit")
             ),
@@ -946,8 +960,9 @@ class HomeSurfaceTest(unittest.IsolatedAsyncioTestCase):
             action = await workspace.home()
         self.assertEqual("new", action)
         self.assertEqual("调研 AI Agent 行业", workspace._pending_request)
-        self.assertIn("今天想研究点什么", self.output.getvalue())
-        self.assertIn("给我一个主题", self.output.getvalue())
+        ask.assert_awaited_once_with("输入你想研究的主题或问题", multiline=False)
+        self.assertIn("直接输入一句话并按 Enter", self.output.getvalue())
+        self.assertIn("按 Esc 查看设置和其他选项", self.output.getvalue())
 
 
 class PromptContractTest(unittest.IsolatedAsyncioTestCase):

@@ -1,13 +1,11 @@
-"""The reporting transaction: evidence to a published, citable report.
+"""The reporting pipeline: evidence to a published, citable report.
 
-This is the segment the previous implementation never completed.  It ran nine
-live attempts, gathered 123 sources and 166 materials, and produced zero drafts.
-So the pipeline here is deliberately small and its liveness bound is explicit:
+The pipeline is deliberately small and its liveness bound is explicit:
 
     Analyst -> Author -> preflight -> baseline review
         -> at most one revision -> closure review -> render -> publish
 
-Exactly one automatic revision.  If closure still blocks, the transaction ends
+Exactly one automatic revision.  If closure still blocks, the reporting run ends
 and returns to the Lead rather than looping: an unbounded Author/Reviewer edge
 burns money without converging, and a Reviewer that can keep adding findings
 will keep adding findings.
@@ -42,44 +40,76 @@ from .operations import ExecutionIdentity, SqliteOperationLedger
 
 
 class ReportingHalted(RuntimeError):
-    """The transaction stopped and needs a Lead decision or human judgement."""
-
-
-#: Reviews one transaction may run: the baseline, plus the closure review the
-#: single automatic revision earns.  The pipeline below is straight-line code
-#: rather than a loop, so this names its round count instead of bounding it --
-#: which is what :func:`publication_blocked` reads to tell "the Reviewer's last
-#: word blocks and no revision remains" apart from "still mid-transaction".
-REVIEW_ROUNDS = 2
+    """The reporting run stopped and needs a Lead decision or human judgement."""
 
 
 async def publication_blocked(store: SqliteArtifactStore) -> bool:
     """Whether review has finally blocked publication, from committed facts only.
 
-    Three facts already on record answer this, so nothing new is stored: a
-    ``review_receipt`` exists **only** when a Reviewer approved, a
-    ``publication_receipt`` exists only when a report was published, and reviews
-    accumulate one per round.  Reviews at the round ceiling with no approval and
-    no publication is exactly "the Reviewer still blocks and the automatic
-    revision is spent".
+    The current report's lineage answers this, so nothing new is stored.  A
+    revised report names the blocked baseline report as its parent; reviews and
+    approval receipts each name the exact report they judged.  A blocked review
+    on both those report versions is exactly "the automatic revision is spent".
 
     A boolean field would have been a second account of the same truth -- and the
     one that could disagree with the artifacts, since the artifacts are what a
     later process reads after a crash.
 
-    Deliberately pessimistic in one window: a crash between a *second*
-    transaction's baseline block and its revision reads as blocked, because the
-    last recorded verdict does block.  Resuming re-runs from the ledger and the
-    state corrects itself, and both readings offer the user the same next step.
+    Reviews from an older report chain are irrelevant.  Counting them globally
+    made a new baseline look terminal merely because an earlier report had used
+    its revision.
     """
 
     view = await store.active_view()
     if view.head("publication_receipt") is not None:
         return False
-    return (
-        len(view.active("review")) >= REVIEW_ROUNDS
-        and not view.active("review_receipt")
-    )
+    report_ref = view.head("report")
+    if report_ref is None or await approved_review_receipt(store, report_ref):
+        return False
+    if not await _reviews_for_report(store, report_ref):
+        return False
+
+    report = await store.get(report_ref)
+    prior_reports = []
+    for parent_ref in report.parent_refs:
+        parent = await store.get(parent_ref)
+        if parent.kind == "report":
+            prior_reports.append(parent_ref)
+    for parent_ref in prior_reports:
+        if await _reviews_for_report(
+            store, parent_ref
+        ) and not await approved_review_receipt(store, parent_ref):
+            return True
+    return False
+
+
+async def approved_review_receipt(
+    store: SqliteArtifactStore, report_ref: str
+) -> str:
+    """The active approval proof for one exact report, or an empty string."""
+
+    view = await store.active_view()
+    for receipt_ref in reversed(view.active("review_receipt")):
+        receipt = await store.get(receipt_ref)
+        if report_ref not in receipt.parent_refs:
+            continue
+        for parent_ref in receipt.parent_refs:
+            parent = await store.get(parent_ref)
+            if parent.kind == "review" and report_ref in parent.parent_refs:
+                return receipt_ref
+    return ""
+
+
+async def _reviews_for_report(
+    store: SqliteArtifactStore, report_ref: str
+) -> tuple[str, ...]:
+    view = await store.active_view()
+    linked: list[str] = []
+    for review_ref in view.active("review"):
+        review = await store.get(review_ref)
+        if report_ref in review.parent_refs:
+            linked.append(review_ref)
+    return tuple(linked)
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,7 +125,7 @@ class ReviewRound:
 
 @dataclass
 class ReportingOutcome:
-    """Everything the transaction produced, whether or not it published."""
+    """Everything the reporting run produced, whether or not it published."""
 
     synthesis_ref: str = ""
     commission_ref: str = ""
@@ -203,10 +233,14 @@ async def run_reporting(
         revised_ref = await _commit_report(store, revision, report_ref)
         outcome.report_refs.append(revised_ref)
 
-        dispositions = tuple(
-            str(item.get("response", ""))
+        disposition_by_index = {
+            int(item.get("finding_index", 0)): str(item.get("response", ""))
             for item in revision.arguments.get("finding_dispositions", ())
             if isinstance(item, dict)
+        }
+        dispositions = tuple(
+            disposition_by_index[index]
+            for index in range(1, len(verdict.findings) + 1)
         )
         closure = await _review(
             store, ledger, runtimes["reviewer"], task_id, contract, evidence,
@@ -355,6 +389,12 @@ async def _publish(
     a document with an unverifiable claim in it.
     """
 
+    receipt_ref = await approved_review_receipt(store, report_ref)
+    if not receipt_ref:
+        raise ReportingHalted(
+            "the current report has no approval receipt bound to its review"
+        )
+
     rendered = render_citations(
         await store.body(report_ref),
         evidence.handles,
@@ -363,7 +403,7 @@ async def _publish(
     publication = await store.put(
         kind="publication_receipt",
         body=rendered.markdown,
-        parent_refs=(report_ref,),
+        parent_refs=_sorted((report_ref, receipt_ref)),
         provenance=Provenance(producer="trust-plane"),
     )
     return publication.artifact_id, rendered
@@ -374,9 +414,9 @@ def _sorted(refs: Sequence[str]) -> tuple[str, ...]:
 
 
 __all__ = [
-    "REVIEW_ROUNDS",
     "ReportingHalted",
     "ReportingOutcome",
+    "approved_review_receipt",
     "publication_blocked",
     "synthesise",
     "ReviewRound",

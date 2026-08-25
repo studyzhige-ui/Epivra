@@ -4,26 +4,9 @@ A **harness over the product**, not a second implementation of it.  It collects 
 fixture, hands it to :class:`~deep_research_agent.service.ResearchService`, and
 renders what came back; every governance decision belongs to the service.
 
-That distinction was the whole problem with the previous version.  This file used
-to carry its own `_govern`, `_report`, `_commit_memory` and Architect call --
-roughly two hundred lines shadowing `service.py`, whose opening line reads "An
-interface must not reimplement governance."  The two had already drifted:
-
-* a non-publishing outcome was reported as ``halted`` here and derived as
-  ``paused`` there, and the Phase 1e terminal states were recorded by *this* file;
-* the stall rule was `wave.stalled()` here and an inline copy there, each with its
-  own tolerance constant;
-* the runaway ceiling was ``--max-waves`` here and ``RUNAWAY_WAVE_GUARD`` there,
-  the same number written twice;
-* execution configuration was never frozen here, so a fixture database could not
-  say which models produced it.
-
-Everything a calibration run needs -- the pre-registered assertions, the terminal
-state, the published file -- is presentation, and that is all this file does now.
-
-``--max-waves`` is gone with the duplicate constant it configured.  The ceiling is
-runaway protection rather than a research budget (§10.6), so one value belongs to
-the runtime; no observed run has approached it.
+The harness owns only fixture assertions and rendering.  Task state, stall
+detection, runaway protection, execution snapshots, reporting, and memory all
+come from the same service used by the product.
 
 Usage::
 
@@ -91,6 +74,16 @@ async def run(args: argparse.Namespace) -> int:
         )
         await service.setup()
 
+        # Announced before the call, not after.  The Architect is the longest
+        # single request in a run -- a reasoning-tier model on a cold prompt takes
+        # minutes -- and printing only on completion left the screen silent through
+        # all of it, which is indistinguishable from a hang.  Worse, the operation
+        # is `in_flight` during that window: someone who reads the silence as a
+        # hang and interrupts it turns a working run into one that needs manual
+        # reconciliation, because whether the provider ran is then unknowable.
+        print("\n[architect] 正在把委托转成方案（reasoning 档，通常 1-3 分钟）…")
+        print("            这次调用已在账本里；请勿中断，否则需要人工对账。")
+
         task = await service.open_task(
             fixture.request,
             language="zh",
@@ -112,12 +105,16 @@ async def run(args: argparse.Namespace) -> int:
         print("\n" + await service.approval_card(task.task_id))
 
         if not args.approve:
-            print("\n（未传 --approve，停在审批点。）")
+            print("\n（未传 --approve，停在研究方向确认页。）")
             return _verdict(fixture, task.state)
 
         await service.approve(task.task_id, task.plan_id)
         print(f"\n[approved] {task.plan_id}")
         print(f"[providers] {', '.join(config.search_providers)}")
+        # Governance emits an event per wave, but the Lead's own decision between
+        # them is another multi-minute reasoning call with nothing to show.  Saying
+        # so once is cheaper than a reader wondering again.
+        print("[lead] 开始治理；每个批次之间的 Lead 决策同样需要几分钟。\n")
 
         try:
             state = await service.advance(task.task_id, listen=report)

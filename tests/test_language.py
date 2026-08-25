@@ -27,7 +27,7 @@ from deep_research_agent.sources import BodyRef, SourceSnapshotBody
 
 BODY = (
     "## 问题模型\n\n"
-    "### Q1. Does classroom air cleaning reduce respiratory infection spread?\n"
+    "- Q1. Does classroom air cleaning reduce respiratory infection spread?\n"
 )
 
 #: Every role that emits prose a human or a later role reads.

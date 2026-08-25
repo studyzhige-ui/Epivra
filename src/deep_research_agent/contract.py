@@ -27,25 +27,23 @@ from typing import Literal
 
 from .sources import ArtifactValidationError
 
-#: The six semantic blocks a Contract must cover.  They are fixed because they
-#: are the questions a reader of a research protocol needs answered, not because
-#: they are a workflow: purpose, questions, scope, method, deliverable, limits.
+#: The five user-facing blocks a Contract must cover.  They are fixed because
+#: these are the facts a user needs in order to decide whether the Agent is about
+#: to research the right thing: goal, questions, scope, approach, and delivery.
 CONTRACT_SECTIONS: tuple[str, ...] = (
-    "purpose_and_use",
-    "question_model",
-    "scope_and_definitions",
-    "evidence_and_method",
-    "deliverable_and_assurance",
-    "adaptation_and_limits",
+    "research_goal",
+    "focus_questions",
+    "scope_and_exclusions",
+    "research_approach",
+    "deliverable",
 )
 
 _SECTION_TITLES: Mapping[str, str] = {
-    "purpose_and_use": "目的与用途",
-    "question_model": "问题模型",
-    "scope_and_definitions": "范围与定义",
-    "evidence_and_method": "证据与分析方法",
-    "deliverable_and_assurance": "交付与保证",
-    "adaptation_and_limits": "自适应边界与已知限制",
+    "research_goal": "研究目标",
+    "focus_questions": "重点问题",
+    "scope_and_exclusions": "范围与排除",
+    "research_approach": "研究方式",
+    "deliverable": "交付内容",
 }
 
 QuestionRole = Literal["primary", "supporting"]
@@ -57,6 +55,7 @@ _QUESTION_LINE_RE = re.compile(
     r"^\s{0,3}(?:#{1,6}\s*)?(?:[-*]\s*)?(Q[1-9][0-9]?)\s*[.:、．]\s*(.+?)\s*$"
 )
 _SECTION_HEADING_RE = re.compile(r"^\s{0,3}#{1,6}\s+(.+?)\s*#*\s*$")
+_TITLE_HEADING_RE = re.compile(r"^\s{0,3}#\s+(.+?)\s*#*\s*$")
 
 
 def _canonical_json(payload: object) -> str:
@@ -211,7 +210,7 @@ class QuestionModel:
 
         This is the mechanical half of "no orphan topics".  Whether a question
         genuinely informs the user's decision stays a semantic judgment for the
-        Architect and Protocol Assurer; the runtime only rejects a support graph
+        Architect and the user; the runtime only rejects a support graph
         that cannot reach Q1 at all.
         """
 
@@ -285,7 +284,7 @@ class QuestionModel:
 
 #: Source families a Commission may authorise.  This is a *permission* the trust
 #: plane enforces, not advice: an Investigator cannot reach a family the user did
-#: not grant, regardless of what any prompt or pack suggests.
+#: not grant, regardless of what any prompt suggests.
 SourceAccess = Literal["public_web", "user_files", "local_only"]
 
 SOURCE_ACCESS: tuple[SourceAccess, ...] = ("public_web", "user_files", "local_only")
@@ -444,7 +443,6 @@ class ResearchContract:
 
     body_markdown: str
     question_model: QuestionModel
-    pack_refs: tuple[str, ...] = ()
     supports: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
     #: The language the deliverable is written in, carried structurally rather
     #: than only as prose in the delivery block.  Roles used to have "write in
@@ -469,10 +467,6 @@ class ResearchContract:
         _require_text(self.language, "contract language")
         if not isinstance(self.question_model, QuestionModel):
             raise ArtifactValidationError("question_model must be a QuestionModel")
-        for ref in self.pack_refs:
-            _require_text(ref, "pack ref")
-        if len(set(self.pack_refs)) != len(self.pack_refs):
-            raise ArtifactValidationError("pack_refs must not contain duplicates")
 
     @property
     def labels(self) -> tuple[str, ...]:
@@ -480,37 +474,55 @@ class ResearchContract:
 
         return self.question_model.labels
 
+    @property
+    def title(self) -> str:
+        """The visible research topic, derived from the first non-empty line."""
+
+        for line in self.body_markdown.splitlines():
+            if not line.strip():
+                continue
+            match = _TITLE_HEADING_RE.match(line)
+            if match is not None:
+                return match.group(1).strip()
+            return ""
+        return ""
+
     def resolve(self, labels: Iterable[str]) -> tuple[ResearchQuestion, ...]:
         """Resolve selected question labels against this exact Contract."""
 
         return self.question_model.resolve(labels)
 
     def missing_sections(self) -> tuple[str, ...]:
-        """Which of the six required blocks have no heading in the prose.
+        """Which required blocks are absent or contain no content.
 
-        The six blocks are the questions a reader of a research protocol needs
-        answered, so their absence is a mechanical defect the Architect can be
-        told about and correct -- unlike whether the prose in them is any good,
-        which is the Assurer's and the user's judgment.
+        The five blocks are the facts a user needs to confirm the direction, so
+        their absence is a mechanical defect the Architect can correct -- unlike
+        whether the proposed direction is right, which is the user's judgment.
         """
 
-        headings = {
-            match.group(1).strip()
-            for line in self.body_markdown.splitlines()
-            if (match := _SECTION_HEADING_RE.match(line)) is not None
-        }
+        by_title: dict[str, bool] = {}
+        current = ""
+        required_titles = set(_SECTION_TITLES.values())
+        for line in self.body_markdown.splitlines():
+            heading = _SECTION_HEADING_RE.match(line)
+            if heading is not None and heading.group(1).strip() in required_titles:
+                current = heading.group(1).strip()
+                by_title.setdefault(current, False)
+                continue
+            if current and line.strip():
+                by_title[current] = True
+
         return tuple(
             section
             for section in CONTRACT_SECTIONS
-            if _SECTION_TITLES[section] not in headings
+            if not by_title.get(_SECTION_TITLES[section], False)
         )
 
     def encode(self) -> str:
         """Canonical body text.
 
         The support graph is stored because it is the one part of the question
-        model that prose cannot express, and the pack selection because it is a
-        decision the user approved rather than something re-derivable later.
+        model that prose cannot express.
         """
 
         return _canonical_json(
@@ -520,7 +532,6 @@ class ResearchContract:
                     label: list(targets)
                     for label, targets in sorted(self.supports.items())
                 },
-                "packs": list(self.pack_refs),
                 "language": self.language,
             }
         )
@@ -537,13 +548,15 @@ class ResearchContract:
         """
 
         value = json.loads(body)
+        # Older Contract bodies may contain a ``packs`` member.  It never affected
+        # runtime behaviour, so reading it requires no replacement state: the
+        # artifact body and hash remain intact while this projection ignores it.
         return build_contract(
             str(value["markdown"]),
             supports={
                 str(label): tuple(str(item) for item in targets)
                 for label, targets in dict(value.get("supports", {})).items()
             },
-            pack_refs=tuple(str(item) for item in value.get("packs", ())),
             # Contracts written before the language was carried structurally
             # were all Chinese deliverables, so that is the honest default.
             language=str(value.get("language") or "zh"),
@@ -636,7 +649,6 @@ def build_contract(
     body_markdown: str,
     *,
     supports: Mapping[str, Sequence[str]] | None = None,
-    pack_refs: Iterable[str] = (),
     language: str = "zh",
     strict: bool = True,
 ) -> ResearchContract:
@@ -651,7 +663,6 @@ def build_contract(
     return ResearchContract(
         body_markdown=body_markdown,
         question_model=build_question_model(body_markdown, supports, strict=strict),
-        pack_refs=tuple(pack_refs),
         supports={
             label: tuple(targets) for label, targets in dict(supports or {}).items()
         },

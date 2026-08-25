@@ -1,4 +1,4 @@
-"""Drive the reporting transaction over a recovered evidence database.
+"""Drive the reporting pipeline over a recovered evidence database.
 
 A developer harness, not a product path: it runs only the writing—review—publish
 segment against an evidence base that already exists, so the Author and Reviewer
@@ -38,7 +38,7 @@ from deep_research_agent.contract import build_contract  # noqa: E402
 from deep_research_agent.operations import SqliteOperationLedger  # noqa: E402
 from deep_research_agent.reporting import run_reporting  # noqa: E402
 
-#: The reporting transaction touches only these three; building the others
+#: The reporting pipeline touches only these three; building the others
 #: would demand credentials the segment never uses.
 REPORTING_ROLES: tuple[Role, ...] = ("analyst", "author", "reviewer")
 
@@ -101,7 +101,7 @@ async def drive(
         print(render_role_models(load_config(environ), REPORTING_ROLES))
         runtimes = build_runtimes(environ, roles=REPORTING_ROLES)
 
-        print("\nrunning reporting transaction...")
+        print("\nrunning reporting pipeline...")
         outcome = await run_reporting(
             store,
             ledger,

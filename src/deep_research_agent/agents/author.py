@@ -153,7 +153,7 @@ def make_validator(
     """Validate a submission against the handles this invocation actually exposed.
 
     Checking handles here rather than at publication gives the Author a
-    correctable error instead of a failed transaction, while still making an
+    correctable error instead of a failed publishing run, while still making an
     invented citation impossible.
     """
 
@@ -191,17 +191,29 @@ def make_validator(
             )
         if name == "submit_revised_report":
             responses = arguments.get("finding_dispositions", ())
-            indexes = {
+            ordered_indexes = [
                 int(item.get("finding_index", 0))
                 for item in responses
                 if isinstance(item, dict)
-            }
+            ]
+            indexes = set(ordered_indexes)
             expected = set(range(1, finding_count + 1))
             missing = sorted(expected - indexes)
-            if missing:
+            unexpected = sorted(indexes - expected)
+            duplicates = sorted(
+                index for index in indexes if ordered_indexes.count(index) > 1
+            )
+            if missing or unexpected or duplicates:
+                problems: list[str] = []
+                if missing:
+                    problems.append(f"阻断项 {missing} 没有对应处置")
+                if unexpected:
+                    problems.append(f"不存在阻断项 {unexpected}")
+                if duplicates:
+                    problems.append(f"阻断项 {duplicates} 被重复处置")
                 return ToolError(
                     action=name,
-                    problem=f"发布阻断项 {missing} 没有对应处置",
+                    problem="；".join(problems),
                     allowed="逐项处置全部阻断项，不能静默忽略",
                 )
         return None

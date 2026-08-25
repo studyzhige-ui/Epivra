@@ -25,8 +25,6 @@ from typing import Literal
 #: long-form synthesis on one side, bounded well-specified work on the other.
 ModelTier = Literal["reasoning", "fast"]
 
-MODEL_TIERS: tuple[ModelTier, ...] = ("reasoning", "fast")
-
 #: The wire format a vendor speaks.  Adding a protocol means adding a transport,
 #: not just a registry row -- which is exactly why it is recorded explicitly.
 LlmProtocol = Literal["openai_compatible", "anthropic"]
@@ -197,7 +195,6 @@ __all__ = [
     "LLM_PROVIDERS",
     "LLM_PROVIDER_BY_NAME",
     "MODEL_EFFORTS",
-    "MODEL_TIERS",
     "LlmProviderSpec",
     "ModelEffort",
     "ModelLimits",

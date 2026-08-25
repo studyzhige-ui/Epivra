@@ -22,6 +22,7 @@ import aiosqlite
 
 import deep_research_agent.service as service_module
 from deep_research_agent.agents import architect as architect_module
+from deep_research_agent.agents import lead as lead_module
 from deep_research_agent.approval import (
     ApprovalBody,
     ApprovalError,
@@ -37,12 +38,16 @@ from deep_research_agent.model import (
     ModelReply,
     ModelToolCall,
 )
-from deep_research_agent.operations import ExecutionIdentity
+from deep_research_agent.operations import (
+    ExecutionIdentity,
+    OperationReconciliationRequired,
+)
 from deep_research_agent.reporting import RoleRuntime
 from deep_research_agent.service import (
     Event,
     ResearchService,
     new_task_id,
+    project_task_state,
 )
 from deep_research_agent.sources import (
     ArtifactValidationError,
@@ -51,32 +56,63 @@ from deep_research_agent.sources import (
     SourceSnapshotBody,
     locate_quote,
 )
+from deep_research_agent.wave import BranchOutcome, WaveOutcome
 
 CONTRACT_BODY = """\
-## 目的与用途
+# CRDT 与 OT 技术选型
+
+## 研究目标
 
 为工程团队判断协同编辑算法选型。不支持具体实现方案。
 
-## 问题模型
+## 重点问题
 
-Q1. CRDT 与 OT 在核心机制上的本质差异是什么，各自适合什么场景？
+- Q1. CRDT 与 OT 在核心机制上的本质差异是什么，各自适合什么场景？
 
-## 范围与定义
+## 范围与排除
 
 对象：两类算法的机制层面。默认假设：不评测具体实现的性能。
 
-## 证据与分析方法
+## 研究方式
 
 以一手论文与官方文档为主，主动寻找反例与失败案例。
 
-## 交付与保证
+## 交付内容
 
-面向工程团队的技术说明，需引用可追溯来源，接受独立审查。
-
-## 自适应边界与已知限制
-
-Lead 可调整检索顺序；改变 Q1 需重新审批。已知限制：无公开可比性能数据。
+面向工程团队的中文技术说明，包含机制比较和条件化选择建议。
 """
+
+
+class TaskProjectionTest(unittest.TestCase):
+    """Task state is a disposable view over facts, never another stored value."""
+
+    def _project(self, **changes: object) -> str:
+        facts = {
+            "has_contract": True,
+            "has_publication": False,
+            "decision": "approved",
+            "needs_reconciliation": False,
+            "review_blocked": False,
+            "governed": False,
+            "materials": 0,
+            "sources": 0,
+        }
+        facts.update(changes)
+        return project_task_state(**facts)  # type: ignore[arg-type]
+
+    def test_publication_is_terminal_even_if_an_old_operation_is_frozen(self) -> None:
+        self.assertEqual(
+            "published",
+            self._project(has_publication=True, needs_reconciliation=True),
+        )
+
+    def test_an_unknown_provider_outcome_blocks_approved_research(self) -> None:
+        self.assertEqual(
+            "needs_reconciliation", self._project(needs_reconciliation=True)
+        )
+
+    def test_an_untouched_approved_task_is_researching(self) -> None:
+        self.assertEqual("researching", self._project())
 
 SYNTHESIS = (
     "## Q1 机制差异\n\nCRDT 用可交换的数据类型换取无中心排序；OT 用变换函数换取更小的"
@@ -225,6 +261,21 @@ class LifecycleTest(ServiceFixture):
         await self.service.approve(task.task_id, task.plan_id)
         self.assertEqual("researching", (await self.service.task(task.task_id)).state)
 
+    async def test_a_published_task_cannot_be_advanced_again(self) -> None:
+        self._use(_architect_reply())
+        task = await self._open()
+        await self.service.approve(task.task_id, task.plan_id)
+        store = self.service._store(task.task_id)  # noqa: SLF001
+        report = await store.put(kind="report", body="# 已发布报告")
+        await store.put(
+            kind="publication_receipt",
+            body="# 已发布报告",
+            parent_refs=(report.artifact_id,),
+        )
+
+        with self.assertRaisesRegex(ApprovalError, "published"):
+            await self.service.advance(task.task_id)
+
     async def test_a_clarification_leaves_no_contract_to_approve(self) -> None:
         self._use(_clarify_reply())
         events: list[Event] = []
@@ -234,12 +285,13 @@ class LifecycleTest(ServiceFixture):
         with self.assertRaisesRegex(ValueError, "no Contract"):
             await self.service.approve(task.task_id, "")
 
-    async def test_the_approval_card_is_what_the_user_reads(self) -> None:
+    async def test_the_direction_card_is_what_the_user_reads(self) -> None:
         self._use(_architect_reply())
         task = await self._open()
         card = await self.service.approval_card(task.task_id)
-        self.assertIn("问题结构", card)
-        self.assertIn("批准并开始研究", card)
+        self.assertIn("# CRDT 与 OT 技术选型", card)
+        self.assertEqual(1, card.count("Q1. CRDT 与 OT"))
+        self.assertNotIn("开始研究", card)
 
     async def test_reopening_the_same_commission_does_not_re_ask_the_architect(
         self,
@@ -884,11 +936,11 @@ class PlanLifecycleTest(ServiceFixture):
                 first.task_id, stale_plan, "再换一次。"
             )
 
-    async def test_an_approved_plan_cannot_then_be_revised(self) -> None:
+    async def test_a_started_direction_cannot_then_be_revised(self) -> None:
         self._use(_architect_reply())
         task = await self._open()
         await self.service.approve(task.task_id, task.plan_id)
-        with self.assertRaisesRegex(ApprovalError, "已经批准"):
+        with self.assertRaisesRegex(ApprovalError, "已经开始执行"):
             await self.service.request_revision(
                 task.task_id, task.plan_id, "再改一下。"
             )
@@ -1474,6 +1526,95 @@ class ArchitectContextTest(ServiceFixture):
         self.assertEqual(["plan", "plan", "revision"], built)
 
 
+class WaveMemoryTest(ServiceFixture):
+    async def test_a_later_service_sees_paths_and_limits_but_not_a_wave_log(
+        self,
+    ) -> None:
+        model = self._use(
+            _architect_reply(),
+            ModelReply(
+                tool_calls=(
+                    _call(
+                        "commission_wave",
+                        wave_intent="确认公开资料是否包含可比较的性能数据。",
+                        assignments=[
+                            {
+                                "question_labels": ["Q1"],
+                                "focus": "寻找同一负载下的性能对照数据",
+                                "why_it_matters": "决定能否给出性能层面的选型建议",
+                                "evidence_sought": "一手评测或官方基准",
+                            }
+                        ],
+                        memory_snapshot={
+                            "decisions": ["先验证是否存在可比数据。"],
+                            "open_intents": ["决定能否比较性能。"],
+                        },
+                    ),
+                )
+            ),
+            ModelReply(
+                tool_calls=(
+                    _call(
+                        "request_user_input",
+                        question="是否接受只给出机制层面的比较结论？",
+                        reason="公开资料缺少同一负载的可比性能数据，需要确认交付边界。",
+                    ),
+                )
+            ),
+            ModelReply(
+                tool_calls=(
+                    _call(
+                        "request_user_input",
+                        question="是否接受只给出机制层面的比较结论？",
+                        reason="恢复后仍应保留已经尝试的路径，再决定是否改变交付边界。",
+                    ),
+                )
+            ),
+        )
+        task = await self._open()
+        await self.service.approve(task.task_id, task.plan_id)
+        outcome = WaveOutcome(
+            intent="确认公开资料是否包含可比较的性能数据。",
+            branches=(
+                BranchOutcome(
+                    index=1,
+                    focus="寻找同一负载下的性能对照数据",
+                    status="completed",
+                    summary="没有性能排序证据；这是证据判断，不应复制进记忆。",
+                    attempted_paths=("官方基准", "同行评议评测"),
+                    limitations=("只有不同实现、不同负载下的结果",),
+                ),
+            ),
+        )
+
+        with mock.patch.object(
+            service_module, "run_wave", new=mock.AsyncMock(return_value=outcome)
+        ):
+            await self.service.advance(task.task_id)
+
+        store = self.service._store(task.task_id)  # noqa: SLF001
+        memory_ref = (await store.active_view()).head("research_memory")
+        assert memory_ref is not None
+        memory = lead_module.MemoryBody.decode(await store.body(memory_ref))
+        rendered = memory.render()
+        self.assertIn("官方基准", rendered)
+        self.assertIn("同行评议评测", rendered)
+        self.assertIn("只有不同实现", rendered)
+        self.assertIn("先验证是否存在可比数据", rendered)
+        self.assertNotIn("没有性能排序证据", rendered)
+
+        reopened = ResearchService(
+            connection=self._connection, environ={"DEEPSEEK_API_KEY": "test-key"}
+        )
+        await reopened.setup()
+        await reopened.advance(task.task_id)
+
+        last_prompt = model.prompts[-1]
+        self.assertIn("官方基准", last_prompt)
+        self.assertIn("只有不同实现", last_prompt)
+        self.assertNotIn("没有性能排序证据", last_prompt)
+
+
 class ReviewHaltTest(ServiceFixture):
     """Review's final refusal is its own state, and it is derived.
 
@@ -1760,7 +1901,7 @@ class FrozenOperationTest(ServiceFixture):
         self._use(_architect_reply(), TimeoutError("no answer came back"))
         task = await self._open()
         await self.service.approve(task.task_id, task.plan_id)
-        with self.assertRaises(TimeoutError):
+        with self.assertRaises(OperationReconciliationRequired):
             await self.service.advance(task.task_id)
         return task.task_id
 
@@ -1773,11 +1914,9 @@ class FrozenOperationTest(ServiceFixture):
     async def test_it_is_not_offered_as_something_to_continue(self) -> None:
         """The whole point: resuming cannot work, so it must not be suggested."""
 
-        from deep_research_agent.cli.workspace import CONTINUABLE
-
         task_id = await self._freeze()
-        state = (await self.service.task(task_id)).state
-        self.assertNotIn(state, CONTINUABLE)
+        task = await self.service.task(task_id)
+        self.assertNotIn("resume", task.allowed_actions)
 
     async def test_it_survives_reopening_the_database(self) -> None:
         """Derived from the ledger, so a second service reaches the same answer."""

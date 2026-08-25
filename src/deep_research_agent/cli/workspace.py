@@ -13,8 +13,8 @@ Three rules hold this together:
 * **The session holds no state.**  Everything durable is in the artifact store
   and the ledger, so closing the terminal loses nothing and the next run picks up
   where this one stopped.
-* **The approval gate is never bypassed.**  Nothing expensive starts until the
-  user has read the plan and said yes.
+* **The direction gate is never bypassed.**  Nothing expensive starts until the
+  user has read the direction and chosen to start.
 
 Task IDs exist and are shown in details, but they are infrastructure identifiers.
 Nobody should have to read one to navigate.
@@ -34,8 +34,15 @@ from rich.markdown import Markdown
 
 from ..application import load_environment
 from ..config import load_config
+from ..contract import parse_question_lines
 from ..providers.llm import LLM_PROVIDERS
-from ..service import EXPECTED_FAILURES, Event, ResearchService, Task
+from ..service import (
+    EXPECTED_FAILURES,
+    Event,
+    ResearchService,
+    Task,
+    TaskAction,
+)
 from . import journal, prompts, theme
 from .i18n import CLI_LANGUAGES, Translator
 from .paths import config_file, settings_file
@@ -71,29 +78,6 @@ ACCESS_OPTIONS: tuple[tuple[str, str], ...] = (
     ("user_files", "access.user_files"),
     ("local_only", "access.local_only"),
 )
-
-#: What the research pipeline actually does, in order, for the progress view.
-#: Mapped from service events rather than guessed, so the timeline cannot claim
-#: a stage the run never reached.
-STAGES: tuple[tuple[str, str], ...] = (
-    ("baseline", "run.stage.baseline"),
-    ("breadth", "run.stage.breadth"),
-    ("focus", "run.stage.focus"),
-    ("analysis", "run.stage.analysis"),
-    ("writing", "run.stage.writing"),
-    ("review", "run.stage.review"),
-)
-
-#: Studies whose next step is to continue running.  ``halted`` belongs here for
-#: navigation while staying its own state in the list: review's refusal is not a
-#: pause, but what the user can do about it is the same -- hand it back to the
-#: Lead, which is what resuming does.
-#:
-#: ``needs_reconciliation`` is deliberately **not** here.  It is the one state
-#: where continuing cannot work: a frozen operation raises the same error on every
-#: attempt, so offering to resume would be inviting the user to retry forever.
-CONTINUABLE: tuple[str, ...] = ("paused", "researching", "halted")
-
 
 @dataclass(slots=True)
 class Workspace:
@@ -227,7 +211,7 @@ class Workspace:
             item for item in tasks if item.state == "clarification_requested"
         ]
         awaiting = [item for item in tasks if item.state == "awaiting_approval"]
-        paused = [item for item in tasks if item.state in CONTINUABLE]
+        paused = [item for item in tasks if "resume" in item.allowed_actions]
         frozen = [item for item in tasks if item.state == "needs_reconciliation"]
         done = [item for item in tasks if item.state == "published"]
 
@@ -296,9 +280,8 @@ class Workspace:
             # Nothing pending: the fastest useful thing is to accept a question
             # directly rather than make the user pick "new" from a list first.
             self.console.print()
-            self.console.print(f"  {self.t('home.prompt')}")
             theme.dim(self.console, self.t("home.prompt_hint"))
-            typed = await prompts.ask_text("", multiline=False)
+            typed = await prompts.ask_text(self.t("home.prompt"), multiline=False)
             if typed:
                 self._pending_request = typed
                 return "new"
@@ -344,7 +327,7 @@ class Workspace:
                 elif action == "approve":
                     await self._first_of("awaiting_approval")
                 elif action == "resume":
-                    await self._first_of(*CONTINUABLE)
+                    await self._first_with_action("resume")
                 elif action == "frozen":
                     await self._first_of("needs_reconciliation")
                 elif action == "report":
@@ -373,6 +356,15 @@ class Workspace:
         assert self.service is not None
         for task in await self.service.tasks():
             if task.state in states:
+                await self._task_detail(task.task_id)
+                return
+
+    async def _first_with_action(self, action: TaskAction) -> None:
+        """Open the first task whose fact projection permits ``action``."""
+
+        assert self.service is not None
+        for task in await self.service.tasks():
+            if action in task.allowed_actions:
                 await self._task_detail(task.task_id)
                 return
 
@@ -413,7 +405,6 @@ class Workspace:
                 created_at=_stamp(),
                 listen=self._collect,
             )
-        theme.dim(self.console, self.t("new.not_started"))
         await self._task_detail(task.task_id)
 
     def _render_defaults(self, defaults: ResearchDefaults) -> None:
@@ -685,6 +676,11 @@ class Workspace:
                 )
                 theme.dim(self.console, self.t("reconcile.body"))
 
+            if task.state == "awaiting_approval":
+                theme.rule_title(self.console, self._plan_title(task))
+                self._render_direction(await self.service.approval_card(task_id))
+                theme.dim(self.console, self.t("plan.read_these"))
+
             action = await prompts.choose("", self._actions_for(task))
             if action in (None, "back"):
                 return
@@ -710,73 +706,63 @@ class Workspace:
                     return
 
     def _actions_for(self, task: Task) -> list[tuple[str, str]]:
-        """Allowed actions come from the task's state, never from a fixed menu.
+        """Translate projected actions; the interface defines no action policy."""
 
-        This is the mapping the spec calls for: an awaiting-approval study cannot
-        be resumed, a completed one cannot be approved, and a running one offers
-        pause and delete as clearly different things.
-        """
-
-        options: list[tuple[str, str]] = []
-        if task.state == "awaiting_approval":
-            options += [
-                ("plan", self.t("action.view_plan")),
-                ("approve", self.t("action.approve_start")),
-                ("revise", self.t("action.request_changes")),
-                ("back", self.t("action.save_for_later")),
-                ("delete", self.t("action.delete_running")),
-            ]
-        elif task.state in CONTINUABLE:
-            options += [
-                ("resume", self.t("action.resume")),
-                ("plan", self.t("action.view_plan")),
-                ("delete", self.t("action.delete_running")),
-                ("back", self.t("action.back_workspace")),
-            ]
-        elif task.state == "published":
-            options += [
-                ("report", self.t("action.read_report")),
-                ("export", self.t("action.export_report")),
-                ("delete", self.t("action.delete_done")),
-                ("back", self.t("action.back_workspace")),
-            ]
-        elif task.state == "clarification_requested":
-            # Either a question is open, or planning failed before it produced
-            # one.  The second case used to offer only deletion, which stranded a
-            # study over a network blip.
-            options += [
-                ("answer", self.t("action.answer_clarification"))
-                if task.clarification_id
-                else ("replan", self.t("action.replan")),
-                ("back", self.t("action.save_for_later")),
-                ("delete", self.t("action.delete_running")),
-            ]
-        elif task.state == "needs_reconciliation":
-            # No resume offered, because resuming cannot work: the operation is
-            # frozen and every attempt raises the same error.  What the study needs
-            # is a person deciding what the provider actually did, so the page says
-            # that instead of presenting an action doomed to fail.
-            options += [
-                ("back", self.t("action.back_workspace")),
-                ("delete", self.t("action.delete_running")),
-            ]
-        else:
-            options += [
-                ("delete", self.t("action.delete_done")),
-                ("back", self.t("action.back_workspace")),
-            ]
-        return options
+        labels = {
+            "answer": "action.answer_clarification",
+            "approve": "action.approve_start",
+            "back": (
+                "action.save_for_later"
+                if task.state in {"awaiting_approval", "clarification_requested"}
+                else "action.back_workspace"
+            ),
+            "delete": (
+                "action.delete_done"
+                if task.state == "published"
+                else "action.delete_running"
+            ),
+            "export": "action.export_report",
+            "plan": "action.view_plan",
+            "report": "action.read_report",
+            "replan": "action.replan",
+            "resume": "action.resume",
+            "revise": "action.request_changes",
+        }
+        return [(action, self.t(labels[action])) for action in task.allowed_actions]
 
     async def _show_plan(self, task: Task) -> None:
         assert self.service is not None
         card = await self.service.approval_card(task.task_id)
         self.page(title=self._plan_title(task))
-        self.console.print(Markdown(card))
-        theme.dim(self.console, self.t("plan.read_these"))
-        theme.dim(self.console, self.t("new.not_started"))
-        # The card is long and the user has to read it before deciding, so this
-        # page waits for them rather than being replaced by the next menu.
+        self._render_direction(card)
+        # A direction from a running or paused study is read-only here.  A task
+        # waiting to start renders it directly on the decision page instead.
         await self.hold()
+
+    def _render_direction(self, markdown: str) -> None:
+        """Render the Contract topic predictably, then its exact remaining body.
+
+        Rich gives level-one Markdown headings a centred block treatment.  That
+        looked like a code block when copied from the terminal, so the one derived
+        topic is rendered as ordinary bold text.  No content is summarized or
+        rewritten; only the ``#`` presentation marker is consumed.
+        """
+
+        lines = markdown.strip().splitlines()
+        first = next((index for index, line in enumerate(lines) if line.strip()), -1)
+        heading = lines[first].lstrip() if first >= 0 else ""
+        if heading.startswith("# "):
+            self.console.print()
+            self.console.print(heading[2:].strip(), style="bold", markup=False)
+            del lines[first]
+        for index, line in enumerate(lines):
+            parsed = parse_question_lines(line)
+            if parsed:
+                label, text = parsed[0]
+                lines[index] = f"- {label}. {text}"
+        body = "\n".join(lines).strip()
+        if body:
+            self.console.print(Markdown(body))
 
     async def _approve_and_run(self, task: Task) -> None:
         assert self.service is not None
@@ -1120,9 +1106,7 @@ def run_workspace(args: argparse.Namespace) -> int:
 
 __all__ = [
     "ACCESS_OPTIONS",
-    "CONTINUABLE",
     "REPORT_LANGUAGES",
-    "STAGES",
     "Workspace",
     "run_workspace",
 ]

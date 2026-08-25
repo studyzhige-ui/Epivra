@@ -393,7 +393,6 @@ def investigator_context(
     known_claims: Sequence[str] = (),
     source_access: Sequence[str] = ("public_web",),
     local_sources: Sequence[str] = (),
-    pack_text: str = "",
 ) -> RoleContext:
     """One assignment's brief, and deliberately nothing about the wider task.
 
@@ -439,8 +438,6 @@ def investigator_context(
                 "\n".join(f"- {claim}" for claim in known_claims),
             )
         )
-    if pack_text.strip():
-        parts.append(pack_text.strip() + "\n")
     return RoleContext(
         role="investigator",
         purpose="在单个 Assignment 内发现并阅读候选来源",
@@ -455,7 +452,6 @@ def curator_context(
     assignment: str,
     candidates: Mapping[str, SourceSnapshotBody],
     notes: Mapping[str, str] | None = None,
-    pack_text: str = "",
 ) -> RoleContext:
     """Candidate snapshots plus the purpose they were gathered for.
 
@@ -486,8 +482,6 @@ def curator_context(
             "\n".join(lines) or "（没有候选来源）",
         ),
     ]
-    if pack_text.strip():
-        parts.append(pack_text.strip() + "\n")
     return RoleContext(
         role="curator",
         purpose="判断候选来源能否忠实、可定位地成为正式素材",

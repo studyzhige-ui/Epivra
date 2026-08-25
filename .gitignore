@@ -12,5 +12,6 @@ dist/
 .env.*
 !.env.example
 .deep-research-agent/
+.claude/settings.local.json
 artifacts/
 runs/

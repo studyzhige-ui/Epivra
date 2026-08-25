@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import tempfile
 import unittest
 from pathlib import Path
@@ -169,7 +170,7 @@ class UnknownOutcomeTest(LedgerFixture):
         async def send() -> str:
             raise TimeoutError("no response")
 
-        with self.assertRaises(TimeoutError):
+        with self.assertRaises(OperationReconciliationRequired):
             await run_once(self.ledger, request(), send)
 
         record = await self.ledger.get(request().operation_id())
@@ -181,7 +182,7 @@ class UnknownOutcomeTest(LedgerFixture):
         async def send() -> str:
             raise ConnectionResetError("mid-flight")
 
-        with self.assertRaises(ConnectionResetError):
+        with self.assertRaises(OperationReconciliationRequired):
             await run_once(self.ledger, request(), send)
 
         for _ in range(3):
@@ -192,7 +193,7 @@ class UnknownOutcomeTest(LedgerFixture):
         async def send() -> str:
             raise TimeoutError("unknown")
 
-        with self.assertRaises(TimeoutError):
+        with self.assertRaises(OperationReconciliationRequired):
             await run_once(self.ledger, request(), send)
 
         blocked = await self.ledger.pending_reconciliation("task-1")
@@ -204,7 +205,7 @@ class UnknownOutcomeTest(LedgerFixture):
             raise TimeoutError("unknown")
 
         for role in ("investigator", "curator"):
-            with self.assertRaises(TimeoutError):
+            with self.assertRaises(OperationReconciliationRequired):
                 await run_once(self.ledger, request(role=role), send)
 
         blocked = await self.ledger.pending_reconciliation("task-1")
@@ -217,6 +218,17 @@ class UnknownOutcomeTest(LedgerFixture):
         await run_once(self.ledger, request(), send)
         with self.assertRaisesRegex(OperationError, "already completed"):
             await self.ledger.flag_reconciliation(request().operation_id())
+
+    async def test_cancellation_propagates_after_freezing_the_unknown_call(self) -> None:
+        async def send() -> str:
+            raise asyncio.CancelledError
+
+        with self.assertRaises(asyncio.CancelledError):
+            await run_once(self.ledger, request(), send)
+
+        record = await self.ledger.get(request().operation_id())
+        assert record is not None
+        self.assertEqual("needs_reconciliation", record.status)
 
 
 class DecidedCapacityFailureTest(LedgerFixture):
@@ -299,7 +311,7 @@ class DecidedCapacityFailureTest(LedgerFixture):
         async def send() -> str:
             raise TimeoutError("no answer came back")
 
-        with self.assertRaises(TimeoutError):
+        with self.assertRaises(OperationReconciliationRequired):
             await run_once(
                 self.ledger, request(), send, capacity=(self.Truncated,)
             )
@@ -358,17 +370,30 @@ class RetryTest(LedgerFixture):
                 self.assertEqual("failed", failed.status)
                 self.assertFalse(failed.may_retry)
 
-    async def test_cancellation_is_its_own_terminal_state(self) -> None:
-        record = await self.ledger.reserve(request())
-        await self.ledger.mark_sent(record.operation_id)
-        cancelled = await self.ledger.fail(
-            record.operation_id, category="cancelled"
-        )
+class SingleFlightTest(LedgerFixture):
+    async def test_concurrent_callers_share_one_provider_send(self) -> None:
+        started = asyncio.Event()
+        release = asyncio.Event()
+        calls = 0
 
-        self.assertEqual("cancelled", cancelled.status)
-        self.assertTrue(cancelled.is_terminal)
-        with self.assertRaisesRegex(OperationError, "cancelled"):
-            await run_once(self.ledger, request(), _never_called)
+        async def send() -> str:
+            nonlocal calls
+            calls += 1
+            started.set()
+            await release.wait()
+            return "one outcome"
+
+        first = asyncio.create_task(run_once(self.ledger, request(), send))
+        await started.wait()
+        second = asyncio.create_task(run_once(self.ledger, request(), send))
+        await asyncio.sleep(0)
+        release.set()
+
+        self.assertEqual(
+            ["one outcome", "one outcome"], await asyncio.gather(first, second)
+        )
+        self.assertEqual(1, calls)
+        self.assertEqual({}, self.ledger._single_flights)  # noqa: SLF001
 
 
 class TransitionGuardTest(LedgerFixture):
@@ -430,10 +455,8 @@ async def _never_called() -> str:  # pragma: no cover - guards unreachable sends
 class SpendAccountingTest(LedgerFixture):
     """What the ledger records must be what was actually paid.
 
-    Phase 1e could not answer "what did that cost" at all: the table held no
-    token counts and no timestamps, so the resource axis had to be argued from
-    call counts and output characters. Both are now recorded, and the property
-    that makes the numbers trustworthy is that a replay adds nothing -- a
+    Token counts and timestamps make provider-reported usage measurable.  The
+    property that makes the numbers trustworthy is that a replay adds nothing -- a
     resumed task must not be billed twice in the report any more than it is
     billed twice by the provider.
     """

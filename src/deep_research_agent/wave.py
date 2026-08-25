@@ -37,6 +37,7 @@ from .context import (
 )
 from .contract import ResearchContract
 from .operations import (
+    OperationReconciliationRequired,
     OperationRequest,
     SqliteOperationLedger,
     run_once,
@@ -45,7 +46,6 @@ from .providers._http import (
     ProviderAuthError,
     ProviderQuotaError,
     ProviderRateLimitError,
-    ProviderUnavailableError,
     SourceReadError,
     UnsafeUrlError,
 )
@@ -67,18 +67,13 @@ from .tools import SearchRequest, SearchRouting
 #: no billable result.  Treating these as unknown outcomes would strand one
 #: dead link as a terminal state for the rest of the task.
 #:
-#: An exhausted quota belongs here for the same reason -- "payment required" means
-#: nothing was served.  It is currently unreachable through the broker, which
-#: catches every provider exception upstream and reports it as a failed attempt
-#: (:meth:`~deep_research_agent.tools.TransparentSearchBroker._call_provider`), so
-#: this list carries no weight on the search path.  It is listed anyway because the
-#: fetch path has no such catch, and because a reader should not have to discover
-#: that the classification is load-bearing in one direction only.
+#: Authentication, quota and rate-limit failures are reported by the broker as
+#: failed attempts rather than raised into this boundary.  They remain listed for
+#: the direct fetch path, which has no broker between the provider and the ledger.
 _UNBILLED_SEARCH = (
     ProviderAuthError,
     ProviderQuotaError,
     ProviderRateLimitError,
-    ProviderUnavailableError,
 )
 _UNBILLED_FETCH = (SourceReadError, UnsafeUrlError, *_UNBILLED_SEARCH)
 
@@ -698,6 +693,18 @@ async def run_wave(
     )
 
     outcomes: list[BranchOutcome] = []
+    reconciliation = next(
+        (
+            result
+            for result in branches
+            if isinstance(result, OperationReconciliationRequired)
+        ),
+        None,
+    )
+    if reconciliation is not None:
+        # Materials already committed by sibling branches remain durable, but no
+        # Analyst or Lead decision may run while one provider outcome is unknown.
+        raise reconciliation
     for index, result in enumerate(branches, start=1):
         if isinstance(result, BaseException):
             outcomes.append(

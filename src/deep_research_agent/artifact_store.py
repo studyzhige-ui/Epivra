@@ -16,8 +16,6 @@ see each other's evidence, memory, or heads.
 
 from __future__ import annotations
 
-from typing import Protocol
-
 import aiosqlite
 
 from .artifacts import (
@@ -37,34 +35,8 @@ class ArtifactStoreError(RuntimeError):
     """A durable artifact operation cannot be trusted as requested."""
 
 
-class ArtifactStore(Protocol):
-    """Insert-only durable storage for one task's formal products."""
-
-    async def put(
-        self,
-        *,
-        kind: ArtifactKind,
-        body: str,
-        parent_refs: tuple[str, ...] = (),
-        provenance: Provenance | None = None,
-    ) -> ArtifactEnvelope:
-        """Persist one artifact and return its runtime-assigned envelope."""
-
-    async def get(self, artifact_id: str) -> ArtifactEnvelope:
-        """Return one committed envelope, or raise if it is unknown."""
-
-    async def body(self, artifact_id: str) -> str:
-        """Return the verified body of one committed artifact."""
-
-    async def dispose(self, disposition: ArtifactDisposition) -> None:
-        """Move one artifact out of the active view, preserving history."""
-
-    async def active_view(self) -> ActiveView:
-        """Project what is current now, in commit order."""
-
-
 class SqliteArtifactStore:
-    """ArtifactStore sharing the runtime's aiosqlite connection."""
+    """SQLite-backed insert-only artifact storage for one task."""
 
     def __init__(
         self,
@@ -313,7 +285,6 @@ def _disposition_from_row(row: tuple[object, ...]) -> ArtifactDisposition:
 
 
 __all__ = [
-    "ArtifactStore",
     "ArtifactStoreError",
     "SqliteArtifactStore",
 ]

@@ -1,10 +1,7 @@
 """Resource utilisation as an evaluation axis, measured across runs.
 
-Phase 1e established why this is a separate axis rather than a footnote on cost
-(`docs/ARCHITECTURE.md` §10.6): every fixture passed on its own terms -- each
-ended in an honest report -- while yield per search varied a hundredfold between
-them, tracking the share of branches that hit their tool ceiling.  A judge that
-reads one report at a time is structurally blind to that.
+This is separate from report quality because a judge that reads one report at a
+time cannot see cross-run search yield, tool-ceiling pressure, or replay cost.
 
 It is also a *correctness* axis.  The run that discarded evidence concluded that
 official regulatory text was unreachable when it had already been fetched and
@@ -358,9 +355,8 @@ def read_run(database: Path, task_id: str) -> RunResources:
 def task_ids(database: Path) -> tuple[str, ...]:
     """Every task the database holds artifacts for.
 
-    Returns nothing for a database that is not one of ours -- the runs directory
-    also holds a legacy corpus and LangGraph checkpoint files, and a cost report
-    should skip those rather than fail on the first one it meets.
+    Returns nothing for a database that is not one of ours, so a directory may be
+    scanned without failing on unrelated SQLite files.
     """
 
     connection = sqlite3.connect(f"file:{database}?mode=ro", uri=True)

@@ -20,8 +20,6 @@ omitted snapshot therefore has one unambiguous meaning: memory is unchanged.
 That reading keeps the model on semantics and leaves the bookkeeping to the
 runtime, which is the whole point of the split.
 
-No capability pack reaches this role (see ``packs.PACK_PROJECTION``): pack text
-that could influence when research ends would be a stopping rule at one remove.
 """
 
 from __future__ import annotations

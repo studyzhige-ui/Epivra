@@ -2,8 +2,7 @@
 
 A cost report is only useful if it cannot flatter itself.  Two ways it could:
 counting an unmeasured run as free, and counting a replayed call as spend.  Both
-are pinned here, along with the two ratios that made the Phase 1e defect visible
-across runs when it was invisible inside each one.
+are pinned here, along with cross-run yield and tool-ceiling ratios.
 """
 
 from __future__ import annotations
@@ -184,7 +183,7 @@ class CohortTest(unittest.TestCase):
 
 class ForeignDatabaseTest(unittest.TestCase):
     def test_a_database_that_is_not_ours_is_skipped_rather_than_fatal(self) -> None:
-        """The runs directory also holds a legacy corpus and checkpoint files."""
+        """A scan may encounter SQLite files that belong to another application."""
 
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "foreign.sqlite3"

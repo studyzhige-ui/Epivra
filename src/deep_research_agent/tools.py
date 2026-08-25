@@ -41,9 +41,9 @@ class SearchRouting:
     than a runtime identity, and keeps the tool stable across deployments whose
     provider sets differ.
 
-    It is also the main cost lever.  Under ``auto`` every provider is queried on
-    every search, so Phase 1e's 2,289 searches were 2,289 paid calls to the one
-    metered vendor even for questions only an academic index could answer.
+    It is also the main cost lever.  Under ``auto`` every eligible provider is
+    queried, while capability routing avoids metered calls for questions that an
+    academic index can answer directly.
     """
 
     mode: RoutingMode = "auto"
@@ -125,10 +125,6 @@ class SearchProvider(Protocol):
     ) -> Sequence[ProviderResult]: ...
 
 
-class SourceReader(Protocol):
-    async def read(self, url: str) -> ReadResult: ...
-
-
 def _normalized_url(url: str) -> str:
     parsed = urlsplit(url.strip())
     if (
@@ -176,15 +172,15 @@ class TransparentSearchBroker:
         self,
         providers: Sequence[SearchProvider],
         *,
-        transient_retries: int = 1,
+        rate_limit_retries: int = 1,
         provider_timeout_seconds: float = 45.0,
     ) -> None:
-        if transient_retries < 0:
-            raise ValueError("transient_retries must be non-negative")
+        if rate_limit_retries < 0:
+            raise ValueError("rate_limit_retries must be non-negative")
         if provider_timeout_seconds <= 0:
             raise ValueError("provider_timeout_seconds must be positive")
         self._providers = tuple(providers)
-        self._transient_retries = transient_retries
+        self._rate_limit_retries = rate_limit_retries
         self._provider_timeout_seconds = provider_timeout_seconds
 
     async def list_providers(self) -> tuple[ProviderInfo, ...]:
@@ -398,7 +394,7 @@ class TransparentSearchBroker:
         request: SearchRequest,
     ) -> tuple[list[SearchResult], list[SearchAttempt]]:
         attempts: list[SearchAttempt] = []
-        for attempt_index in range(self._transient_retries + 1):
+        for attempt_index in range(self._rate_limit_retries + 1):
             try:
                 raw = await asyncio.wait_for(
                     provider.search(
@@ -438,6 +434,11 @@ class TransparentSearchBroker:
                 return results, attempts
             except Exception as error:  # provider failures are research observations
                 kind = _error_type(error)
+                if kind in {"timeout", "provider_down"}:
+                    # A request may have run even though its response never became
+                    # usable.  Let the enclosing operation ledger freeze it rather
+                    # than hiding a retry or reporting "no results" to the Agent.
+                    raise
                 attempts.append(
                     SearchAttempt(
                         provider_id=info.provider_id,
@@ -445,8 +446,10 @@ class TransparentSearchBroker:
                         error_type=kind,
                     )
                 )
-                transient = kind in {"timeout", "rate_limited", "provider_down"}
-                if not transient or attempt_index >= self._transient_retries:
+                if (
+                    kind != "rate_limited"
+                    or attempt_index >= self._rate_limit_retries
+                ):
                     break
         return [], attempts
 
@@ -464,6 +467,5 @@ __all__ = [
     "SearchResult",
     "SearchRouting",
     "SourceKind",
-    "SourceReader",
     "TransparentSearchBroker",
 ]

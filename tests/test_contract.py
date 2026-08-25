@@ -16,31 +16,29 @@ from deep_research_agent.contract import (
 from deep_research_agent.sources import ArtifactValidationError
 
 CONTRACT_BODY = """\
-## 目的与用途
+# 婴儿 RSV 预防路径比较
+
+## 研究目标
 
 为医院母婴护理团队选择婴儿 RSV 预防路径提供依据。
 
-## 问题模型
+## 重点问题
 
-### Q1. 对本院人群，母源疫苗与单克隆抗体应如何组合使用？
-### Q2. 两条路径在住院与重症终点上的效力证据强度如何？
-### Q3. 给药时点与季节性如何影响可行性？
+- Q1. 对本院人群，母源疫苗与单克隆抗体应如何组合使用？
+- Q2. 两条路径在住院与重症终点上的效力证据强度如何？
+- Q3. 给药时点与季节性如何影响可行性？
 
-## 范围与定义
+## 范围与排除
 
 时点为 2026 年 8 月。
 
-## 证据与分析方法
+## 研究方式
 
 优先监管标签、ACIP 记录与关键试验原文。
 
-## 交付与保证
+## 交付内容
 
-决策简报，独立审查。
-
-## 自适应边界与已知限制
-
-查询与来源顺序由 Lead 自适应。
+中文决策简报，包含路径比较与适用条件。
 """
 
 
@@ -189,14 +187,13 @@ class ContractResolutionTest(unittest.TestCase):
         with self.assertRaisesRegex(ArtifactValidationError, "at least one"):
             self.contract.resolve(())
 
-    def test_pack_refs_must_be_unique(self) -> None:
-        with self.assertRaisesRegex(ArtifactValidationError, "duplicates"):
-            build_contract(CONTRACT_BODY, pack_refs=("a@1", "a@1"))
-
-    def test_section_titles_cover_the_six_blocks(self) -> None:
-        self.assertEqual("问题模型", section_title("question_model"))
+    def test_section_titles_cover_the_five_user_blocks(self) -> None:
+        self.assertEqual("重点问题", section_title("focus_questions"))
         with self.assertRaises(ArtifactValidationError):
             section_title("coverage_matrix")
+
+    def test_the_visible_topic_is_derived_not_stored_twice(self) -> None:
+        self.assertEqual("婴儿 RSV 预防路径比较", self.contract.title)
 
 
 class QuestionTextTest(unittest.TestCase):

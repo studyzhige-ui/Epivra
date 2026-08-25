@@ -24,14 +24,12 @@ from dataclasses import dataclass, field
 
 import httpx
 
+from .anthropic import ANTHROPIC_VERSION
 from .llm import LlmProviderSpec
 
 #: Long enough for a slow gateway, short enough that a wrong endpoint does not
 #: leave the user watching a spinner.
 VALIDATION_TIMEOUT_SECONDS = 20.0
-
-#: Anthropic requires this header on every request, listing included.
-ANTHROPIC_VERSION = "2023-06-01"
 
 #: Token prefixes that mark a listed model as something other than a text model.
 #: A ``/models`` listing mixes embeddings, image, speech and moderation models in
@@ -110,9 +108,8 @@ def is_text_model(model_id: str) -> bool:
 def _extract_models(payload: object) -> tuple[str, ...]:
     """Pull text-model ids out of either vendor's listing shape.
 
-    Filtered here rather than at the point of display so that every caller --
-    the setup flow, ``doctor --live``, a future web UI -- agrees on what "the
-    models this key can reach" means.
+    Filtered here rather than at the point of display so that the setup flow and
+    ``doctor --live`` agree on what "the models this key can reach" means.
     """
 
     if not isinstance(payload, dict):
@@ -328,7 +325,6 @@ def search_credential_variables() -> dict[str, str]:
 
 
 __all__ = [
-    "ANTHROPIC_VERSION",
     "VALIDATION_TIMEOUT_SECONDS",
     "ValidationResult",
     "is_text_model",

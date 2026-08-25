@@ -1,7 +1,7 @@
-"""The reporting transaction, driven by scripted models.
+"""The reporting pipeline, driven by scripted models.
 
 These tests pin the properties that the previous implementation got wrong: a
-bounded review loop, an approval receipt tied to one exact report body, and a
+bounded review path, an approval receipt tied to one exact report body, and a
 publication path that fails closed rather than emitting an unverifiable claim.
 Scripted models make the role behaviour explicit, so a failure points at the
 pipeline rather than at a provider's mood.
@@ -25,7 +25,6 @@ from deep_research_agent.contract import build_contract
 from deep_research_agent.model import ModelReply, ModelToolCall, ToolSpec
 from deep_research_agent.operations import ExecutionIdentity, SqliteOperationLedger
 from deep_research_agent.reporting import (
-    REVIEW_ROUNDS,
     ReportingHalted,
     RoleRuntime,
     publication_blocked,
@@ -39,30 +38,28 @@ from deep_research_agent.sources import (
 )
 
 CONTRACT = """\
-## 目的与用途
+# 婴儿 RSV 预防路径比较
+
+## 研究目标
 
 为医院母婴护理团队选择婴儿 RSV 预防路径提供依据。
 
-## 问题模型
+## 重点问题
 
-### Q1. 母源疫苗与单克隆抗体应如何组合使用？
-### Q2. 两条路径的效力证据强度如何？
+- Q1. 母源疫苗与单克隆抗体应如何组合使用？
+- Q2. 两条路径的效力证据强度如何？
 
-## 范围与定义
+## 范围与排除
 
 时点 2026 年 8 月。
 
-## 证据与分析方法
+## 研究方式
 
 优先监管标签与 ACIP 记录。
 
-## 交付与保证
+## 交付内容
 
-决策简报，独立审查。
-
-## 自适应边界与已知限制
-
-查询顺序由 Lead 自适应。
+中文决策简报，包含两条路径的证据比较。
 """
 
 SOURCE_TEXT = (
@@ -191,7 +188,7 @@ class ReportingFixture(unittest.IsolatedAsyncioTestCase):
             )
         }
 
-    async def run_transaction(self, runtimes: dict[str, RoleRuntime]):
+    async def run_pipeline(self, runtimes: dict[str, RoleRuntime]):
         return await run_reporting(
             self.store,
             self.ledger,
@@ -203,7 +200,7 @@ class ReportingFixture(unittest.IsolatedAsyncioTestCase):
 
 class HappyPathTest(ReportingFixture):
     async def test_approved_report_is_rendered_and_published(self) -> None:
-        outcome = await self.run_transaction(
+        outcome = await self.run_pipeline(
             self.runtimes(
                 analyst=[("publish_synthesis", {"synthesis_markdown": synthesis_text()})],
                 author=[("submit_report", {"report_markdown": report_text()})],
@@ -231,7 +228,7 @@ class HappyPathTest(ReportingFixture):
         self.assertIn("https://cdc.example/acip", outcome.rendered.markdown)
 
     async def test_the_full_artifact_lineage_is_committed(self) -> None:
-        outcome = await self.run_transaction(
+        outcome = await self.run_pipeline(
             self.runtimes(
                 analyst=[("publish_synthesis", {"synthesis_markdown": synthesis_text()})],
                 author=[("submit_report", {"report_markdown": report_text()})],
@@ -250,9 +247,15 @@ class HappyPathTest(ReportingFixture):
         self.assertEqual(view.active("material"), synthesis.parent_refs)
         report = await self.store.get(outcome.report_refs[0])
         self.assertEqual((outcome.commission_ref,), report.parent_refs)
+        review_receipt = view.active("review_receipt")[0]
+        publication = await self.store.get(outcome.publication_ref)
+        self.assertEqual(
+            tuple(sorted((outcome.report_refs[-1], review_receipt))),
+            publication.parent_refs,
+        )
 
     async def test_each_role_sees_only_its_own_tools(self) -> None:
-        await self.run_transaction(
+        await self.run_pipeline(
             self.runtimes(
                 analyst=[("publish_synthesis", {"synthesis_markdown": synthesis_text()})],
                 author=[("submit_report", {"report_markdown": report_text()})],
@@ -269,7 +272,7 @@ class HappyPathTest(ReportingFixture):
         )
 
     async def test_the_reviewer_context_is_fresh_not_the_author_thread(self) -> None:
-        await self.run_transaction(
+        await self.run_pipeline(
             self.runtimes(
                 analyst=[("publish_synthesis", {"synthesis_markdown": synthesis_text()})],
                 author=[("submit_report", {"report_markdown": report_text()})],
@@ -289,9 +292,9 @@ class HappyPathTest(ReportingFixture):
             author=[("submit_report", {"report_markdown": report_text()})],
             reviewer=[("approve_report", {"rationale": "证据与结论相称。" * 5})],
         )
-        await self.run_transaction(runtimes)
+        await self.run_pipeline(runtimes)
 
-        # A second transaction over the same materials must not re-analyse.
+        # A second run over the same materials must not re-analyse.
         runtimes["author"] = RoleRuntime(
             model=ScriptedModel([("submit_report", {"report_markdown": report_text()})]),
             execution=ExecutionIdentity(provider="scripted", model_id="author"),
@@ -302,7 +305,7 @@ class HappyPathTest(ReportingFixture):
             ),
             execution=ExecutionIdentity(provider="scripted", model_id="reviewer"),
         )
-        await self.run_transaction(runtimes)
+        await self.run_pipeline(runtimes)
 
         self.assertEqual(1, len(self.analyst_model.calls))
 
@@ -324,7 +327,7 @@ class BoundedReviewTest(ReportingFixture):
         )
 
     async def test_a_blocked_report_gets_exactly_one_revision(self) -> None:
-        outcome = await self.run_transaction(
+        outcome = await self.run_pipeline(
             self.runtimes(
                 analyst=[("publish_synthesis", {"synthesis_markdown": synthesis_text()})],
                 author=[
@@ -352,8 +355,8 @@ class BoundedReviewTest(ReportingFixture):
         self.assertFalse(outcome.reviews[0].approved)
         self.assertTrue(outcome.reviews[1].approved)
 
-    async def test_a_second_block_ends_the_transaction_instead_of_looping(self) -> None:
-        outcome = await self.run_transaction(
+    async def test_a_second_block_ends_the_run_instead_of_looping(self) -> None:
+        outcome = await self.run_pipeline(
             self.runtimes(
                 analyst=[("publish_synthesis", {"synthesis_markdown": synthesis_text()})],
                 author=[
@@ -380,7 +383,7 @@ class BoundedReviewTest(ReportingFixture):
     async def test_the_final_block_is_readable_from_the_artifacts_alone(self) -> None:
         """Whoever opens this database next must be able to see what happened.
 
-        The transaction's own return value lives in one process; the state a user
+        The run's own return value lives in one process; the state a user
         is shown has to survive closing the terminal, and it does so by being
         derived rather than stored.  Anything else would be a second account of
         the same truth, and the artifacts are the one a later process reads.
@@ -388,7 +391,7 @@ class BoundedReviewTest(ReportingFixture):
 
         self.assertFalse(await publication_blocked(self.store))
 
-        await self.run_transaction(
+        await self.run_pipeline(
             self.runtimes(
                 analyst=[("publish_synthesis", {"synthesis_markdown": synthesis_text()})],
                 author=[
@@ -408,14 +411,14 @@ class BoundedReviewTest(ReportingFixture):
         )
 
         view = await self.store.active_view()
-        self.assertEqual(REVIEW_ROUNDS, len(view.active("review")))
+        self.assertEqual(2, len(view.active("review")))
         self.assertEqual((), view.active("review_receipt"))
         self.assertTrue(await publication_blocked(self.store))
 
     async def test_one_block_that_a_revision_answered_is_not_a_final_block(
         self,
     ) -> None:
-        await self.run_transaction(
+        await self.run_pipeline(
             self.runtimes(
                 analyst=[("publish_synthesis", {"synthesis_markdown": synthesis_text()})],
                 author=[
@@ -440,7 +443,7 @@ class BoundedReviewTest(ReportingFixture):
         self.assertFalse(await publication_blocked(self.store))
 
     async def test_closure_receives_the_findings_and_their_dispositions(self) -> None:
-        await self.run_transaction(
+        await self.run_pipeline(
             self.runtimes(
                 analyst=[("publish_synthesis", {"synthesis_markdown": synthesis_text()})],
                 author=[
@@ -469,11 +472,77 @@ class BoundedReviewTest(ReportingFixture):
         self.assertIn("作者对每一项的处置", closure)
         self.assertIn("已限定为不可比", closure)
 
+    async def test_dispositions_are_matched_by_index_not_model_order(self) -> None:
+        findings = [
+            {
+                "location": "执行摘要",
+                "problem": "第一项结论强度超出证据",
+                "impact": "第一项会误导读者",
+                "acceptance_condition": "限定第一项结论",
+            },
+            {
+                "location": "证据与边界",
+                "problem": "第二项遗漏适用人群",
+                "impact": "第二项会导致错误外推",
+                "acceptance_condition": "补充第二项人群限制",
+            },
+        ]
+        await self.run_pipeline(
+            self.runtimes(
+                analyst=[("publish_synthesis", {"synthesis_markdown": synthesis_text()})],
+                author=[
+                    ("submit_report", {"report_markdown": report_text()}),
+                    (
+                        "submit_revised_report",
+                        {
+                            "report_markdown": report_text(),
+                            "finding_dispositions": [
+                                {
+                                    "finding_index": 2,
+                                    "response": "第二项回应：已补充适用人群限制。",
+                                },
+                                {
+                                    "finding_index": 1,
+                                    "response": "第一项回应：已降低结论强度。",
+                                },
+                            ],
+                        },
+                    ),
+                ],
+                reviewer=[
+                    ("block_report", {"findings": findings}),
+                    ("approve_report", {"rationale": "两项阻断均已正确处置。" * 5}),
+                ],
+            )
+        )
+
+        closure = "\n".join(
+            str(message.get("content", ""))
+            for message in self.reviewer_model.calls[1]
+        )
+        self.assertLess(closure.index("第一项回应"), closure.index("第二项回应"))
+
+    async def test_old_review_chain_does_not_block_a_new_baseline(self) -> None:
+        old_report = await self.store.put(kind="report", body="old baseline")
+        await self.store.put(
+            kind="review", body="old baseline blocked", parent_refs=(old_report.artifact_id,)
+        )
+        old_revision = await self.store.put(
+            kind="report", body="old revision", parent_refs=(old_report.artifact_id,)
+        )
+        await self.store.put(
+            kind="review", body="old revision blocked", parent_refs=(old_revision.artifact_id,)
+        )
+
+        await self.store.put(kind="report", body="new baseline")
+
+        self.assertFalse(await publication_blocked(self.store))
+
     async def test_a_revision_missing_a_disposition_is_corrected_then_refused(
         self,
     ) -> None:
         with self.assertRaises(AgentProtocolError):
-            await self.run_transaction(
+            await self.run_pipeline(
                 self.runtimes(
                     analyst=[
                         ("publish_synthesis", {"synthesis_markdown": synthesis_text()})
@@ -502,7 +571,7 @@ class BoundedReviewTest(ReportingFixture):
 
 class FailClosedTest(ReportingFixture):
     async def test_an_invented_citation_handle_is_corrected_not_published(self) -> None:
-        outcome = await self.run_transaction(
+        outcome = await self.run_pipeline(
             self.runtimes(
                 analyst=[("publish_synthesis", {"synthesis_markdown": synthesis_text()})],
                 author=[
@@ -520,7 +589,7 @@ class FailClosedTest(ReportingFixture):
 
     async def test_a_report_citing_nothing_is_refused(self) -> None:
         with self.assertRaises(AgentProtocolError):
-            await self.run_transaction(
+            await self.run_pipeline(
                 self.runtimes(
                     analyst=[
                         ("publish_synthesis", {"synthesis_markdown": synthesis_text()})
@@ -533,8 +602,8 @@ class FailClosedTest(ReportingFixture):
                 )
             )
 
-    async def test_an_evidence_issue_ends_the_transaction_without_a_report(self) -> None:
-        outcome = await self.run_transaction(
+    async def test_an_evidence_issue_ends_the_run_without_a_report(self) -> None:
+        outcome = await self.run_pipeline(
             self.runtimes(
                 analyst=[("publish_synthesis", {"synthesis_markdown": synthesis_text()})],
                 author=[
@@ -575,7 +644,7 @@ class FailClosedTest(ReportingFixture):
 
 class LedgerTest(ReportingFixture):
     async def test_every_model_call_is_recorded_as_an_operation(self) -> None:
-        await self.run_transaction(
+        await self.run_pipeline(
             self.runtimes(
                 analyst=[("publish_synthesis", {"synthesis_markdown": synthesis_text()})],
                 author=[("submit_report", {"report_markdown": report_text()})],
@@ -605,7 +674,7 @@ class LedgerTest(ReportingFixture):
         read, and publication became unreachable.
         """
 
-        await self.run_transaction(
+        await self.run_pipeline(
             self.runtimes(
                 analyst=[("publish_synthesis", {"synthesis_markdown": synthesis_text()})],
                 author=[

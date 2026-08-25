@@ -93,7 +93,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.command is None:
         if not theme.is_interactive():
             # No terminal means no workspace to enter.  Help and a success exit,
-            # never a prompt that will not be answered -- machine callers get MCP.
+            # never a prompt that will not be answered.  Machine callers use the
+            # Python API directly.
             parser.print_help()
             return 0
         from .workspace import run_workspace

@@ -35,7 +35,6 @@ from rich.text import Text
 #: Terminal widths this layout must survive.  Anything narrower wraps rather
 #: than being truncated into nonsense.
 MIN_WIDTH = 60
-COMFORTABLE_WIDTH = 84
 
 #: Status glyphs.  Chosen so meaning survives a monochrome terminal.
 GLYPH: Mapping[str, str] = {
@@ -199,7 +198,6 @@ def truncate(text: str, limit: int) -> str:
 
 
 __all__ = [
-    "COMFORTABLE_WIDTH",
     "GLYPH",
     "MIN_WIDTH",
     "STATE_GLYPH",

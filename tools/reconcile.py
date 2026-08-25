@@ -15,7 +15,7 @@ someone went digging.
 Usage::
 
     python tools/reconcile.py --glob '.deep-research-agent/*.sqlite3'
-    python tools/reconcile.py --database run.sqlite3 --resolve op_ab12... --note "..."
+    python tools/reconcile.py --database run.sqlite3 --not-executed op_ab12... --note "..."
 """
 
 from __future__ import annotations
@@ -74,8 +74,9 @@ async def inspect(database: Path) -> int:
             print(f"      detail  : {record.detail or '(none)'}")
         print(
             f"  共 {len(frozen)} 条。每一条都要人工判断供应商到底执行了没有：\n"
-            "    - 确认没执行 → --resolve <op> 之后可重跑（会重新发起）\n"
-            "    - 确认执行过但结果拿不回来 → --resolve <op> 并在 note 里写明放弃该结果\n"
+            "    - 确认没执行 → --not-executed <op> 之后可重跑（会重新发起）\n"
+            "    - 找回真实结果 → 保持冻结，先通过供应商记录恢复该结果\n"
+            "    - 执行过但结果拿不回来 → 保持冻结；不要把它改写成没执行\n"
             "  不要因为想让运行继续就批量清除：这个状态存在的意义就是不猜。"
         )
         return len(frozen)
@@ -83,8 +84,8 @@ async def inspect(database: Path) -> int:
         await connection.close()
 
 
-async def resolve(database: Path, operation_id: str, note: str) -> int:
-    """Clear one frozen operation after a human decided what happened.
+async def confirm_not_executed(database: Path, operation_id: str, note: str) -> int:
+    """Retry one frozen operation only after proving it was not executed.
 
     Deliberately one at a time and requiring a note.  A bulk clear would turn a
     deliberate stop into a formality, which is how "we may have paid twice"
@@ -92,7 +93,7 @@ async def resolve(database: Path, operation_id: str, note: str) -> int:
     """
 
     if not note.strip():
-        print("必须给出 --note：说明你判断供应商到底执行了没有，以及依据。")
+        print("必须给出 --note：说明确认供应商没有执行的依据。")
         return 2
     connection = await aiosqlite.connect(database)
     try:
@@ -134,11 +135,11 @@ async def run(args: argparse.Namespace) -> int:
         print("给出至少一个数据库路径，或用 --glob")
         return 2
 
-    if args.resolve:
+    if args.not_executed:
         if len(paths) != 1:
-            print("--resolve 只能对一个数据库使用，请用 --database 指定。")
+            print("--not-executed 只能对一个数据库使用，请用 --database 指定。")
             return 2
-        return await resolve(paths[0], args.resolve, args.note)
+        return await confirm_not_executed(paths[0], args.not_executed, args.note)
 
     total = 0
     for path in paths:
@@ -152,8 +153,15 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--database", dest="databases", nargs="*", default=[], type=Path)
     parser.add_argument("--glob", default="")
-    parser.add_argument("--resolve", default="", help="要对账的 operation_id")
-    parser.add_argument("--note", default="", help="人工判断的依据，--resolve 时必填")
+    parser.add_argument(
+        "--not-executed",
+        dest="not_executed",
+        default="",
+        help="已确认没有执行、因而允许重试的 operation_id",
+    )
+    parser.add_argument(
+        "--note", default="", help="确认没有执行的依据，--not-executed 时必填"
+    )
     return asyncio.run(run(parser.parse_args(argv)))
 
 

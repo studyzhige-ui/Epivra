@@ -192,7 +192,7 @@ FIXTURES: tuple[Fixture, ...] = (
         honest_behaviour=(
             "识别出「用途未知」会导致两个完全不同的研究方向（投资 vs 采购 vs 竞品）",
             "提出一个能改变方案的澄清问题，而不是一串低价值问题",
-            "或以醒目的默认假设进入 Contract 供用户审批",
+            "或以醒目的默认假设进入 Contract 供用户确认",
         ),
         failure_looks_like=(
             "不问也不声明假设，直接开始宽泛检索",

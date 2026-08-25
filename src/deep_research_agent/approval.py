@@ -100,37 +100,15 @@ class ApprovalBody:
         )
 
 
-def approval_card(contract: ResearchContract, *, version: int = 0) -> str:
-    """The user-facing projection of a candidate.
+def approval_card(contract: ResearchContract) -> str:
+    """Return the exact user-facing direction the Agent will execute.
 
-    The card shows the Contract prose the approval will bind, the question model
-    made explicit so the user can see what will and will not be answered, and
-    the boundary between what the Lead may adapt and what needs re-approval.
-    It shows no queries, no node names, and no model reasoning.
+    The Contract itself is deliberately concise, so there is no second summary
+    or explanatory footer that could duplicate, hide, or reinterpret a binding
+    detail.  A client owns the page title, version label, and real interaction.
     """
 
-    questions = "\n".join(
-        f"- **{question.label}**（{'核心' if question.role == 'primary' else '支撑 ' + '、'.join(question.supports)}）"
-        f" {question.text}"
-        for question in sorted(
-            contract.question_model.questions,
-            key=lambda item: contract.labels.index(item.label),
-        )
-    )
-    packs = (
-        "、".join(contract.pack_refs) if contract.pack_refs else "（未使用能力包）"
-    )
-    heading = "# 研究方案待您批准" + (f"（第 {version} 版）" if version > 1 else "")
-    return (
-        f"{heading}\n\n"
-        f"{contract.body_markdown.strip()}\n\n"
-        "---\n\n"
-        f"## 问题结构\n\n{questions}\n\n"
-        f"## 能力包\n\n{packs}\n\n"
-        "## 可选操作\n\n"
-        "- `批准并开始研究`\n"
-        "- `提出修改`（说明要改什么，会生成完整的新一版方案，旧批准自动失效）\n"
-    )
+    return contract.body_markdown.strip()
 
 
 async def record_decision(

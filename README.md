@@ -1,91 +1,76 @@
 # Deep Research Agent
 
-一个由研究 Agent 主导、由确定性 Trust Plane 提供可信边界的通用深度研究项目。
+Deep Research Agent 是一个面向单人本地使用的 Agent-first 研究系统。用户给出开放问题，
+Agent 在用户确认的研究方向内完成规划、检索、阅读、证据整理、综合、写作与独立审查，最终
+交付可追溯来源的 Markdown 报告。
 
-模型负责规划、检索策略、证据判断、研究停止、跨来源综合与报告表达；代码负责安全执行、
-角色权限、来源保存、状态恢复和引用验证。项目不以固定查询、字段配额、来源数量或任务级
-预算代替研究判断。
+当前产品入口是 `deep-research` 交互式工作区，以及供 Codex、Claude Code 等本地 Agent
+host 使用的 `deep-research-mcp` STDIO 服务。Python 接入只通过公开的 `ResearchService`
+边界；存储、artifact 与 operation ledger 实现不属于包的公开 API。
 
-## 权威文档
+## 文档
 
-**架构只维护在 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。** 本文件刻意不复述角色
-拓扑、产物模型、运行时边界或阶段计划——上一版 README 复述过，然后在重构中变成了一份
-描述已删除架构的文档：整条角色链、一套已废弃的修订协议、一个从未存在的 CLI，全都写得
-像是当前事实。那比没有文档更糟。需要知道系统怎么运作，读权威文档。
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)：当前实现的唯一权威架构说明
+- [docs/GETTING-STARTED.md](docs/GETTING-STARTED.md)：安装、配置与完整使用流程
+- [PROJECT_CHARTER.md](PROJECT_CHARTER.md)：稳定的产品使命与开发边界
 
-- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) —— 唯一权威架构
-- [docs/PHASE-1E-CALIBRATION.md](docs/PHASE-1E-CALIBRATION.md) —— 零包全矩阵压测结果与
-  逐条判定
-- [PROJECT_CHARTER.md](PROJECT_CHARTER.md) —— 稳定使命与开发边界
-- [docs/design-input/](docs/design-input/) —— 历史设计输入，**不具权威地位**
+仓库不保留历史架构副本、未来实施蓝图或阶段性进度文档。实现改变时，直接更新上述当前
+文档并删除被替代描述。
 
-## 当前状态
+## 安装
 
-零包（不启用任何能力包）基线已在八条对抗性 fixture 上跑通并校准完成：七份发布报告，
-`ambiguous-scope` 正确停在澄清点，没有一条出现"结论强度超出证据"。真实 DeepSeek +
-Tavily 端到端运行已多次执行。详见 `docs/PHASE-1E-CALIBRATION.md`。
-
-尚未开始：统一 judge（Phase 2）、能力包内容（Phase 3）、故障注入与恢复矩阵（Phase 4）、
-Orientation Scan / Protocol Assurer / VisualSpec / MCP（Phase 5）。目前没有 CLI、没有
-GUI、没有多租户。
-
-## 环境与验证
-
-Python 3.11+。测试与静态门都不调用模型或搜索 API。
+需要 Python 3.11 或更高版本。
 
 ```bash
 python -m pip install -e .
 ```
 
+可以复制示例配置，也可以第一次进入工作区后按引导完成配置：
+
 ```bash
-python -m unittest discover -s tests
+copy .env.example .env
 ```
 
-```bash
-python tools/check_architecture.py
-```
-
-静态门检查依赖方向、分层完整性、被禁的遗留符号与能力包边界，每次提交都要通过。
-
-## 使用（会产生外部 API 费用）
+## 使用
 
 ```bash
-pip install -e .
 deep-research
 ```
 
-**`deep-research` 就是产品。** 进入交互式工作区：第一次会先问界面语言，再引导配置模型与
-搜索厂商（每个密钥都会真实验证），然后直接说出研究问题。配置、新建、审批、跑研究、暂停、
-恢复、读报告、删除，全程都在工作区里，不回 shell。第一次使用见
-[docs/GETTING-STARTED.md](docs/GETTING-STARTED.md)。
+首页会直接提示输入研究主题或问题；按 `Esc` 可以进入设置、查看已有研究或退出。提交主题后，
+系统先生成一份简洁的研究方向，用户选择「开始研究」后才进入正式检索。生成研究方向本身会
+调用模型，因此可能产生模型 API 费用。
 
-只有一个子命令，因为诊断和使用是两件事：
+诊断命令：
 
 ```bash
-deep-research doctor          # 环境与厂商诊断
-deep-research doctor --live   # 真的调用每个已配置厂商一次
+deep-research doctor
+deep-research doctor --live
 deep-research --version
 deep-research --help
+deep-research-mcp --help
 ```
 
-**接口收敛。** 人用工作区，机器用 MCP（尚未实现），两者共用同一个
-`ResearchService`——研究流程不再有第二套 CLI 子命令。这不是能力下线：`open_task`、
-`approve`、`advance`、`task`、`tasks`、`report`、`delete_research`、`approval_card`
-仍然是稳定的 Python API。
+`doctor --live` 会真实访问已配置的厂商；搜索厂商的验证会消耗查询额度。
+Codex 与 Claude Code 的 MCP 接入步骤见
+[docs/GETTING-STARTED.md](docs/GETTING-STARTED.md#10-通过-mcp-交给其他-agent)。
 
-凭据从 `.env` 读取，可同时保存多家：模型厂商至少一个（`DEEPSEEK_API_KEY`、
-`ANTHROPIC_API_KEY`、`OPENAI_API_KEY`、`DASHSCOPE_API_KEY`、`ZHIPU_API_KEY`、
-`MOONSHOT_API_KEY`、`OPENROUTER_API_KEY`）；搜索厂商（`TAVILY_API_KEY`、`EXA_API_KEY`、
-`BRAVE_SEARCH_API_KEY`、`BOCHA_API_KEY`）可选，缺失的跳过而不是失败。DuckDuckGo 与
-arXiv / Crossref / PubMed 无需密钥。
+## 核心边界
 
-运行状态全部由 artifact heads 与 operation ledger 推导，所以中断后**对同一个数据库
-重跑即可继续**——已完成的付费调用只回放不重发，已提交的产物不会重做。Ctrl-C 是安全
-暂停，不是取消。每个任务在创建时冻结自己的执行配置，之后改全局设置只影响新任务。
+- artifact lineage 与 operation ledger 保存持久事实；任务状态和可执行动作由事实投影。
+- Research Contract 同时是用户看到的研究方向和 Agent 的执行依据，不维护第二份摘要模型。
+- 已完成的相同外部调用从 ledger 回放；结果未知的调用停止并要求显式对账，不自动重试。
+- `research_memory` 只保存会影响 Lead 后续决策的信息，不保存逐步运行日志。
+- 系统没有持久任务状态字段、通用流程引擎、后台事务实体或主题专用持久模型。
 
-压测矩阵仍由独立的 harness 驱动，不走产品入口：
+完整边界见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。
+
+## 验证
+
+测试和静态门不会调用模型或搜索 API：
 
 ```bash
-python tools/run_research.py --list
-python tools/run_research.py --fixture sparse-evidence --database .deep-research-agent/run.sqlite3 --approve
+python -m unittest discover -s tests
+ruff check src tests tools evals
+python tools/check_architecture.py
 ```

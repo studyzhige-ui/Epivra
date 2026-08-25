@@ -26,8 +26,12 @@ from deep_research_agent.citations import render_citations
 from deep_research_agent.content_store import SqliteContentStore
 from deep_research_agent.context import load_evidence
 from deep_research_agent.contract import build_contract
-from deep_research_agent.model import ModelReply, ModelToolCall
-from deep_research_agent.operations import ExecutionIdentity, SqliteOperationLedger
+from deep_research_agent.model import ModelAuthError, ModelReply, ModelToolCall
+from deep_research_agent.operations import (
+    ExecutionIdentity,
+    OperationReconciliationRequired,
+    SqliteOperationLedger,
+)
 from deep_research_agent.providers._http import SourceReadError
 from deep_research_agent.reporting import RoleRuntime
 from deep_research_agent.sources import SourceSnapshotBody
@@ -36,8 +40,8 @@ from deep_research_agent.wave import run_wave, stalled
 
 CONTRACT = build_contract(
     "## 问题模型\n\n"
-    "### Q1. 本院应如何选择婴儿 RSV 预防路径？\n"
-    "### Q2. 两条路径的住院终点证据强度如何？\n"
+    "- Q1. 本院应如何选择婴儿 RSV 预防路径？\n"
+    "- Q2. 两条路径的住院终点证据强度如何？\n"
 )
 
 PAGE = (
@@ -107,7 +111,8 @@ class StubBroker:
                     url="https://cdc.example/acip",
                     snippet="A discovery snippet.",
                 ),
-            )
+            ),
+            attempts=(),
         )
 
 
@@ -371,7 +376,8 @@ class CuratorHarvestTest(WaveFixture):
                     results=(
                         SearchResult(title="a", url="https://cdc.example/acip"),
                         SearchResult(title="b", url="https://cdc.example/second"),
-                    )
+                    ),
+                    attempts=(),
                 )
 
         incomplete = ModelReply(
@@ -642,8 +648,9 @@ class BranchIsolationTest(WaveFixture):
         self,
     ) -> None:
         good = investigator_script()
-        # The second branch's model runs out of replies, which surfaces as an
-        # operational failure for that branch alone.
+        # The second branch gets a definite authentication rejection, which is a
+        # known operational failure for that branch alone rather than an unknown
+        # provider outcome that must stop the whole wave.
         curator_replies = curator_script()
         execution = ExecutionIdentity(provider="scripted", model_id="test")
 
@@ -660,7 +667,7 @@ class BranchIsolationTest(WaveFixture):
                 index = 0 if "建议是什么" in body else 1
                 script = self.scripts[index]
                 if not script:
-                    raise RuntimeError("branch 2 provider failure")
+                    raise ModelAuthError("branch 2 authentication rejected")
                 return script.pop(0)
 
         investigator = Router([good, []])
@@ -849,7 +856,6 @@ class LedgerClassificationTest(WaveFixture):
         # The branch survives: an unreadable URL is something to report, not a
         # reason to lose the assignment.
         self.assertEqual("completed", outcome.branches[0].status)
-
         rows = await self._connection.execute_fetchall(
             "select status, attempts, max_attempts from operations where kind='fetch'"
         )
@@ -857,6 +863,37 @@ class LedgerClassificationTest(WaveFixture):
         status, attempts, max_attempts = rows[0]
         self.assertEqual("failed", status)
         self.assertLess(attempts, max_attempts, "the failure must stay retryable")
+
+    async def test_an_unknown_search_outcome_stops_the_wave(self) -> None:
+        class UnknownBroker:
+            async def search(self, request) -> SearchResponse:  # noqa: ANN001
+                raise TimeoutError("provider response was lost")
+
+        runtimes = self.runtimes(
+            investigator=investigator_script(find=False), curator=[], analyst=[]
+        )
+        with self.assertRaises(OperationReconciliationRequired):
+            await run_wave(
+                self.store,
+                self.ledger,
+                runtimes,
+                contract=CONTRACT,
+                wave_intent="探查不可确认的检索。",
+                assignments=[
+                    AssignmentDraft(
+                        question_labels=("Q1",),
+                        focus="未知结果",
+                        why_it_matters="不能重复计费",
+                        evidence_sought="供应商结果",
+                    )
+                ],
+                broker=UnknownBroker(),
+                reader=self.reader,
+            )
+
+        self.assertEqual(
+            1, len(await self.ledger.pending_reconciliation(self.store.task_id))
+        )
 
 
 class BudgetHarvestTest(WaveFixture):

@@ -28,9 +28,8 @@ calls each -- so it is the tier that matters. Curator stays strong on purpose:
 it is the only role that decides whether a paraphrase still means what the
 source said, and that is not a place to save money.
 
-Every assignment is overridable per role, because these are defaults from
-reasoning about the work, not measurements. Phase 2's evaluation harness is what
-should eventually settle them.
+Every assignment is overridable per role.  These are deployment defaults, not
+research semantics or claims that one model split is universally optimal.
 """
 
 from __future__ import annotations
@@ -99,11 +98,6 @@ DEFAULT_ROLE_EFFORT: Mapping[Role, ModelEffort] = {
 WEB_SEARCH_PROVIDERS: frozenset[str] = frozenset(
     {"tavily", "exa", "brave", "bocha", "duckduckgo"}
 )
-#: Academic adapters.  All three are keyless, so they are enabled by default.
-ACADEMIC_SEARCH_PROVIDERS: frozenset[str] = frozenset(
-    {"arxiv", "crossref", "pubmed"}
-)
-
 _ENV_PREFIX = "DEEP_RESEARCH"
 
 
@@ -319,7 +313,6 @@ def load_config(environ: Mapping[str, str] | None = None) -> RuntimeConfig:
 
 
 __all__ = [
-    "ACADEMIC_SEARCH_PROVIDERS",
     "DEFAULT_ROLE_EFFORT",
     "DEFAULT_ROLE_TIERS",
     "ROLES",

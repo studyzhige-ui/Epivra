@@ -1,15 +1,12 @@
 """Role agents: independent prompts, bound tools, and one terminal action each.
 
-Every agent invocation is a fresh private context with exactly the tools its
-role may use.  The runner enforces the rule that the previous implementation
-violated fifteen times in one task: **the model never authors runtime identity**.
-It selects among references the context exposed; the runtime assigns every
-artifact ID, operation ID, and finding ID afterwards.
+Every invocation uses a fresh private context with exactly the tools its role may
+use.  The model selects semantic actions and references already exposed to it;
+the runtime owns artifact IDs, operation IDs, and other execution identity.
 
-A malformed action returns a structured :class:`ToolError` and the role gets one
-correction inside the same operation.  Repeating the same invalid action is a
-recoverable pause, not a protocol version bump -- the escalation path that
-turned a research failure into ``supervisor-branch-mode-violations.v9``.
+A malformed action returns a structured :class:`ToolError` and receives one
+correction opportunity inside the same operation.  Repeating the invalid action
+pauses the study without inventing another control protocol.
 """
 
 from __future__ import annotations
@@ -35,6 +32,7 @@ from ..model import (
 )
 from ..operations import (
     ExecutionIdentity,
+    OperationReconciliationRequired,
     OperationRequest,
     SqliteOperationLedger,
     run_once,
@@ -163,8 +161,6 @@ class AgentToolBudgetExhausted(AgentProtocolError):
 _BUDGET_NOTICE_TURNS = 3
 
 #: One correction inside the same operation, then the run pauses for a human.
-#: Escalating further is what turned a research failure into a protocol version
-#: bump in the previous implementation.
 _MAX_CORRECTIONS = 1
 
 
@@ -427,6 +423,10 @@ async def _tool_result(
     try:
         arguments = call.parsed_arguments()
         content = await handler(call.name, arguments)
+    except OperationReconciliationRequired:
+        # An unknown paid-call outcome is a trust-plane stop, not an observation
+        # the role may reinterpret and work around.
+        raise
     except Exception as exc:  # noqa: BLE001 - reported to the role as a result
         content = f"工具执行失败（{type(exc).__name__}）：{exc}。这是运行结果，不是证据结论。"
     return {

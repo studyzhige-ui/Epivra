@@ -48,7 +48,7 @@ rubric = _load("eval_rubric", "rubric.py")
 judge = _load("eval_judge", "judge.py")
 
 CONTRACT = build_contract(
-    "## 问题模型\n\n### Q1. 学校空气净化对呼吸道传染病传播的影响有多强的证据？\n"
+    "## 问题模型\n\n- Q1. 学校空气净化对呼吸道传染病传播的影响有多强的证据？\n"
 )
 PAGE = (
     "A cluster randomised trial reported no measurable reduction in absence rates "

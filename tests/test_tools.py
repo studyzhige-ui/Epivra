@@ -291,7 +291,7 @@ class TransparentSearchBrokerTest(unittest.IsolatedAsyncioTestCase):
         )
 
         response = await TransparentSearchBroker(
-            [failing], transient_retries=3
+            [failing], rate_limit_retries=3
         ).search(SearchRequest(query="evidence", intent="discover"))
 
         self.assertEqual(response.results, ())
@@ -326,7 +326,7 @@ class TransparentSearchBrokerTest(unittest.IsolatedAsyncioTestCase):
             "tavily", failures=(ProviderQuotaError("tavily HTTP 432（额度或余额不足）"),)
         )
         response = await TransparentSearchBroker(
-            [exhausted], transient_retries=3
+            [exhausted], rate_limit_retries=3
         ).search(SearchRequest(query="evidence", intent="discover"))
 
         self.assertEqual(1, len(response.attempts), "must not retry a spent quota")
@@ -412,7 +412,7 @@ class TransparentSearchBrokerTest(unittest.IsolatedAsyncioTestCase):
         )
 
         response = await TransparentSearchBroker(
-            [preferred, fallback], transient_retries=0
+            [preferred, fallback], rate_limit_retries=0
         ).search(
             SearchRequest(
                 query="evidence",
@@ -429,7 +429,7 @@ class TransparentSearchBrokerTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(response.results), 1)
         self.assertEqual(response.results[0].provider_ids, ("fallback",))
 
-    async def test_transient_errors_retry_only_up_to_the_configured_limit(
+    async def test_unknown_errors_are_not_retried_inside_the_broker(
         self,
     ) -> None:
         recovering = FakeProvider(
@@ -437,47 +437,38 @@ class TransparentSearchBrokerTest(unittest.IsolatedAsyncioTestCase):
             results=(ProviderResult("Recovered", "https://example.test/recovered"),),
             failures=(TimeoutError("first timeout"), TimeoutError("second timeout")),
         )
-        recovered = await TransparentSearchBroker(
-            [recovering], transient_retries=2
+        with self.assertRaises(TimeoutError):
+            await TransparentSearchBroker(
+                [recovering], rate_limit_retries=2
+            ).search(SearchRequest(query="evidence", intent="discover"))
+
+        self.assertEqual(recovering.search_calls, 1)
+
+    async def test_rate_limit_may_retry_because_the_request_was_rejected(self) -> None:
+        class RateLimitError(RuntimeError):
+            pass
+
+        recovering = FakeProvider(
+            "recovering",
+            results=(ProviderResult("Recovered", "https://example.test/recovered"),),
+            failures=(RateLimitError("HTTP 429"),),
+        )
+        response = await TransparentSearchBroker(
+            [recovering], rate_limit_retries=2
         ).search(SearchRequest(query="evidence", intent="discover"))
 
-        self.assertEqual(recovering.search_calls, 3)
+        self.assertEqual(recovering.search_calls, 2)
         self.assertEqual(
-            [(attempt.status, attempt.error_type) for attempt in recovered.attempts],
-            [("failed", "timeout"), ("failed", "timeout"), ("success", "")],
+            [(attempt.status, attempt.error_type) for attempt in response.attempts],
+            [("failed", "rate_limited"), ("success", "")],
         )
-        self.assertEqual(len(recovered.results), 1)
-
-        exhausted = FakeProvider(
-            "exhausted",
-            failures=(
-                TimeoutError("first timeout"),
-                TimeoutError("second timeout"),
-                TimeoutError("third timeout"),
-                TimeoutError("must not be attempted"),
-            ),
-        )
-        failed = await TransparentSearchBroker(
-            [exhausted], transient_retries=2
-        ).search(SearchRequest(query="evidence", intent="discover"))
-
-        self.assertEqual(exhausted.search_calls, 3)
-        self.assertEqual(len(failed.attempts), 3)
-        self.assertTrue(
-            all(
-                attempt.status == "failed" and attempt.error_type == "timeout"
-                for attempt in failed.attempts
-            )
-        )
-        self.assertEqual(failed.results, ())
 
 
 class CapabilityRoutingTest(unittest.IsolatedAsyncioTestCase):
     """A role states the kind of source it needs; the runtime picks the vendors.
 
-    This is the main cost lever. Under `auto` every provider is queried on every
-    search, so Phase 1e's 2,289 searches were 2,289 paid calls to the one metered
-    vendor -- including for questions only an academic index could answer.
+    This is the main cost lever. Under `auto` every eligible provider is queried,
+    including metered vendors for questions an academic index could answer.
     Naming a vendor stays a deployment decision, because which vendor is cheapest
     is not a research judgment.
     """

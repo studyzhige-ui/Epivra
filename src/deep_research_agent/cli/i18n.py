@@ -39,21 +39,24 @@ _CATALOGUE: Final[Mapping[str, Mapping[str, str]]] = {
     "ready.other_roles": {"zh-CN": "其他角色", "en": "Other roles"},
     # --- home -------------------------------------------------------------
     "home.prompt": {
-        "zh-CN": "今天想研究点什么？",
-        "en": "What would you like to research today?",
+        "zh-CN": "输入你想研究的主题或问题",
+        "en": "Enter a topic or question to research",
     },
     "home.prompt_hint": {
-        "zh-CN": "给我一个主题，我们开始。",
-        "en": "Give me a topic and we'll begin.",
+        "zh-CN": "直接输入一句话并按 Enter；按 Esc 查看设置和其他选项。",
+        "en": (
+            "Type one sentence and press Enter; press Esc for settings and other "
+            "options."
+        ),
     },
     "home.configure_first": {"zh-CN": "先配置模型", "en": "configure a model first"},
     "home.awaiting_one": {
-        "zh-CN": "1 项研究正在等待你的决定",
-        "en": "1 research plan is waiting for your decision",
+        "zh-CN": "1 项研究已经准备好，可以开始",
+        "en": "1 research direction is ready to start",
     },
     "home.awaiting_many": {
-        "zh-CN": "{count} 项研究正在等待你的决定",
-        "en": "{count} research plans are waiting for your decision",
+        "zh-CN": "{count} 项研究已经准备好，可以开始",
+        "en": "{count} research directions are ready to start",
     },
     "home.recent_done": {"zh-CN": "最近完成", "en": "Recently completed"},
     "home.clarification_waiting": {
@@ -62,7 +65,7 @@ _CATALOGUE: Final[Mapping[str, Mapping[str, str]]] = {
     },
     # --- actions ----------------------------------------------------------
     "action.configure": {"zh-CN": "配置模型与搜索", "en": "Configure models and search"},
-    "action.review_approve": {"zh-CN": "查看并批准", "en": "Review and approve"},
+    "action.review_approve": {"zh-CN": "查看研究方向", "en": "Review direction"},
     "action.new_research": {"zh-CN": "开始新的研究", "en": "Start a new research"},
     "action.all_research": {"zh-CN": "查看全部研究", "en": "View all research"},
     "action.settings": {"zh-CN": "设置", "en": "Settings"},
@@ -72,11 +75,11 @@ _CATALOGUE: Final[Mapping[str, Mapping[str, str]]] = {
     "action.resume": {"zh-CN": "继续研究", "en": "Resume research"},
     "action.read_report": {"zh-CN": "阅读报告", "en": "Read the report"},
     "action.export_report": {"zh-CN": "导出 Markdown", "en": "Export Markdown"},
-    "action.view_plan": {"zh-CN": "查看研究方案", "en": "View the research plan"},
-    "action.approve_start": {"zh-CN": "批准并开始研究", "en": "Approve and start"},
-    "action.request_changes": {"zh-CN": "提出修改", "en": "Request changes"},
+    "action.view_plan": {"zh-CN": "查看研究方向", "en": "View research direction"},
+    "action.approve_start": {"zh-CN": "开始研究", "en": "Start research"},
+    "action.request_changes": {"zh-CN": "调整方向", "en": "Adjust direction"},
     "action.answer_clarification": {"zh-CN": "回答这个问题", "en": "Answer the question"},
-    "action.replan": {"zh-CN": "重新生成研究方案", "en": "Draft the plan again"},
+    "action.replan": {"zh-CN": "重新整理研究方向", "en": "Draft direction again"},
     "action.save_for_later": {"zh-CN": "稍后处理", "en": "Review later"},
     "action.delete_running": {
         "zh-CN": "取消并删除研究",
@@ -194,14 +197,10 @@ _CATALOGUE: Final[Mapping[str, Mapping[str, str]]] = {
     },
     # --- new research -----------------------------------------------------
     "new.title": {"zh-CN": "新的研究委托", "en": "New research"},
-    "new.generating": {"zh-CN": "正在生成研究方案…", "en": "Drafting the research plan…"},
-    "new.not_started": {
-        "zh-CN": "正式检索尚未开始。",
-        "en": "No searching has started yet.",
-    },
+    "new.generating": {"zh-CN": "正在整理研究方向…", "en": "Drafting the research direction…"},
     "new.after_approve_costs": {
-        "zh-CN": "批准后将开始模型和搜索调用。",
-        "en": "Approving starts model and search calls.",
+        "zh-CN": "现在将开始模型和搜索调用。",
+        "en": "Model and search calls will now begin.",
     },
     "clarify.title": {"zh-CN": "还需要确认一点", "en": "One thing to confirm"},
     "clarify.label": {"zh-CN": "待澄清", "en": "Open question"},
@@ -211,33 +210,36 @@ _CATALOGUE: Final[Mapping[str, Mapping[str, str]]] = {
     },
     "clarify.prompt": {"zh-CN": "你的回答", "en": "Your answer"},
     "clarify.working": {
-        "zh-CN": "收到，正在继续整理研究方案…",
-        "en": "Got it — working the plan out…",
+        "zh-CN": "收到，正在继续整理研究方向…",
+        "en": "Got it — working the direction out…",
     },
     "clarify.another": {
         "zh-CN": "还有一个问题需要你确认",
         "en": "One more thing to confirm",
     },
-    "clarify.resolved": {"zh-CN": "研究方案已生成", "en": "The research plan is ready"},
+    "clarify.resolved": {"zh-CN": "研究方向已整理好", "en": "The research direction is ready"},
     "plan.revise_prompt": {
-        "zh-CN": "希望怎么调整这份研究方案？",
-        "en": "What should change about this research plan?",
+        "zh-CN": "希望怎么调整研究方向？",
+        "en": "What should change about this research direction?",
     },
     "plan.revising": {
-        "zh-CN": "正在根据你的意见调整研究方案…",
-        "en": "Revising the research plan from your instructions…",
+        "zh-CN": "正在根据你的意见调整研究方向…",
+        "en": "Adjusting the research direction…",
     },
     # --- plan -------------------------------------------------------------
     "plan.read_these": {
-        "zh-CN": "重点看：核心问题 Q1、默认假设、不支持的用途。",
-        "en": "Look closely at: the core question Q1, the default assumptions, and the excluded uses.",
+        "zh-CN": "正式检索尚未开始。请确认研究目标、覆盖范围和最终交付符合预期。",
+        "en": (
+            "Formal research has not started. Check that the goal, scope, and "
+            "deliverable match what you want."
+        ),
     },
-    "plan.approved": {"zh-CN": "研究方案已批准", "en": "Research plan approved"},
-    "plan.title": {"zh-CN": "研究方案", "en": "Research plan"},
-    "plan.label": {"zh-CN": "方案版本", "en": "Plan version"},
+    "plan.approved": {"zh-CN": "开始研究", "en": "Starting research"},
+    "plan.title": {"zh-CN": "研究方向", "en": "Research direction"},
+    "plan.label": {"zh-CN": "方向版本", "en": "Direction version"},
     "plan.version": {
-        "zh-CN": "研究方案 · 第 {version} 版",
-        "en": "Research plan · version {version}",
+        "zh-CN": "研究方向 · 第 {version} 版",
+        "en": "Research direction · version {version}",
     },
     # --- run --------------------------------------------------------------
     "run.stage.baseline": {"zh-CN": "建立研究基线", "en": "Establish the baseline"},
@@ -267,7 +269,7 @@ _CATALOGUE: Final[Mapping[str, Mapping[str, str]]] = {
     "done.chars": {"zh-CN": "{count:,} 字符", "en": "{count:,} characters"},
     # --- task states ------------------------------------------------------
     "state.clarification_requested": {"zh-CN": "待澄清", "en": "Needs clarification"},
-    "state.awaiting_approval": {"zh-CN": "等待批准", "en": "Awaiting approval"},
+    "state.awaiting_approval": {"zh-CN": "等待开始", "en": "Ready to start"},
     "state.researching": {"zh-CN": "研究中", "en": "Researching"},
     "state.published": {"zh-CN": "已完成", "en": "Completed"},
     # Distinct from paused on purpose: review's refusal stands, and the automatic
@@ -291,14 +293,14 @@ _CATALOGUE: Final[Mapping[str, Mapping[str, str]]] = {
             "系统已经把请求发出去，但没能确认厂商到底执行了没有。"
             "它不会自动重发——那可能让你付两次钱。\n"
             "  需要有人判断这次调用实际发生了什么，然后运行：\n"
-            "    python tools/reconcile.py --database <库> --resolve <操作 id> --note \"依据\""
+            "    python tools/reconcile.py --database <库> --not-executed <操作 id> --note \"依据\""
         ),
         "en": (
             "The request was sent, but whether the provider ran it could not be "
             "confirmed.  It will not be resent automatically -- that risks paying "
             "twice.\n"
             "  Someone has to decide what actually happened, then run:\n"
-            "    python tools/reconcile.py --database <db> --resolve <op id> --note \"why\""
+            "    python tools/reconcile.py --database <db> --not-executed <op id> --note \"why\""
         ),
     },
     # --- lists / detail ---------------------------------------------------
@@ -338,8 +340,8 @@ _CATALOGUE: Final[Mapping[str, Mapping[str, str]]] = {
         "en": "{provider} connected",
     },
     "receipt.plan_revised": {
-        "zh-CN": "已生成第 {version} 版研究方案",
-        "en": "Research plan version {version} is ready",
+        "zh-CN": "研究方向 · 第 {version} 版",
+        "en": "Research direction · version {version}",
     },
     "receipt.defaults_saved": {
         "zh-CN": "研究默认值已保存",
