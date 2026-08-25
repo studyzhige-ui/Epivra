@@ -95,8 +95,8 @@ def _require_text(value: str, label: str) -> str:
 _QUESTION_MIN_CHARS = 12
 
 
-def _require_question_text(value: str, label: str) -> str:
-    """Reject a section label standing where a question belongs.
+def question_text_problem(value: str, label: str) -> str:
+    """Describe a section label standing where a question belongs, or "".
 
     A live Contract stated ``### Q1. 核心问题`` as a *heading* and put the real
     question in the prose beneath it.  The parser took the heading, so Q1 became
@@ -110,14 +110,20 @@ def _require_question_text(value: str, label: str) -> str:
     text is punctuated as a question, or it is long enough to be a clause rather
     than a topic.  Whether the question is a *good* one is the user's call at the
     approval card.
+
+    **This is a semantic judgement, so it binds when a Contract is created and not
+    when one is read back** (§2.3.1).  It was added after real runs, and a
+    committed Contract cannot be improved to satisfy it -- rejecting one at decode
+    time strands a study that was already planned, approved and part-way done,
+    which is exactly what happened to one task in the calibration corpus.
     """
 
-    text = _require_text(value, label)
+    text = value.strip()
     if "？" in text or "?" in text:
-        return text
+        return ""
     if len(text) >= _QUESTION_MIN_CHARS:
-        return text
-    raise ArtifactValidationError(
+        return ""
+    return (
         f"{label} reads as a section label rather than a question: {text!r}. "
         "State the question itself on the Q-line -- roles only ever receive the "
         "label and this text, never the prose around it."
@@ -135,7 +141,11 @@ class ResearchQuestion:
 
     def __post_init__(self) -> None:
         require_question_label(self.label)
-        _require_question_text(self.text, f"{self.label} text")
+        # Non-empty is mechanical and stays an invariant: a label with no text is
+        # not a question anyone could act on.  Whether the text *reads* as a
+        # question is semantic and lives in the construction path, so a Contract
+        # committed before that check existed can still be read back (§2.3.1).
+        _require_text(self.text, f"{self.label} text")
         if self.role not in ("primary", "supporting"):
             raise ArtifactValidationError(
                 f"{self.label} role must be 'primary' or 'supporting'"
@@ -442,6 +452,18 @@ class ResearchContract:
     #: Chinese" fixed in their prompts while the context announced a delivery
     #: language beside it -- a direct contradiction, and the prompt won.
     language: str = "zh"
+    #: Semantic checks this Contract would not pass if it were being created now.
+    #:
+    #: Empty for anything this version produced.  Non-empty means the Contract was
+    #: committed before a check existed and was admitted anyway, because a
+    #: committed artifact cannot be improved and refusing to read it strands a
+    #: study that was already approved (§2.3.1).  Recorded rather than hidden: a
+    #: reader can tell the difference, which is the whole point of admitting it.
+    #:
+    #: Deliberately absent from :meth:`encode` -- it is an observation made while
+    #: reading, not part of what the user approved, and putting it in the body
+    #: would change the artifact's identity.
+    legacy_degraded: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         _require_text(self.body_markdown, "contract body")
@@ -506,6 +528,15 @@ class ResearchContract:
 
     @classmethod
     def decode(cls, body: str) -> ResearchContract:
+        """Read a committed Contract back, admitting what it cannot now fix.
+
+        Lenient about semantic checks and strict about everything mechanical, per
+        §2.3.1.  The support graph, label contiguity, and the single primary
+        question are all still enforced -- those are structure the runtime depends
+        on to resolve an assignment at all.  Only judgements the Contract could
+        never satisfy retroactively are downgraded, and they are recorded.
+        """
+
         value = json.loads(body)
         return build_contract(
             str(value["markdown"]),
@@ -517,6 +548,7 @@ class ResearchContract:
             # Contracts written before the language was carried structurally
             # were all Chinese deliverables, so that is the honest default.
             language=str(value.get("language") or "zh"),
+            strict=False,
         )
 
 
@@ -532,7 +564,10 @@ def parse_question_lines(body_markdown: str) -> tuple[tuple[str, str], ...]:
 
 
 def build_question_model(
-    body_markdown: str, supports: Mapping[str, Sequence[str]] | None = None
+    body_markdown: str,
+    supports: Mapping[str, Sequence[str]] | None = None,
+    *,
+    strict: bool = True,
 ) -> QuestionModel:
     """Build the question model from Contract prose and a support mapping.
 
@@ -540,6 +575,11 @@ def build_question_model(
     an entry in ``supports``; the default is to support ``Q1`` directly, so a
     flat set of supporting questions is expressible without ceremony while a
     layered structure stays available.
+
+    ``strict`` governs only the semantic check on question text.  Everything else
+    -- contiguous labels, exactly one primary, a support graph that reaches Q1 --
+    is structure the runtime needs to resolve an assignment at all, so it is
+    enforced either way (§2.3.1).
     """
 
     lines = parse_question_lines(body_markdown)
@@ -562,6 +602,10 @@ def build_question_model(
 
     questions: list[ResearchQuestion] = []
     for label, text in seen.items():
+        if strict:
+            problem = question_text_problem(text, f"{label} text")
+            if problem:
+                raise ArtifactValidationError(problem)
         if label == "Q1":
             questions.append(ResearchQuestion(label=label, text=text, role="primary"))
             continue
@@ -574,23 +618,46 @@ def build_question_model(
     return QuestionModel(questions=tuple(questions))
 
 
+def degraded_checks(body_markdown: str) -> tuple[str, ...]:
+    """Semantic checks this Contract text would fail if it were created now.
+
+    Read by :meth:`ResearchContract.decode` so an admitted legacy Contract carries
+    a record of what it was admitted despite.  Uses the same predicate the strict
+    path raises on, so the two cannot drift into disagreeing about what counts.
+    """
+
+    return tuple(
+        problem
+        for label, text in parse_question_lines(body_markdown)
+        if (problem := question_text_problem(text, f"{label} text"))
+    )
+
+
 def build_contract(
     body_markdown: str,
     *,
     supports: Mapping[str, Sequence[str]] | None = None,
     pack_refs: Iterable[str] = (),
     language: str = "zh",
+    strict: bool = True,
 ) -> ResearchContract:
-    """Parse Contract prose into the approved agreement the runtime enforces."""
+    """Parse Contract prose into the approved agreement the runtime enforces.
+
+    ``strict`` is the create/decode boundary of §2.3.1: creating a Contract
+    enforces every check, reading one back enforces only what it could still
+    satisfy.  It defaults to strict so a new caller gets the safe behaviour without
+    having to ask for it.
+    """
 
     return ResearchContract(
         body_markdown=body_markdown,
-        question_model=build_question_model(body_markdown, supports),
+        question_model=build_question_model(body_markdown, supports, strict=strict),
         pack_refs=tuple(pack_refs),
         supports={
             label: tuple(targets) for label, targets in dict(supports or {}).items()
         },
         language=language,
+        legacy_degraded=() if strict else degraded_checks(body_markdown),
     )
 
 
@@ -615,7 +682,9 @@ __all__ = [
     "ResearchQuestion",
     "build_contract",
     "build_question_model",
+    "degraded_checks",
     "parse_question_lines",
+    "question_text_problem",
     "require_question_label",
     "section_title",
 ]

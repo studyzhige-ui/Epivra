@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import json
 import unittest
 
 from deep_research_agent.contract import (
     QuestionModel,
+    ResearchContract,
     ResearchQuestion,
     build_contract,
     build_question_model,
@@ -225,6 +227,83 @@ class QuestionTextTest(unittest.TestCase):
             "以监管审评为基线。\n"
         )
         self.assertIn("何种强度", build_question_model(body).primary.text)
+
+
+class LegacyContractTest(unittest.TestCase):
+    """Create is strict; decode admits what a committed Contract cannot fix.
+
+    This check was added *after* real runs, and artifacts are immutable, so
+    enforcing it on the way in as well as out stranded a study that had already
+    been planned, approved and part-way completed: it raised on decode, which meant
+    `advance()`, `approval_card()` and everything else refused to touch it.  One
+    task in the calibration corpus is in exactly that state.
+
+    §2.3.1 draws the line at whether the artifact could still satisfy the check.
+    Structure it needs to be usable at all stays enforced in both directions.
+    """
+
+    BODY = "## 问题模型\n\n### Q1. 核心问题\n### Q2. 支撑问题\n"
+
+    def _committed(self) -> str:
+        """The body as it sits in a real database: encoded before the check existed."""
+
+        return json.dumps(
+            {"markdown": self.BODY, "supports": {}, "packs": [], "language": "zh"},
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+
+    def test_a_committed_contract_can_still_be_read(self) -> None:
+        contract = ResearchContract.decode(self._committed())
+        self.assertEqual("核心问题", contract.question_model.primary.text)
+        self.assertEqual(("Q1", "Q2"), contract.labels)
+
+    def test_what_it_was_admitted_despite_is_recorded(self) -> None:
+        """Admitted, not hidden -- a reader must be able to tell the difference."""
+
+        contract = ResearchContract.decode(self._committed())
+        self.assertTrue(contract.legacy_degraded)
+        self.assertIn("section label rather than a question", contract.legacy_degraded[0])
+
+    def test_a_contract_this_version_produced_is_not_marked(self) -> None:
+        good = build_contract("## 问题模型\n\n### Q1. 两条路径的证据强度如何？\n")
+        self.assertEqual((), ResearchContract.decode(good.encode()).legacy_degraded)
+
+    def test_the_same_body_is_still_refused_on_the_way_in(self) -> None:
+        """Leniency is one-directional, or the check would be worthless."""
+
+        with self.assertRaisesRegex(
+            ArtifactValidationError, "section label rather than a question"
+        ):
+            build_contract(self.BODY)
+
+    def test_the_degradation_record_stays_out_of_the_body(self) -> None:
+        """It is an observation made while reading, not part of what was approved.
+
+        In the body it would change the artifact's identity, so re-encoding a
+        legacy Contract would silently fork it.
+        """
+
+        decoded = ResearchContract.decode(self._committed())
+        self.assertTrue(decoded.legacy_degraded)
+        self.assertNotIn("legacy_degraded", decoded.encode())
+        self.assertNotIn("degraded", decoded.encode())
+
+    def test_mechanical_structure_is_never_relaxed(self) -> None:
+        """Leniency covers judgement, not the structure roles depend on."""
+
+        for markdown, expected in (
+            ("## 问题模型\n\n### Q2. 只有支撑问题，没有核心问题？\n", "primary question"),
+            ("## 问题模型\n\n没有任何编号问题。\n", "numbered questions"),
+        ):
+            with self.subTest(markdown=markdown):
+                body = json.dumps(
+                    {"markdown": markdown, "supports": {}, "packs": []},
+                    ensure_ascii=False,
+                )
+                with self.assertRaises(ArtifactValidationError) as raised:
+                    ResearchContract.decode(body)
+                self.assertIn(expected, str(raised.exception))
 
 
 if __name__ == "__main__":
