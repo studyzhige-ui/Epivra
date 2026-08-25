@@ -22,12 +22,15 @@ import aiosqlite
 from deep_research_agent.agents import investigator as investigator_agent
 from deep_research_agent.agents.lead import AssignmentDraft
 from deep_research_agent.artifact_store import SqliteArtifactStore
+from deep_research_agent.citations import render_citations
 from deep_research_agent.content_store import SqliteContentStore
+from deep_research_agent.context import load_evidence
 from deep_research_agent.contract import build_contract
 from deep_research_agent.model import ModelReply, ModelToolCall
 from deep_research_agent.operations import ExecutionIdentity, SqliteOperationLedger
 from deep_research_agent.providers._http import SourceReadError
 from deep_research_agent.reporting import RoleRuntime
+from deep_research_agent.sources import SourceSnapshotBody
 from deep_research_agent.tools import ReadResult, SearchResponse, SearchResult
 from deep_research_agent.wave import run_wave, stalled
 
@@ -237,6 +240,107 @@ class WaveFixture(unittest.IsolatedAsyncioTestCase):
             for role, model in self.models.items()
         }
 
+
+
+class CaptureTimeTest(WaveFixture):
+    """A published reference has to say when its source was read.
+
+    `citations._reference_line` renders a capture date and explains why -- a reader
+    judges currency from it -- but nothing on the live path ever set `fetched_at`,
+    so every reference in every published report came out bare.  Snapshots are
+    immutable, which makes it unrecoverable after the fact: seven published reports
+    are permanently missing it.
+    """
+
+    async def _snapshot(self) -> SourceSnapshotBody:
+        runtimes = self.runtimes(
+            investigator=investigator_script(),
+            curator=curator_script(),
+            analyst=[ANALYST_REPLY],
+        )
+        await run_wave(
+            self.store,
+            self.ledger,
+            runtimes,
+            contract=CONTRACT,
+            wave_intent="建立机制层面的基线证据",
+            assignments=[
+                AssignmentDraft(
+                    question_labels=("Q1",),
+                    focus="ACIP 当前对婴儿 RSV 预防的正式建议是什么",
+                    why_it_matters="它决定本院可选路径的合规基线",
+                    evidence_sought="ACIP 或 CDC 的一手记录",
+                )
+            ],
+            broker=self.broker,
+            reader=self.reader,
+        )
+        refs = (await self.store.active_view()).active("source_snapshot")
+        self.assertTrue(refs, "the wave should have saved a snapshot")
+        return SourceSnapshotBody.decode(await self.store.body(refs[0]))
+
+    async def test_a_live_fetch_records_when_it_happened(self) -> None:
+        body = await self._snapshot()
+        self.assertTrue(body.fetched_at, "a snapshot must carry its capture time")
+        # A date is what the reference list renders; the rest is precision nobody
+        # reads, but it must at least start with one.
+        self.assertRegex(body.fetched_at[:10], r"^\d{4}-\d{2}-\d{2}$")
+
+    async def test_the_rendered_reference_carries_the_date(self) -> None:
+        """End to end: the field is only worth setting if it reaches the reader."""
+
+        body = await self._snapshot()
+        evidence = await load_evidence(self.store)
+        rendered = render_citations(
+            "# 报告\n\n结论句 [[cite:h1]]。\n",
+            evidence.handles,
+            evidence_set=evidence.material_refs,
+        )
+        self.assertEqual(1, len(rendered.references))
+        self.assertIn(f"({body.fetched_at[:10]})", rendered.references[0])
+
+    async def test_replaying_a_fetch_does_not_mint_a_second_snapshot(self) -> None:
+        """Why the stamp comes from the ledger and not the clock.
+
+        `fetched_at` is part of the body, so it decides the artifact's identity.  A
+        wall-clock stamp would differ on every replay, so a resumed run would
+        commit a *second* snapshot of text the ledger already held -- inflating the
+        source count and orphaning the first.
+        """
+
+        before = await self._snapshot()
+        count_before = len((await self.store.active_view()).active("source_snapshot"))
+
+        # Same task, same URL: the fetch replays from the ledger rather than
+        # calling the reader again.
+        await run_wave(
+            self.store,
+            self.ledger,
+            self.runtimes(
+                investigator=investigator_script(),
+                curator=curator_script(),
+                analyst=[ANALYST_REPLY],
+            ),
+            contract=CONTRACT,
+            wave_intent="建立机制层面的基线证据",
+            assignments=[
+                AssignmentDraft(
+                    question_labels=("Q1",),
+                    focus="ACIP 当前对婴儿 RSV 预防的正式建议是什么",
+                    why_it_matters="它决定本院可选路径的合规基线",
+                    evidence_sought="ACIP 或 CDC 的一手记录",
+                )
+            ],
+            broker=self.broker,
+            reader=self.reader,
+        )
+
+        refs = (await self.store.active_view()).active("source_snapshot")
+        self.assertEqual(count_before, len(refs))
+        self.assertEqual(
+            before.fetched_at,
+            SourceSnapshotBody.decode(await self.store.body(refs[0])).fetched_at,
+        )
 
 
 class DeltaTest(WaveFixture):

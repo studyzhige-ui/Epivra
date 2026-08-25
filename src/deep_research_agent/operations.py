@@ -633,6 +633,23 @@ class SqliteOperationLedger:
             )
         return await self._content_store.get(record.outcome_ref)
 
+    async def settled_at(self, operation_id: str) -> str:
+        """When this operation reached its outcome, as recorded.
+
+        The durable answer to "when did this actually happen", which is different
+        from "when is this being read".  A caller that stamps a wall clock instead
+        gets a fresh value on every replay -- and for anything that stamp becomes
+        part of, a replay then produces a *different* artifact from the same
+        recorded call.  Reading it back keeps a resumed run byte-identical to the
+        run it resumed.
+        """
+
+        rows = await self._connection.execute_fetchall(
+            "SELECT settled_at FROM operations WHERE operation_id = ?",
+            (require_operation_id(operation_id),),
+        )
+        return str(rows[0][0] or "") if rows else ""
+
     async def _require(self, operation_id: str) -> OperationRecord:
         record = await self.get(operation_id)
         if record is None:

@@ -365,7 +365,16 @@ class _InvestigationTools:
 
         text_ref = await self._store_text(text)
         body = SourceSnapshotBody(
-            url=url, title=title.strip() or url, text_ref=text_ref
+            url=url,
+            title=title.strip() or url,
+            text_ref=text_ref,
+            # Read back from the ledger rather than stamped from the wall clock.
+            # It is part of the body, so it decides the artifact's identity: a
+            # fresh timestamp on every replay would mint a *second* snapshot of
+            # text the ledger already had, inflating the source count and
+            # orphaning the first.  The ledger's settled_at is also the more
+            # honest answer -- when the fetch happened, not when it was read back.
+            fetched_at=await self._ledger.settled_at(request.operation_id()),
         )
         envelope = await self._store.put(
             kind="source_snapshot",
