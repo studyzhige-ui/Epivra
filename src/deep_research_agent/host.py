@@ -10,7 +10,7 @@ import sys
 import uuid
 from pathlib import Path
 
-from .adapters import credentials
+from .adapters import DEFAULT_MODEL, credentials
 from .application import online_service
 from .storage import Store
 
@@ -22,7 +22,7 @@ class Host:
         self.store = Store(self.state / "research.db")
         self.factory = factory
         self.services = {}
-        self.clients = []
+        self.clients = {}
         self.token = secrets.token_urlsafe(32)
         self.stopping = asyncio.Event()
 
@@ -36,7 +36,7 @@ class Host:
                     self.store, study, credentials(self.root / ".env")
                 )
             self.services[study] = service
-            self.clients.extend(clients)
+            self.clients[study] = clients
         return self.services[study]
 
     async def dispatch(self, request):
@@ -74,6 +74,7 @@ class Host:
                     "network": request.get("web") is True,
                     "local_roots": resolved,
                     "stream_model": True,
+                    "model": DEFAULT_MODEL,
                 },
             )
             self.service(study).start(study)
@@ -81,6 +82,26 @@ class Host:
         study = request["study"]
         if not isinstance(study, str):
             raise ValueError("study must be text")
+        if action == "reload":
+            control = self.store.control(study)
+            service = self.services.get(study)
+            task = service.tasks.get(study) if service else None
+            if not control.paused or (task and not task.done()):
+                raise ValueError("pause research and wait for in-flight work to finish")
+            keys = credentials(self.root / ".env")
+            mapping = {
+                "https://api.deepseek.com": "DEEPSEEK_API_KEY",
+                "https://api.tavily.com": "TAVILY_API_KEY",
+            }
+            updates = [
+                (client, keys[mapping[client.origin]])
+                for client in self.clients.get(study, [])
+            ]
+            if any(not key.strip() for _, key in updates):
+                raise ValueError("credential required")
+            for client, key in updates:
+                client.replace_key(key)
+            return {"reloaded": True}
         if action == "control":
             result = self.store.command(
                 study,
@@ -165,8 +186,9 @@ class Host:
                 await server.wait_closed()
             for service in self.services.values():
                 await service.close()
-            for client in self.clients:
-                await client.close()
+            for clients in self.clients.values():
+                for client in clients:
+                    await client.close()
             self.store.close()
             pointer.unlink(missing_ok=True)
             temporary.unlink(missing_ok=True)
@@ -246,7 +268,7 @@ def main():
     create.add_argument("request")
     create.add_argument("--web", action="store_true")
     create.add_argument("--local-root", action="append", default=[])
-    for action in ("status", "report"):
+    for action in ("status", "report", "reload"):
         sub.add_parser(action).add_argument("study")
     control = sub.add_parser("control")
     control.add_argument("study")
@@ -270,7 +292,7 @@ def main():
             request.update(
                 request=args.request, web=args.web, local_roots=args.local_root
             )
-        elif args.action in ("status", "report", "control"):
+        elif args.action in ("status", "report", "control", "reload"):
             request["study"] = args.study
         if args.action == "control":
             payload = {}

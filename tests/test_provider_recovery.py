@@ -5,13 +5,115 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from deep_research_agent.adapters import IncompleteStream
+from deep_research_agent.adapters import (
+    DeepSeek,
+    IncompleteStream,
+    ProviderFailure,
+    Tavily,
+)
 from deep_research_agent.domain import Call, Conflict, Reply, UnknownOutcome
 from deep_research_agent.harness import Harness, Tool, object_schema
 from deep_research_agent.storage import Store
 
 
 class RecoveryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_search_quota_repair_reuses_paid_model_response(self):
+        class Model:
+            identity = "quota-fixture"
+            calls = 0
+
+            async def complete(inner, request):
+                inner.calls += 1
+                return Reply("", (Call("lookup", {}),)).to_json()
+
+        calls = 0
+
+        async def lookup(args):
+            nonlocal calls
+            calls += 1
+            return {"http_status": 432 if calls == 1 else 200}
+
+        def observe(raw):
+            if raw["http_status"] != 200:
+                raise ProviderFailure("tavily", raw["http_status"])
+            return {"recovered": True}
+
+        tool = Tool(
+            "Lookup",
+            object_schema({}),
+            lookup,
+            observe=observe,
+            retry_on_resume=Tavily.retry_on_resume,
+        )
+        model = Model()
+        with self.assertRaises(ProviderFailure):
+            await Harness(self.store, model, {"lookup": tool}).step("s", self.work.ref)
+        self.reopen()
+        self.store.command("s", "resume-quota", self.c.ref, "resume")
+        await Harness(self.store, model, {"lookup": tool}).step("s", self.work.ref)
+        self.assertEqual(1, model.calls)
+        self.assertEqual(2, calls)
+        self.assertTrue(
+            self.store.list("s", "observation")[0].body["result"]["recovered"]
+        )
+
+    async def test_balance_rejection_requires_new_user_control_before_retry(self):
+        class Model:
+            identity = "balance-fixture"
+            calls = 0
+            funded = False
+            retry_on_resume = staticmethod(DeepSeek.retry_on_resume)
+
+            async def complete(inner, request):
+                inner.calls += 1
+                return (
+                    Reply("done", ()).to_json()
+                    if inner.funded
+                    else {"http_status": 402}
+                )
+
+            def decode(inner, raw):
+                if raw.get("http_status") == 402:
+                    raise ProviderFailure("deepseek", 402)
+                return raw
+
+        model = Model()
+        for _ in range(2):
+            with self.assertRaises(ProviderFailure):
+                await Harness(self.store, model).step("s", self.work.ref)
+        self.assertEqual(1, model.calls)
+        model.funded = True
+        self.reopen()
+        with self.assertRaises(ProviderFailure):
+            await Harness(self.store, model).step("s", self.work.ref)
+        c = self.store.control("s")
+        self.store.command("s", "resume-funded", c.ref, "resume")
+        await Harness(self.store, model).step("s", self.work.ref)
+        self.assertEqual(2, model.calls)
+        self.assertEqual(1, len(self.store.list("s", "retry")))
+
+    async def test_failed_balance_repair_does_not_loop(self):
+        class Model:
+            identity = "balance-fixture"
+            calls = 0
+            retry_on_resume = staticmethod(DeepSeek.retry_on_resume)
+
+            async def complete(inner, request):
+                inner.calls += 1
+                return {"http_status": 402}
+
+            def decode(inner, raw):
+                raise ProviderFailure("deepseek", 402)
+
+        model = Model()
+        with self.assertRaises(ProviderFailure):
+            await Harness(self.store, model).step("s", self.work.ref)
+        self.store.command("s", "resume-unfunded", self.c.ref, "resume")
+        with self.assertRaises(ProviderFailure):
+            await Harness(self.store, model).step("s", self.work.ref)
+        self.assertEqual(2, model.calls)
+        self.assertEqual([], self.store.unsettled("s"))
+
     async def asyncSetUp(self):
         self.folder = tempfile.TemporaryDirectory()
         self.path = Path(self.folder.name) / "research.db"

@@ -42,6 +42,24 @@ def response(finish="tool_calls", arguments='{"value":"ok"}'):
 
 
 class AdapterTests(unittest.IsolatedAsyncioTestCase):
+    async def test_credential_rotation_preserves_model_binding_and_changes_only_auth(
+        self,
+    ):
+        before = self.model.identity
+        wire = self.model.prepare(self.context, None)
+        self.api.replace_key("replacement-fixture-key")
+        after = DeepSeek(self.api)
+        self.assertEqual(before, after.identity)
+        self.assertEqual(wire, after.prepare(self.context, None))
+        await after.complete({"wire": wire})
+        self.assertEqual(
+            "Bearer replacement-fixture-key", self.requests[-1].headers["Authorization"]
+        )
+        self.assertEqual("deepseek-v4-flash", wire["payload"]["model"])
+        self.assertNotEqual(
+            before, DeepSeek(self.api, model="different-model").identity
+        )
+
     async def test_fragmented_stream_reassembles_tools_and_usage(self):
         def chunk(delta, finish=None, usage=None):
             return (

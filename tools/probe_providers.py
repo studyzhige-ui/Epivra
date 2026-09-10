@@ -6,7 +6,13 @@ import asyncio
 import json
 from pathlib import Path
 
-from deep_research_agent.adapters import DeepSeek, JsonAPI, Tavily, credentials
+from deep_research_agent.adapters import (
+    DEFAULT_MODEL,
+    DeepSeek,
+    JsonAPI,
+    Tavily,
+    credentials,
+)
 from deep_research_agent.domain import identity
 from deep_research_agent.storage import Store
 
@@ -44,7 +50,9 @@ async def run(root: Path, stream: bool = False) -> dict:
                 store.settle(key, result)
             return result
 
-        model = DeepSeek(clients[0], model="deepseek-v4-pro", max_tokens=2048, stream=stream)
+        model = DeepSeek(
+            clients[0], model=DEFAULT_MODEL, max_tokens=2048, stream=stream
+        )
         context = {
             "system": "You are a protocol test. Use the echo tool exactly once with value 'verified'. After its result, say verified.",
             "tools": {
@@ -125,7 +133,9 @@ if __name__ == "__main__":
     parser.add_argument("--stream", action="store_true")
     args = parser.parse_args()
     try:
-        result = asyncio.run(run(Path(__file__).resolve().parents[1], stream=args.stream))
+        result = asyncio.run(
+            run(Path(__file__).resolve().parents[1], stream=args.stream)
+        )
     except Exception as exc:
         result = {"error_type": type(exc).__name__}
     print(json.dumps(result, ensure_ascii=False, indent=2))

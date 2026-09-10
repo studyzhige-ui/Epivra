@@ -8,6 +8,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
+import httpx
+
+from deep_research_agent.adapters import DeepSeek, JsonAPI
 from deep_research_agent.application import ResearchService
 from deep_research_agent.domain import Call, Reply
 from deep_research_agent.harness import Harness
@@ -16,6 +19,39 @@ from deep_research_agent.storage import Store
 
 
 class HostTests(unittest.IsolatedAsyncioTestCase):
+    async def test_reload_credentials_requires_paused_and_drained_work(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            root.joinpath(".env").write_text(
+                "DEEPSEEK_API_KEY=new-fixture-key\n", encoding="utf-8"
+            )
+            async with httpx.AsyncClient(
+                transport=httpx.MockTransport(lambda r: httpx.Response(200, json={}))
+            ) as transport:
+                api = JsonAPI("https://api.deepseek.com", "old-fixture-key", transport)
+
+                def factory(store, study):
+                    return ResearchService(store, Harness(store, DeepSeek(api))), [api]
+
+                host = Host(root, factory)
+                try:
+                    c = host.store.create("s", "Research", {})
+                    service = host.service("s")
+                    request = {"token": host.token, "action": "reload", "study": "s"}
+                    with self.assertRaises(ValueError):
+                        await host.dispatch(request)
+                    host.store.command("s", "pause", c.ref, "pause")
+                    task = asyncio.create_task(asyncio.sleep(0.01))
+                    service.tasks["s"] = task
+                    with self.assertRaises(ValueError):
+                        await host.dispatch(request)
+                    await task
+                    self.assertEqual({"reloaded": True}, await host.dispatch(request))
+                    self.assertEqual("new-fixture-key", api._key)
+                    self.assertTrue(host.store.control("s").paused)
+                finally:
+                    host.store.close()
+
     async def test_start_checks_readiness_and_reuses_running_host(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)

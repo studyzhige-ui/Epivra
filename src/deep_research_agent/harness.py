@@ -33,6 +33,7 @@ class Tool:
     observe: Callable[[Any], Any] | None = None
     check: Callable[[dict[str, Any]], None] | None = None
     retry_delay: Callable[[Any, int], float | None] | None = None
+    retry_on_resume: Callable[[Any], bool] | None = None
 
 
 def object_schema(properties: dict[str, Any]) -> dict[str, Any]:
@@ -282,7 +283,16 @@ class Harness:
         return self.store.result(study, retry.body["next"] if retry else operation)
 
     async def _invoke(
-        self, study, work, epoch, step, operation, request, invoke, retry_delay=None
+        self,
+        study,
+        work,
+        epoch,
+        step,
+        operation,
+        request,
+        invoke,
+        retry_delay=None,
+        retry_on_resume=None,
     ):
         retry = self._attempt(study, operation)
         attempt = retry.body["attempt"] if retry else 0
@@ -302,6 +312,13 @@ class Harness:
                 self.store.settle(key, raw)
             self.store.require_work(study, work, epoch)
             delay = retry_delay(raw, attempt) if retry_delay else None
+            if (
+                delay is None
+                and retry_on_resume
+                and retry_on_resume(raw)
+                and epoch > self.store.admission_epoch(study, key)
+            ):
+                delay = 0
             if delay is None:
                 return raw
             if not math.isfinite(delay) or delay < 0:
@@ -373,6 +390,7 @@ class Harness:
                 step.body["request"],
                 lambda: self.model.complete(step.body["request"]),
                 getattr(self.model, "retry_delay", None),
+                getattr(self.model, "retry_on_resume", None),
             )
             # Always save the external result; only then check the admission fence.
             self.store.require_work(study, work_ref, control.epoch)
@@ -443,6 +461,9 @@ class Harness:
                             invoke,
                             (lambda raw, n: tool.retry_delay(raw["value"], n))
                             if tool.retry_delay
+                            else None,
+                            (lambda raw: tool.retry_on_resume(raw["value"]))
+                            if tool.retry_on_resume
                             else None,
                         )
                         observe = self.tools[call.name].observe

@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-from .adapters import ProviderFailure
+from .adapters import DEFAULT_MODEL, ProviderFailure
 from .domain import Conflict
 from .harness import Harness
 from .storage import Store
@@ -222,7 +222,7 @@ class ResearchService:
 
 
 def online_service(
-    store: Store, study: str, keys: dict[str, str], model_name: str = "deepseek-v4-pro"
+    store: Store, study: str, keys: dict[str, str], model_name: str | None = None
 ) -> tuple[ResearchService, list]:
     """Compose explicit providers without giving adapters access to Agent control."""
     from .adapters import DeepSeek, JsonAPI, ProviderFailure, Tavily
@@ -285,6 +285,7 @@ def online_service(
             permission="network",
             observe=search_observation,
             retry_delay=search.retry_delay,
+            retry_on_resume=search.retry_on_resume,
         ),
         "fetch_web": Tool(
             "Extract source text through Tavily; returns a persistent source reference.",
@@ -295,9 +296,11 @@ def online_service(
             observe=extract_observation,
             check=search.validate_extract,
             retry_delay=search.retry_delay,
+            retry_on_resume=search.retry_on_resume,
         ),
     }
     policy = store.get(study, store.control(study).direction).body["policy"]
+    model_name = model_name or policy.get("model", DEFAULT_MODEL)
     harness = Harness(
         store,
         DeepSeek(model_api, model=model_name, stream=policy.get("stream_model", False)),

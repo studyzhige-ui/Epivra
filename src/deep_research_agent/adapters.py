@@ -11,6 +11,8 @@ import httpx
 
 from .domain import encode, identity
 
+DEFAULT_MODEL = "deepseek-v4-flash"
+
 
 class ProviderFailure(RuntimeError):
     def __init__(self, provider: str, status: int):
@@ -113,7 +115,12 @@ class JsonAPI:
             follow_redirects=False,
         )
         self._owns_client = client is None
-        self.account = identity(origin, key)[:16]
+        self.account = identity(origin, "default-account")[:16]
+
+    def replace_key(self, key: str) -> None:
+        if not isinstance(key, str) or not key.strip():
+            raise ValueError("credential required")
+        self._key = key
 
     @staticmethod
     def _rejection(response: httpx.Response) -> dict:
@@ -179,10 +186,14 @@ class JsonAPI:
 class DeepSeek:
     retry_delay = staticmethod(rate_limit_delay)
 
+    @staticmethod
+    def retry_on_resume(raw: dict) -> bool:
+        return raw.get("http_status") in {401, 402}
+
     def __init__(
         self,
         api: JsonAPI,
-        model: str = "deepseek-v4-pro",
+        model: str = DEFAULT_MODEL,
         thinking: bool = True,
         max_tokens: int = 8192,
         window_chars: int = 120000,
@@ -316,6 +327,10 @@ class DeepSeek:
 
 class Tavily:
     retry_delay = staticmethod(rate_limit_delay)
+
+    @staticmethod
+    def retry_on_resume(raw: dict) -> bool:
+        return raw.get("http_status") in {401, 432, 433}
 
     def __init__(self, api: JsonAPI):
         self.api = api

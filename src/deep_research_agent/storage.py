@@ -395,6 +395,15 @@ class Store:
             )
             return None
 
+    def admission_epoch(self, study: str, operation_id: str) -> int:
+        row = self.db.execute(
+            "SELECT epoch FROM operations WHERE study=? AND id=?",
+            (study, operation_id),
+        ).fetchone()
+        if row is None:
+            raise ValueError("unknown operation")
+        return row[0]
+
     def result(self, study: str, operation_id: str) -> Any:
         import json
 
