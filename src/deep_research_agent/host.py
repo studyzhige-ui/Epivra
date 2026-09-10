@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import base64
 import json
 import secrets
 import sys
@@ -14,6 +15,7 @@ from .adapters import DEFAULT_MODEL, credentials
 from .application import online_service
 from .scheduling import Scheduler
 from .storage import Store
+from .workspace import Workspace
 
 
 class Host:
@@ -106,6 +108,26 @@ class Host:
         study = request["study"]
         if not isinstance(study, str):
             raise ValueError("study must be text")
+        if action == "upload":
+            control = self.store.control(study)
+            service = self.services.get(study)
+            task = service.tasks.get(study) if service else None
+            if control.cancelled or (
+                control.approved and (not control.paused or (task and not task.done()))
+            ):
+                raise ValueError("pause approved research and wait before uploading")
+            source = await Workspace(self.store).upload_async(
+                study,
+                request["expected"],
+                request["name"],
+                base64.b64decode(request["data"], validate=True),
+            )
+            return {
+                "source": source.ref,
+                "coverage": source.body["coverage"],
+                "issues": source.body["issues"],
+                "characters": len(source.body["text"]),
+            }
         if action in {"reload", "reconcile"}:
             control = self.store.control(study)
             service = self.services.get(study)
@@ -328,6 +350,10 @@ def main():
     reconcile.add_argument("--receipt-id", required=True)
     reconcile.add_argument("--response-file", type=Path, required=True)
     reconcile.add_argument("--evidence", required=True)
+    upload = sub.add_parser("upload")
+    upload.add_argument("study")
+    upload.add_argument("file", type=Path)
+    upload.add_argument("--expected", required=True)
     args = parser.parse_args()
     root = args.root.resolve()
     try:
@@ -342,8 +368,26 @@ def main():
             request.update(
                 request=args.request, web=args.web, local_roots=args.local_root
             )
-        elif args.action in ("status", "report", "control", "reload", "reconcile"):
+        elif args.action in (
+            "status",
+            "report",
+            "control",
+            "reload",
+            "reconcile",
+            "upload",
+        ):
             request["study"] = args.study
+        if args.action == "upload":
+            raw = args.file.read_bytes()
+            if len(raw) > 3 * 1024 * 1024 - 8192:
+                raise ValueError(
+                    "file exceeds upload IPC limit; authorize its directory instead"
+                )
+            request.update(
+                expected=args.expected,
+                name=args.file.name,
+                data=base64.b64encode(raw).decode("ascii"),
+            )
         if args.action == "reconcile":
             request.update(
                 operation=args.operation,

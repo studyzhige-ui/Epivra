@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
+import base64
 import hashlib
 from pathlib import Path
 from typing import Any
 
 from .domain import Artifact, NotAllowed
+from .materials import SUPPORTED_SUFFIXES, parse
 from .storage import Store
-
-TEXT_SUFFIXES = {".txt", ".md", ".csv", ".tsv", ".json", ".yaml", ".yml", ".html"}
 
 
 class Workspace:
@@ -57,7 +58,7 @@ class Workspace:
                                 "bytes": stat.st_size,
                                 "mtime_ns": stat.st_mtime_ns,
                                 "status": "available"
-                                if path.suffix.lower() in TEXT_SUFFIXES
+                                if path.suffix.lower() in SUPPORTED_SUFFIXES
                                 else "unsupported",
                             }
                         )
@@ -92,14 +93,19 @@ class Workspace:
 
     def snapshot(self, study: str, catalog_ref: str, relative: str) -> Artifact:
         try:
-            return self._snapshot(study, catalog_ref, relative)
+            loaded = self._load(study, catalog_ref, relative)
+            if isinstance(loaded, Artifact):
+                return loaded
+            return self._save(
+                study, relative, loaded, parse(relative, loaded), (catalog_ref,)
+            )
         except OSError as exc:
             # Local material failure is an observation, not a broken database.
             raise ValueError(
                 "local source unavailable; refresh or choose another source"
             ) from exc
 
-    def _snapshot(self, study: str, catalog_ref: str, relative: str) -> Artifact:
+    def _load(self, study: str, catalog_ref: str, relative: str) -> Artifact | bytes:
         catalog = self.store.get(study, catalog_ref)
         if catalog.kind != "catalog":
             raise ValueError("expected catalog")
@@ -143,35 +149,76 @@ class Workspace:
             after.st_mtime_ns,
         ):
             raise ValueError("source was replaced while reading")
-        text = raw.decode("utf-8-sig")
-        return self.store.put(
-            study,
-            "source",
-            {
-                "text": text,
-                "origin": relative,
-                "format": target.suffix.lower(),
-                "sha256": hashlib.sha256(raw).hexdigest(),
-                "parser": "utf8-v1",
-                "coverage": "snapshotted",
-            },
-            (catalog_ref,),
-        )
+        return raw
+
+    async def snapshot_async(
+        self, study: str, catalog_ref: str, relative: str
+    ) -> Artifact:
+        try:
+            loaded = self._load(study, catalog_ref, relative)
+        except OSError:
+            raise ValueError("local source unavailable; refresh catalog") from None
+        if isinstance(loaded, Artifact):
+            return loaded
+        parsed = await asyncio.to_thread(parse, relative, loaded)
+        return self._save(study, relative, loaded, parsed, (catalog_ref,))
+
+    def _save(
+        self,
+        study: str,
+        name: str,
+        raw: bytes,
+        parsed: dict,
+        parents: tuple[str, ...] = (),
+    ) -> Artifact:
+        digest = hashlib.sha256(raw).hexdigest()
+        with self.store.transaction():
+            original = self.store._put(
+                study,
+                "material_bytes",
+                {
+                    "sha256": digest,
+                    "encoding": "base64",
+                    "data": base64.b64encode(raw).decode("ascii"),
+                },
+                (),
+            )
+            return self.store._put(
+                study,
+                "source",
+                {
+                    **parsed,
+                    "origin": name,
+                    "format": Path(name).suffix.lower(),
+                    "sha256": digest,
+                    "original_ref": original.ref,
+                },
+                (*parents, original.ref),
+            )
 
     def upload(self, study: str, name: str, raw: bytes) -> Artifact:
         """Host-only import: user-selected bytes, never a model-supplied host path."""
         self.store.control(study)
-        if Path(name).suffix.lower() not in TEXT_SUFFIXES:
-            raise ValueError("unsupported upload format")
-        return self.store.put(
-            study,
-            "source",
-            {
-                "text": raw.decode("utf-8-sig"),
-                "origin": Path(name).name,
-                "format": Path(name).suffix.lower(),
-                "sha256": hashlib.sha256(raw).hexdigest(),
-                "parser": "utf8-v1",
-                "coverage": "snapshotted",
-            },
-        )
+        name = Path(name).name
+        digest = hashlib.sha256(raw).hexdigest()
+        for prior in self.store.list(study, "source"):
+            if prior.body.get("sha256") == digest and prior.body.get("origin") == name:
+                return prior
+        return self._save(study, name, raw, parse(name, raw))
+
+    async def upload_async(
+        self, study: str, expected: str, name: str, raw: bytes
+    ) -> Artifact:
+        name = Path(name).name
+        digest = hashlib.sha256(raw).hexdigest()
+        if self.store.control(study).ref != expected:
+            raise ValueError("control changed before upload")
+        for prior in self.store.list(study, "source"):
+            if prior.body.get("sha256") == digest and prior.body.get("origin") == name:
+                return prior
+        parsed = await asyncio.to_thread(parse, name, raw)
+        if self.store.control(study).ref != expected:
+            raise ValueError(
+                "control changed during upload; retry with current control"
+            )
+        return self._save(study, name, raw, parsed)

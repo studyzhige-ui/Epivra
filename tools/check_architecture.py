@@ -10,14 +10,23 @@ LAYERS = (
     (
         "infrastructure",
         frozenset(
-            {"storage", "prompts", "context", "workspace", "adapters", "scheduling"}
+            {
+                "storage",
+                "prompts",
+                "context",
+                "workspace",
+                "adapters",
+                "scheduling",
+                "materials",
+            }
         ),
     ),
     ("execution", frozenset({"harness"})),
     ("application", frozenset({"application", "host"})),
 )
 ALLOWED = {
-    "host": {"application", "adapters", "storage", "scheduling"},
+    "host": {"application", "adapters", "storage", "scheduling", "workspace"},
+    "materials": {"domain"},
     "scheduling": set(),
     "adapters": {"domain"},
     "__init__": set(),
@@ -25,7 +34,7 @@ ALLOWED = {
     "prompts": set(),
     "storage": {"domain"},
     "context": {"domain"},
-    "workspace": {"domain", "storage"},
+    "workspace": {"domain", "storage", "materials"},
     "harness": {"domain", "prompts", "storage", "context", "workspace", "scheduling"},
     "application": {"domain", "harness", "storage", "adapters"},
 }

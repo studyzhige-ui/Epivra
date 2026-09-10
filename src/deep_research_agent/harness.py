@@ -520,14 +520,27 @@ class Harness:
                 else:
                     if call.name in BUILTINS:
                         try:
-                            result = self._builtin(
-                                study,
-                                work,
-                                control.epoch,
-                                step.ref,
-                                index,
-                                call,
-                            )
+                            if call.name == "snapshot_local":
+                                source = await self.workspace.snapshot_async(
+                                    study,
+                                    call.arguments["catalog"],
+                                    call.arguments["path"],
+                                )
+                                result = {
+                                    "ref": source.ref,
+                                    "characters": len(source.body["text"]),
+                                    "coverage": source.body["coverage"],
+                                    "issues": source.body["issues"],
+                                }
+                            else:
+                                result = self._builtin(
+                                    study,
+                                    work,
+                                    control.epoch,
+                                    step.ref,
+                                    index,
+                                    call,
+                                )
                         except (ValueError, NotAllowed, Conflict) as exc:
                             result = {"error": str(exc)}
                     else:
@@ -630,7 +643,7 @@ class Harness:
             return {"ref": item.ref}
         if call.name == "read_artifact_range":
             artifact = self.store.get(study, args["ref"])
-            if artifact.kind in {"step", "step_done", "control"}:
+            if artifact.kind in {"step", "step_done", "control", "material_bytes"}:
                 raise NotAllowed(
                     "execution and provider-private records are not research materials"
                 )
@@ -653,9 +666,6 @@ class Harness:
             return self.workspace.catalog_page(
                 study, args["ref"], args["offset"], args["limit"]
             )
-        if call.name == "snapshot_local":
-            source = self.workspace.snapshot(study, args["catalog"], args["path"])
-            return {"ref": source.ref, "characters": len(source.body["text"])}
         if call.name == "find_artifacts":
             if args["kind"] not in {
                 "source",
@@ -690,10 +700,17 @@ class Harness:
                 "end": min(len(text), offset + limit),
                 "total": len(text),
                 "text": text[offset : offset + limit],
+                "coverage": source.body.get("coverage"),
+                "issues": source.body.get("issues", []),
+                "segments": [
+                    s
+                    for s in source.body.get("segments", [])
+                    if s["start"] < offset + limit and s["end"] > offset
+                ],
             }
         if call.name == "read_artifact":
             artifact = self.store.get(study, args["ref"])
-            if artifact.kind in {"step", "step_done", "control"}:
+            if artifact.kind in {"step", "step_done", "control", "material_bytes"}:
                 raise NotAllowed(
                     "execution and provider-private records are not research materials"
                 )
