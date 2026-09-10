@@ -6,7 +6,6 @@ import io
 import json
 import sys
 import tempfile
-import threading
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -216,11 +215,11 @@ class MaterialAsyncTests(unittest.IsolatedAsyncioTestCase):
             root = Path(folder)
             host = Host(root)
             c = host.store.create("s", "Research", {})
-            entered, release = threading.Event(), threading.Event()
+            entered, release = asyncio.Event(), asyncio.Event()
 
-            def slow(name, raw):
+            async def slow(name, raw, timeout):
                 entered.set()
-                release.wait(3)
+                await release.wait()
                 return parse(name, raw)
 
             try:
@@ -232,9 +231,11 @@ class MaterialAsyncTests(unittest.IsolatedAsyncioTestCase):
                     "name": "input.txt",
                     "data": base64.b64encode(b"evidence").decode(),
                 }
-                with patch("deep_research_agent.workspace.parse", side_effect=slow):
+                with patch(
+                    "deep_research_agent.workspace.parse_isolated", side_effect=slow
+                ):
                     task = asyncio.create_task(host.dispatch(request))
-                    self.assertTrue(await asyncio.to_thread(entered.wait, 1))
+                    await asyncio.wait_for(entered.wait(), 1)
                     host.store.command("s", "pause", c.ref, "pause")
                     release.set()
                     with self.assertRaisesRegex(ValueError, "control changed"):

@@ -16,7 +16,6 @@ from .domain import (
     Conflict,
     NotAllowed,
     Reply,
-    UnknownOutcome,
     encode,
     identity,
 )
@@ -335,9 +334,7 @@ class Harness:
                     await asyncio.sleep(
                         min(0.25, retry.body["not_before"] - time.time())
                     )
-            try:
-                self.store.result(study, key)
-            except UnknownOutcome:
+            if self.store.operation_status(study, key) is None:
                 async with self.scheduler.slot(
                     resource, lambda: self.store.require_work(study, work, epoch)
                 ):
@@ -347,7 +344,6 @@ class Harness:
                         self.store.settle(key, raw)
             else:
                 raw = self.store.admit(study, work, epoch, key, request)
-            self.store.require_work(study, work, epoch)
             delay = retry_delay(raw, attempt) if retry_delay else None
             if (
                 delay is None
@@ -357,6 +353,7 @@ class Harness:
             ):
                 delay = 0
             if delay is None:
+                self.store.require_work(study, work, epoch)
                 return raw
             if not math.isfinite(delay) or delay < 0:
                 raise ValueError("invalid provider retry delay")
@@ -376,6 +373,7 @@ class Harness:
                 (work, step),
             )
             self.scheduler.defer(resource, retry.body["not_before"])
+            self.store.require_work(study, work, epoch)
             key = next_key
 
     def _steps(self, study: str, kind: str, work: str) -> list[Artifact]:

@@ -197,6 +197,7 @@ class ResearchService:
             "running": bool(study in self.tasks and not self.tasks[study].done()),
             "error": self.errors.get(study),
             "unsettled_operations": self.store.unsettled(study),
+            "provider_queue": self.harness.scheduler.snapshot(),
             "work_errors": {
                 w.ref: self.work_errors[w.ref]
                 for w in self.store.list(study, "work")

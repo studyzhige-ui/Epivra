@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import csv
 import io
+import json
+import os
+import subprocess
+import sys
 from datetime import date, datetime, time
 from pathlib import Path
 
@@ -11,6 +16,47 @@ from .domain import encode
 
 TEXT_SUFFIXES = {".txt", ".md", ".json", ".yaml", ".yml", ".html"}
 SUPPORTED_SUFFIXES = TEXT_SUFFIXES | {".csv", ".tsv", ".pdf", ".xlsx"}
+
+
+async def parse_isolated(name: str, raw: bytes, timeout: float = 60) -> dict:
+    """Run native parsers outside the host; cancellation always reaps the child."""
+    if timeout <= 0:
+        raise ValueError("positive parse timeout required")
+    # Only OS/runtime bootstrap settings; provider credentials are not inherited.
+    allowed = {"SYSTEMROOT", "WINDIR", "PATH", "TEMP", "TMP", "LANG", "LC_ALL"}
+    environment = {k: v for k, v in os.environ.items() if k.upper() in allowed}
+    process = await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-m",
+        "deep_research_agent.materials",
+        Path(name).name,
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.DEVNULL,
+        env=environment,
+        creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+    )
+    try:
+        try:
+            output, _ = await asyncio.wait_for(process.communicate(raw), timeout)
+        except TimeoutError:
+            raise ValueError("material parsing timed out") from None
+        if process.returncode:
+            raise ValueError("material parser process failed")
+        try:
+            response = json.loads(output)
+        except (ValueError, UnicodeError):
+            raise ValueError("material parser returned invalid output") from None
+        if "error" in response:
+            raise ValueError(response["error"])
+        return response["result"]
+    finally:
+        if process.returncode is None:
+            try:
+                process.kill()
+            except ProcessLookupError:
+                pass
+        await process.wait()
 
 
 def parse(name: str, raw: bytes) -> dict:
@@ -142,3 +188,11 @@ def parse(name: str, raw: bytes) -> dict:
         "issues": issues,
         "parser": parser,
     }
+
+
+if __name__ == "__main__":
+    try:
+        result = {"result": parse(sys.argv[1], sys.stdin.buffer.read())}
+    except Exception as exc:
+        result = {"error": "material extraction failed: " + type(exc).__name__}
+    sys.stdout.buffer.write(json.dumps(result, ensure_ascii=False).encode("utf-8"))

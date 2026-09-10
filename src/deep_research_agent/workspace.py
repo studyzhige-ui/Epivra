@@ -2,20 +2,20 @@
 
 from __future__ import annotations
 
-import asyncio
 import base64
 import hashlib
 from pathlib import Path
 from typing import Any
 
 from .domain import Artifact, NotAllowed
-from .materials import SUPPORTED_SUFFIXES, parse
+from .materials import SUPPORTED_SUFFIXES, parse, parse_isolated
 from .storage import Store
 
 
 class Workspace:
-    def __init__(self, store: Store):
+    def __init__(self, store: Store, parse_timeout: float = 60):
         self.store = store
+        self.parse_timeout = parse_timeout
 
     def _root(self, study: str, root: str) -> Path:
         direction = self.store.get(study, self.store.control(study).direction)
@@ -160,7 +160,7 @@ class Workspace:
             raise ValueError("local source unavailable; refresh catalog") from None
         if isinstance(loaded, Artifact):
             return loaded
-        parsed = await asyncio.to_thread(parse, relative, loaded)
+        parsed = await parse_isolated(relative, loaded, self.parse_timeout)
         return self._save(study, relative, loaded, parsed, (catalog_ref,))
 
     def _save(
@@ -216,7 +216,7 @@ class Workspace:
         for prior in self.store.list(study, "source"):
             if prior.body.get("sha256") == digest and prior.body.get("origin") == name:
                 return prior
-        parsed = await asyncio.to_thread(parse, name, raw)
+        parsed = await parse_isolated(name, raw, self.parse_timeout)
         if self.store.control(study).ref != expected:
             raise ValueError(
                 "control changed during upload; retry with current control"

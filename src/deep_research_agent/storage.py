@@ -445,6 +445,13 @@ class Store:
             )
             return self._put(study, "reconciliation", body, (row["work"], expected))
 
+    def operation_status(self, study: str, operation_id: str) -> str | None:
+        row = self.db.execute(
+            "SELECT status FROM operations WHERE study=? AND id=?",
+            (study, operation_id),
+        ).fetchone()
+        return row[0] if row else None
+
     def admission_epoch(self, study: str, operation_id: str) -> int:
         row = self.db.execute(
             "SELECT epoch FROM operations WHERE study=? AND id=?",
