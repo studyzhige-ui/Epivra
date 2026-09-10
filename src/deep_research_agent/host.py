@@ -12,6 +12,7 @@ from pathlib import Path
 
 from .adapters import DEFAULT_MODEL, credentials
 from .application import online_service
+from .scheduling import Scheduler
 from .storage import Store
 
 
@@ -20,8 +21,21 @@ class Host:
         self.root = root.resolve()
         self.state = self.root / ".deep-research-agent"
         self.store = Store(self.state / "research.db")
+        self.scheduler = Scheduler()
+        try:
+            for row in self.store.db.execute(
+                "SELECT DISTINCT study FROM artifacts WHERE kind='retry'"
+            ):
+                for artifact in self.store.list(row[0], "retry"):
+                    retry = artifact.body
+                    if "resource" in retry:
+                        self.scheduler.defer(retry["resource"], retry["not_before"])
+        except BaseException:
+            self.store.close()
+            raise
         self.factory = factory
         self.services = {}
+        self.failures = {}
         self.clients = {}
         self.token = secrets.token_urlsafe(32)
         self.stopping = asyncio.Event()
@@ -33,11 +47,21 @@ class Host:
                 service, clients = self.factory(self.store, study)
             else:
                 service, clients = online_service(
-                    self.store, study, credentials(self.root / ".env")
+                    self.store,
+                    study,
+                    credentials(self.root / ".env"),
+                    scheduler=self.scheduler,
                 )
             self.services[study] = service
             self.clients[study] = clients
+            self.failures.pop(study, None)
         return self.services[study]
+
+    def start_study(self, study):
+        try:
+            self.service(study).start(study)
+        except Exception as exc:
+            self.failures[study] = type(exc).__name__
 
     async def dispatch(self, request):
         if not secrets.compare_digest(str(request.get("token", "")), self.token):
@@ -77,17 +101,27 @@ class Host:
                     "model": DEFAULT_MODEL,
                 },
             )
-            self.service(study).start(study)
+            self.start_study(study)
             return {"study": study}
         study = request["study"]
         if not isinstance(study, str):
             raise ValueError("study must be text")
-        if action == "reload":
+        if action in {"reload", "reconcile"}:
             control = self.store.control(study)
             service = self.services.get(study)
             task = service.tasks.get(study) if service else None
             if not control.paused or (task and not task.done()):
                 raise ValueError("pause research and wait for in-flight work to finish")
+            if action == "reconcile":
+                receipt = self.store.reconcile(
+                    study,
+                    request["expected"],
+                    request["operation"],
+                    request["receipt_id"],
+                    request["result"],
+                    request["evidence"],
+                )
+                return {"receipt": receipt.ref, "paused": True}
             keys = credentials(self.root / ".env")
             mapping = {
                 "https://api.deepseek.com": "DEEPSEEK_API_KEY",
@@ -111,7 +145,7 @@ class Host:
                 request.get("payload"),
             )
             if not result.paused and not result.cancelled:
-                self.service(study).start(study)
+                self.start_study(study)
             return {
                 "control": result.ref,
                 "epoch": result.epoch,
@@ -119,6 +153,15 @@ class Host:
                 "approved": result.approved,
             }
         if action == "status":
+            if study in self.failures:
+                c = self.store.control(study)
+                return {
+                    "control": c.ref,
+                    "paused": c.paused,
+                    "running": False,
+                    "error": self.failures[study],
+                    "unsettled_operations": self.store.unsettled(study),
+                }
             return self.service(study).status(study)
         if action == "report":
             direction = self.store.control(study).direction
@@ -164,7 +207,7 @@ class Host:
         temporary = pointer.with_suffix(".tmp")
         try:
             server = await asyncio.start_server(
-                self.connection, "127.0.0.1", 0, limit=65536
+                self.connection, "127.0.0.1", 0, limit=4 * 1024 * 1024
             )
             port = server.sockets[0].getsockname()[1]
             temporary.write_text(
@@ -177,7 +220,7 @@ class Host:
                 study = row[0]
                 c = self.store.control(study)
                 if not c.paused and not c.cancelled:
-                    self.service(study).start(study)
+                    self.start_study(study)
             async with server:
                 await self.stopping.wait()
         finally:
@@ -278,6 +321,13 @@ def main():
     control.add_argument("--expected", required=True)
     control.add_argument("--plan")
     control.add_argument("--request")
+    reconcile = sub.add_parser("reconcile")
+    reconcile.add_argument("study")
+    reconcile.add_argument("operation")
+    reconcile.add_argument("--expected", required=True)
+    reconcile.add_argument("--receipt-id", required=True)
+    reconcile.add_argument("--response-file", type=Path, required=True)
+    reconcile.add_argument("--evidence", required=True)
     args = parser.parse_args()
     root = args.root.resolve()
     try:
@@ -292,8 +342,16 @@ def main():
             request.update(
                 request=args.request, web=args.web, local_roots=args.local_root
             )
-        elif args.action in ("status", "report", "control", "reload"):
+        elif args.action in ("status", "report", "control", "reload", "reconcile"):
             request["study"] = args.study
+        if args.action == "reconcile":
+            request.update(
+                operation=args.operation,
+                expected=args.expected,
+                receipt_id=args.receipt_id,
+                evidence=args.evidence,
+                result=json.loads(args.response_file.read_text(encoding="utf-8")),
+            )
         if args.action == "control":
             payload = {}
             if args.plan:

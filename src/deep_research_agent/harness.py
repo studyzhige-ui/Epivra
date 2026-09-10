@@ -10,8 +10,18 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 from .context import assemble
-from .domain import Artifact, Call, Conflict, NotAllowed, Reply, encode, identity
+from .domain import (
+    Artifact,
+    Call,
+    Conflict,
+    NotAllowed,
+    Reply,
+    UnknownOutcome,
+    encode,
+    identity,
+)
 from .prompts import ROLES
+from .scheduling import Scheduler
 from .storage import Store
 from .workspace import Workspace
 
@@ -34,6 +44,19 @@ class Tool:
     check: Callable[[dict[str, Any]], None] | None = None
     retry_delay: Callable[[Any, int], float | None] | None = None
     retry_on_resume: Callable[[Any], bool] | None = None
+    parallel_safe: bool = False
+    resource: str = "external"
+
+    @property
+    def binding(self) -> str:
+        return identity(
+            self.identity,
+            self.roles,
+            self.permission,
+            self.schema,
+            self.parallel_safe,
+            self.resource,
+        )
 
 
 def object_schema(properties: dict[str, Any]) -> dict[str, Any]:
@@ -48,6 +71,7 @@ def object_schema(properties: dict[str, Any]) -> dict[str, Any]:
 STRING = {"type": "string", "minLength": 1}
 STRINGS = {"type": "array", "items": STRING}
 BUILTINS = {
+    "pin_evidence": ("all", object_schema({"refs": STRINGS})),
     "delegate_research": (
         "researcher",
         object_schema({"task": STRING, "refs": STRINGS}),
@@ -192,8 +216,10 @@ class Harness:
         model: Model,
         tools: dict[str, Tool] | None = None,
         context_chars: int = 48000,
+        scheduler: Scheduler | None = None,
     ):
         self.store, self.model = store, model
+        self.scheduler = scheduler or Scheduler()
         self.tools = tools or {}
         self.workspace = Workspace(store)
         if set(self.tools) & set(BUILTINS):
@@ -225,14 +251,16 @@ class Harness:
 
     def _request(self, study: str, work: Artifact) -> dict[str, Any]:
         direction = self.store.get(study, work.body["direction"])
+        anchors = self._steps(study, "evidence_anchor", work.ref)
         mandatory = {
             "provider": self.model.identity,
             "system": ROLES[work.body["role"]],
             "task": work.body["task"],
             "direction": direction.body,
             "input_refs": work.body["inputs"],
+            "pinned_evidence": anchors[-1].body["refs"] if anchors else [],
             "tools": self._schema(work.body["role"], direction.body["policy"]),
-            "tool_versions": {name: tool.identity for name, tool in self.tools.items()},
+            "tool_versions": {name: tool.binding for name, tool in self.tools.items()},
         }
         candidates = [
             x for x in self.store.list(study, "observation") if work.ref in x.parents
@@ -293,6 +321,7 @@ class Harness:
         invoke,
         retry_delay=None,
         retry_on_resume=None,
+        resource="external",
     ):
         retry = self._attempt(study, operation)
         attempt = retry.body["attempt"] if retry else 0
@@ -306,10 +335,18 @@ class Harness:
                     await asyncio.sleep(
                         min(0.25, retry.body["not_before"] - time.time())
                     )
-            raw = self.store.admit(study, work, epoch, key, request)
-            if raw is None:
-                raw = await invoke()
-                self.store.settle(key, raw)
+            try:
+                self.store.result(study, key)
+            except UnknownOutcome:
+                async with self.scheduler.slot(
+                    resource, lambda: self.store.require_work(study, work, epoch)
+                ):
+                    raw = self.store.admit(study, work, epoch, key, request)
+                    if raw is None:
+                        raw = await invoke()
+                        self.store.settle(key, raw)
+            else:
+                raw = self.store.admit(study, work, epoch, key, request)
             self.store.require_work(study, work, epoch)
             delay = retry_delay(raw, attempt) if retry_delay else None
             if (
@@ -334,9 +371,11 @@ class Harness:
                     "next": next_key,
                     "attempt": attempt,
                     "not_before": time.time() + delay,
+                    "resource": resource,
                 },
                 (work, step),
             )
+            self.scheduler.defer(resource, retry.body["not_before"])
             key = next_key
 
     def _steps(self, study: str, kind: str, work: str) -> list[Artifact]:
@@ -378,7 +417,7 @@ class Harness:
             if step.body["request"]["provider"] != self.model.identity:
                 raise NotAllowed("pending work requires its original model binding")
             if step.body["request"]["tool_versions"] != {
-                name: tool.identity for name, tool in self.tools.items()
+                name: tool.binding for name, tool in self.tools.items()
             }:
                 raise NotAllowed("pending work requires its original tool bindings")
             raw = await self._invoke(
@@ -391,6 +430,7 @@ class Harness:
                 lambda: self.model.complete(step.body["request"]),
                 getattr(self.model, "retry_delay", None),
                 getattr(self.model, "retry_on_resume", None),
+                getattr(self.model, "resource", "model"),
             )
             # Always save the external result; only then check the admission fence.
             self.store.require_work(study, work_ref, control.epoch)
@@ -413,7 +453,54 @@ class Harness:
                 self._done(study, work_ref, step.ref)
                 return "continue"
             schema = step.body["request"]["tools"]
+            prefetched = set()
+            prefetch_errors = {}
             for index, call in enumerate(reply.calls):
+                if index not in prefetched:
+                    batch = []
+                    for j in range(
+                        index, min(len(reply.calls), index + self.scheduler.capacity)
+                    ):
+                        candidate = reply.calls[j]
+                        tool = self.tools.get(candidate.name)
+                        if (
+                            tool is None
+                            or not tool.parallel_safe
+                            or candidate.name not in schema
+                        ):
+                            break
+                        try:
+                            validate(
+                                candidate.arguments,
+                                schema[candidate.name]["parameters"],
+                            )
+                            if tool.check:
+                                tool.check(candidate.arguments)
+                        except (ValueError, NotAllowed):
+                            break
+                        batch.append((j, candidate))
+                    if len(batch) > 1:
+                        # Drain all admitted calls, even when one fails. Adoption
+                        # below remains ordered and replays the persisted envelopes.
+                        results = await asyncio.gather(
+                            *[
+                                self._external(
+                                    study, work_ref, control.epoch, step.ref, j, c
+                                )
+                                for j, c in batch
+                            ],
+                            return_exceptions=True,
+                        )
+                        prefetch_errors.update(
+                            {
+                                j: result
+                                for (j, _), result in zip(batch, results)
+                                if isinstance(result, BaseException)
+                            }
+                        )
+                        prefetched.update(j for j, _ in batch)
+                if index in prefetch_errors:
+                    raise prefetch_errors[index]
                 previous = [
                     a
                     for a in self._steps(study, "observation", work_ref)
@@ -444,27 +531,8 @@ class Harness:
                         except (ValueError, NotAllowed, Conflict) as exc:
                             result = {"error": str(exc)}
                     else:
-                        key = identity("tool", step.ref, index)
-                        req = {"tool": call.name, "arguments": call.arguments}
-                        tool = self.tools[call.name]
-
-                        async def invoke():
-                            return {"value": await tool.invoke(call.arguments)}
-
-                        envelope = await self._invoke(
-                            study,
-                            work_ref,
-                            control.epoch,
-                            step.ref,
-                            key,
-                            req,
-                            invoke,
-                            (lambda raw, n: tool.retry_delay(raw["value"], n))
-                            if tool.retry_delay
-                            else None,
-                            (lambda raw: tool.retry_on_resume(raw["value"]))
-                            if tool.retry_on_resume
-                            else None,
+                        envelope = await self._external(
+                            study, work_ref, control.epoch, step.ref, index, call
                         )
                         observe = self.tools[call.name].observe
                         result = observe(envelope["value"]) if observe else envelope
@@ -497,6 +565,29 @@ class Harness:
             self._done(study, work_ref, step.ref)
             return "finished" if self.finished(study, work_ref) else "continue"
 
+    async def _external(self, study, work, epoch, step, index, call):
+        tool = self.tools[call.name]
+
+        async def invoke():
+            return {"value": await tool.invoke(call.arguments)}
+
+        return await self._invoke(
+            study,
+            work,
+            epoch,
+            step,
+            identity("tool", step, index),
+            {"tool": call.name, "arguments": call.arguments},
+            invoke,
+            (lambda raw, n: tool.retry_delay(raw["value"], n))
+            if tool.retry_delay
+            else None,
+            (lambda raw: tool.retry_on_resume(raw["value"]))
+            if tool.retry_on_resume
+            else None,
+            tool.resource,
+        )
+
     def _done(self, study: str, work: str, step: str) -> None:
         self.store.put(study, "step_done", {"step": step}, (work, step))
 
@@ -507,6 +598,16 @@ class Harness:
         direction = work.body["direction"]
         args = call.arguments
         parents = (work.ref, direction, step)
+        if call.name == "pin_evidence":
+            refs = list(dict.fromkeys(args["refs"]))
+            if len(encode(refs)) > self.context_chars // 4:
+                raise ValueError("pinned evidence exceeds context allocation")
+            if any(self.store.get(study, ref).kind != "source" for ref in refs):
+                raise ValueError("evidence anchors must name source snapshots")
+            item = self.store.put(
+                study, "evidence_anchor", {"refs": refs}, (*parents, *refs)
+            )
+            return {"ref": item.ref}
         if call.name == "delegate_research":
             child = self.store.work(
                 study,

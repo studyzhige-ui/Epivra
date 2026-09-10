@@ -395,6 +395,56 @@ class Store:
             )
             return None
 
+    def reconcile(
+        self,
+        study: str,
+        expected: str,
+        operation_id: str,
+        receipt_id: str,
+        result: Any,
+        evidence: str,
+    ) -> Artifact:
+        """Operator attests an externally verified result, never authorizes resend."""
+        if (
+            not receipt_id.strip()
+            or not evidence.strip()
+            or not isinstance(result, dict)
+        ):
+            raise ValueError(
+                "receipt, verification evidence and response object required"
+            )
+        body = {
+            "operation": operation_id,
+            "receipt": receipt_id,
+            "result_hash": identity(result),
+            "evidence": evidence,
+            "control": expected,
+        }
+        with self.transaction():
+            existing = [
+                a
+                for a in self.list(study, "reconciliation")
+                if a.body["receipt"] == receipt_id
+            ]
+            if existing:
+                if existing[0].body != body:
+                    raise Conflict("reconciliation receipt reused")
+                return existing[0]
+            control = self.control(study)
+            if control.ref != expected or not control.paused:
+                raise Conflict("reconciliation requires current paused control")
+            row = self.db.execute(
+                "SELECT work,status FROM operations WHERE study=? AND id=?",
+                (study, operation_id),
+            ).fetchone()
+            if row is None or row["status"] != "unknown":
+                raise Conflict("only an unknown operation can be reconciled")
+            self.db.execute(
+                "UPDATE operations SET status='succeeded',result=? WHERE id=?",
+                (encode(result), operation_id),
+            )
+            return self._put(study, "reconciliation", body, (row["work"], expected))
+
     def admission_epoch(self, study: str, operation_id: str) -> int:
         row = self.db.execute(
             "SELECT epoch FROM operations WHERE study=? AND id=?",

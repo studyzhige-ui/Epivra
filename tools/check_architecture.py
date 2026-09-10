@@ -9,13 +9,16 @@ LAYERS = (
     ("domain", frozenset({"__init__", "domain"})),
     (
         "infrastructure",
-        frozenset({"storage", "prompts", "context", "workspace", "adapters"}),
+        frozenset(
+            {"storage", "prompts", "context", "workspace", "adapters", "scheduling"}
+        ),
     ),
     ("execution", frozenset({"harness"})),
     ("application", frozenset({"application", "host"})),
 )
 ALLOWED = {
-    "host": {"application", "adapters", "storage"},
+    "host": {"application", "adapters", "storage", "scheduling"},
+    "scheduling": set(),
     "adapters": {"domain"},
     "__init__": set(),
     "domain": set(),
@@ -23,7 +26,7 @@ ALLOWED = {
     "storage": {"domain"},
     "context": {"domain"},
     "workspace": {"domain", "storage"},
-    "harness": {"domain", "prompts", "storage", "context", "workspace"},
+    "harness": {"domain", "prompts", "storage", "context", "workspace", "scheduling"},
     "application": {"domain", "harness", "storage", "adapters"},
 }
 FORBIDDEN = {"claude_agent_sdk", "codex_sdk", "langgraph"}

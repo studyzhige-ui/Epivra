@@ -184,6 +184,7 @@ class JsonAPI:
 
 
 class DeepSeek:
+    resource = "deepseek"
     retry_delay = staticmethod(rate_limit_delay)
 
     @staticmethod
@@ -326,6 +327,7 @@ class DeepSeek:
 
 
 class Tavily:
+    resource = "tavily"
     retry_delay = staticmethod(rate_limit_delay)
 
     @staticmethod

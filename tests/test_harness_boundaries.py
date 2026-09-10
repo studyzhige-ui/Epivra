@@ -1,0 +1,216 @@
+from __future__ import annotations
+
+import asyncio
+import tempfile
+import time
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+from deep_research_agent.domain import Call, Conflict, Reply, UnknownOutcome
+from deep_research_agent.harness import STRING, Harness, Tool, object_schema
+from deep_research_agent.scheduling import Scheduler
+from deep_research_agent.storage import Store
+
+
+class Model:
+    identity = "fixture"
+
+    def __init__(self, calls=()):
+        self.calls = calls
+        self.count = 0
+
+    async def complete(self, request):
+        self.count += 1
+        return Reply("", self.calls).to_json()
+
+
+class BoundaryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_reconciliation_receipt_failure_rolls_back_result(self):
+        self.store.admit("s", self.work.ref, self.c.epoch, "lost", {"fixture": True})
+        c = self.store.command("s", "pause", self.c.ref, "pause")
+        with patch.object(self.store, "_put", side_effect=OSError("disk failure")):
+            with self.assertRaises(OSError):
+                self.store.reconcile(
+                    "s",
+                    c.ref,
+                    "lost",
+                    "receipt",
+                    {"text": "verified"},
+                    "provider record",
+                )
+        with self.assertRaises(UnknownOutcome):
+            self.store.result("s", "lost")
+        self.assertEqual([], self.store.list("s", "reconciliation"))
+
+    async def asyncSetUp(self):
+        self.folder = tempfile.TemporaryDirectory()
+        self.path = Path(self.folder.name) / "state.db"
+        self.store = Store(self.path)
+        self.c, self.work = self.study("s")
+
+    def study(self, study):
+        c = self.store.create(study, "Research", {})
+        plan = self.store.put(study, "plan", {"text": "Plan"}, (c.direction,))
+        c = self.store.command(study, "approve", c.ref, "approve", {"plan": plan.ref})
+        return c, self.store.work(study, c.ref, "researcher", "Research")
+
+    async def asyncTearDown(self):
+        self.store.close()
+        self.folder.cleanup()
+
+    async def test_safe_batch_is_concurrent_but_observations_remain_ordered(self):
+        entered = asyncio.Event()
+        active = 0
+        completed = []
+
+        async def read(args):
+            nonlocal active
+            active += 1
+            if active == 2:
+                entered.set()
+            await asyncio.wait_for(entered.wait(), 1)
+            if args["name"] == "first":
+                await asyncio.sleep(0.01)
+            completed.append(args["name"])
+            return args["name"]
+
+        model = Model(tuple(Call("read", {"name": n}) for n in ("first", "second")))
+        tool = Tool("Read", object_schema({"name": STRING}), read, parallel_safe=True)
+        await Harness(self.store, model, {"read": tool}).step("s", self.work.ref)
+        self.assertEqual(["second", "first"], completed)
+        observations = self.store.list("s", "observation")
+        self.assertEqual(
+            ["first", "second"], [o.body["result"]["value"] for o in observations]
+        )
+        self.assertEqual(2, active)
+
+    async def test_failed_parallel_call_does_not_cancel_successful_sibling(self):
+        completed = []
+
+        async def read(args):
+            if args["name"] == "bad":
+                raise OSError("lost response")
+            await asyncio.sleep(0.01)
+            completed.append("saved")
+            return "paid result"
+
+        model = Model((Call("read", {"name": "bad"}), Call("read", {"name": "good"})))
+        tools = {
+            "read": Tool(
+                "Read", object_schema({"name": STRING}), read, parallel_safe=True
+            )
+        }
+        with self.assertRaises(OSError):
+            await Harness(self.store, model, tools).step("s", self.work.ref)
+        self.assertEqual(["saved"], completed)
+        with self.assertRaises(UnknownOutcome):
+            await Harness(self.store, model, tools).step("s", self.work.ref)
+        self.assertEqual(["saved"], completed)
+        self.assertEqual(1, model.count)
+
+    async def test_internal_write_is_a_parallel_batch_barrier(self):
+        seen = []
+
+        async def read(args):
+            seen.append(len(self.store.list("s", "note")))
+            return "ok"
+
+        model = Model(
+            (
+                Call("read", {}),
+                Call("save_note", {"text": "checkpoint", "refs": []}),
+                Call("read", {}),
+            )
+        )
+        tool = Tool("Read", object_schema({}), read, parallel_safe=True)
+        await Harness(self.store, model, {"read": tool}).step("s", self.work.ref)
+        self.assertEqual([0, 1], seen)
+
+    async def test_shared_capacity_applies_across_researches(self):
+        _, work2 = self.study("second")
+        active = peak = 0
+
+        class Slow(Model):
+            async def complete(inner, request):
+                nonlocal active, peak
+                active += 1
+                peak = max(peak, active)
+                await asyncio.sleep(0.01)
+                active -= 1
+                return Reply("done", ()).to_json()
+
+        scheduler = Scheduler(1)
+        await asyncio.gather(
+            Harness(self.store, Slow(), scheduler=scheduler).step("s", self.work.ref),
+            Harness(self.store, Slow(), scheduler=scheduler).step("second", work2.ref),
+        )
+        self.assertEqual(1, peak)
+
+    async def test_pause_while_waiting_capacity_prevents_admission(self):
+        scheduler = Scheduler(1)
+        model = Model()
+        async with scheduler.slot("model", lambda: None):
+            task = asyncio.create_task(
+                Harness(self.store, model, scheduler=scheduler).step("s", self.work.ref)
+            )
+            await asyncio.sleep(0.01)
+            self.store.command("s", "pause", self.c.ref, "pause")
+        with self.assertRaises(Conflict):
+            await task
+        self.assertEqual(0, model.count)
+        self.assertEqual([], self.store.unsettled("s"))
+
+    async def test_shared_cooldown_delays_new_admission(self):
+        scheduler = Scheduler(1)
+        deadline = time.time() + 0.04
+        scheduler.defer("model", deadline)
+        model = Model()
+        await Harness(self.store, model, scheduler=scheduler).step("s", self.work.ref)
+        self.assertGreaterEqual(time.time(), deadline)
+        self.assertEqual(1, model.count)
+
+    async def test_reconciliation_is_atomic_idempotent_and_never_sends(self):
+        self.store.admit("s", self.work.ref, self.c.epoch, "lost", {"model": "fixture"})
+        raw = Reply("verified", ()).to_json()
+        with self.assertRaises(Conflict):
+            self.store.reconcile(
+                "s", self.c.ref, "lost", "receipt", raw, "provider record"
+            )
+        c = self.store.command("s", "pause", self.c.ref, "pause")
+        receipt = self.store.reconcile(
+            "s", c.ref, "lost", "receipt", raw, "provider record"
+        )
+        self.store.close()
+        self.store = Store(self.path)
+        self.assertEqual(
+            receipt.ref,
+            self.store.reconcile(
+                "s", c.ref, "lost", "receipt", raw, "provider record"
+            ).ref,
+        )
+        self.assertEqual(raw, self.store.result("s", "lost"))
+        self.assertEqual([], self.store.unsettled("s"))
+        self.assertTrue(self.store.control("s").paused)
+        with self.assertRaises(Conflict):
+            self.store.reconcile(
+                "s", c.ref, "lost", "receipt", {"changed": True}, "provider record"
+            )
+
+    async def test_rare_evidence_anchor_survives_context_pressure_and_restart(self):
+        source = self.store.put("s", "source", {"text": "Rare contradictory evidence"})
+        model = Model((Call("pin_evidence", {"refs": [source.ref]}),))
+        harness = Harness(self.store, model, context_chars=16000)
+        await harness.step("s", self.work.ref)
+        for i in range(1000):
+            self.store.put("s", "note", {"text": str(i) + "x" * 100}, (self.work.ref,))
+        before = harness._request("s", self.work)
+        self.assertEqual([source.ref], before["pinned_evidence"])
+        self.assertGreater(before["omitted_count"], 0)
+        self.store.close()
+        self.store = Store(self.path)
+        after = Harness(self.store, model, context_chars=16000)._request("s", self.work)
+        self.assertEqual(before, after)
+        self.assertEqual(
+            "Rare contradictory evidence", self.store.get("s", source.ref).body["text"]
+        )

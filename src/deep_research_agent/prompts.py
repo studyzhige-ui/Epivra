@@ -3,6 +3,8 @@
 COMMON = """
 使用 save_memory 保存当前问题、关键限制、未解反证、决定和下一步，并附精确引用。
 最新记忆保留在后续窗口中。它是可审查的研究记录，不是隐藏思维链。
+使用 pin_evidence 固定必须保留的支持证据、反证及限制条件的来源引用。
+固定集合完整带入新窗口；更新时传入希望保留的全部引用，正文仍需按范围回读。
 上下文中的 body_omitted 表示正文未带入；使用 read_artifact_range 按范围回读。
 本地资料先 discover_local，再 read_catalog 分页选择，snapshot_local 固定版本，
 最后 read_source 阅读；已发现或已快照不代表已审阅。find_artifacts 可检索旧记录。

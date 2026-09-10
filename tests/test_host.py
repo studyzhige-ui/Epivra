@@ -4,6 +4,7 @@ import asyncio
 import json
 import subprocess
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
@@ -19,6 +20,79 @@ from deep_research_agent.storage import Store
 
 
 class HostTests(unittest.IsolatedAsyncioTestCase):
+    async def test_shared_cooldown_is_restored_from_durable_retry(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            host = Host(root)
+            deadline = time.time() + 120
+            host.store.create("s", "Research", {})
+            host.store.put(
+                "s", "retry", {"resource": "deepseek", "not_before": deadline}
+            )
+            host.store.close()
+            restored = Host(root)
+            try:
+                self.assertEqual(deadline, restored.scheduler.deadlines["deepseek"])
+            finally:
+                restored.store.close()
+
+    async def test_boot_failure_is_isolated_and_large_reconciliation_uses_ipc(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+
+            class Model:
+                identity = "fixture"
+
+                async def complete(self, request):
+                    return Reply(
+                        "", (Call("propose_plan", {"text": "Plan"}),)
+                    ).to_json()
+
+            def factory(store, study):
+                if study == "bad":
+                    raise ValueError("configuration unavailable")
+                return ResearchService(store, Harness(store, Model())), []
+
+            host = Host(root, factory)
+            c = host.store.create("bad", "Research", {})
+            work = host.store.work("bad", c.ref, "planner", "Plan")
+            host.store.admit("bad", work.ref, c.epoch, "lost", {"fixture": True})
+            host.store.create("good", "Research", {})
+            task = asyncio.create_task(host.serve())
+            for _ in range(100):
+                if (root / ".deep-research-agent/host.json").exists():
+                    break
+                await asyncio.sleep(0.01)
+            try:
+                status = await send(root, {"action": "status", "study": "bad"})
+                self.assertEqual("ValueError", status["error"])
+                for _ in range(100):
+                    good = await send(root, {"action": "status", "study": "good"})
+                    if good["plans"]:
+                        break
+                    await asyncio.sleep(0.01)
+                self.assertTrue(good["plans"])
+                c = host.store.command("bad", "pause", c.ref, "pause")
+                raw = Reply("x" * 100000, ()).to_json()
+                result = await send(
+                    root,
+                    {
+                        "action": "reconcile",
+                        "study": "bad",
+                        "expected": c.ref,
+                        "operation": "lost",
+                        "receipt_id": "verified",
+                        "result": raw,
+                        "evidence": "provider receipt fixture",
+                    },
+                )
+                self.assertTrue(result["paused"])
+                self.assertEqual(raw, host.store.result("bad", "lost"))
+                self.assertFalse(task.done())
+            finally:
+                await send(root, {"action": "shutdown"})
+                await task
+
     async def test_reload_credentials_requires_paused_and_drained_work(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)

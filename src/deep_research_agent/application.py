@@ -222,14 +222,21 @@ class ResearchService:
 
 
 def online_service(
-    store: Store, study: str, keys: dict[str, str], model_name: str | None = None
+    store: Store,
+    study: str,
+    keys: dict[str, str],
+    model_name: str | None = None,
+    scheduler=None,
 ) -> tuple[ResearchService, list]:
     """Compose explicit providers without giving adapters access to Agent control."""
     from .adapters import DeepSeek, JsonAPI, ProviderFailure, Tavily
     from .harness import STRING, Tool, object_schema
 
-    model_api = JsonAPI("https://api.deepseek.com", keys["DEEPSEEK_API_KEY"])
-    search_api = JsonAPI("https://api.tavily.com", keys["TAVILY_API_KEY"])
+    model_key, search_key = keys["DEEPSEEK_API_KEY"], keys["TAVILY_API_KEY"]
+    if not model_key.strip() or not search_key.strip():
+        raise ValueError("provider credentials required")
+    model_api = JsonAPI("https://api.deepseek.com", model_key)
+    search_api = JsonAPI("https://api.tavily.com", search_key)
     search = Tavily(search_api)
 
     def response_data(raw):
@@ -286,6 +293,8 @@ def online_service(
             observe=search_observation,
             retry_delay=search.retry_delay,
             retry_on_resume=search.retry_on_resume,
+            parallel_safe=True,
+            resource=search.resource,
         ),
         "fetch_web": Tool(
             "Extract source text through Tavily; returns a persistent source reference.",
@@ -297,6 +306,8 @@ def online_service(
             check=search.validate_extract,
             retry_delay=search.retry_delay,
             retry_on_resume=search.retry_on_resume,
+            parallel_safe=True,
+            resource=search.resource,
         ),
     }
     policy = store.get(study, store.control(study).direction).body["policy"]
@@ -305,5 +316,6 @@ def online_service(
         store,
         DeepSeek(model_api, model=model_name, stream=policy.get("stream_model", False)),
         tools,
+        scheduler=scheduler,
     )
     return ResearchService(store, harness), [model_api, search_api]
