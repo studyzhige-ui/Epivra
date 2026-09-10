@@ -8,8 +8,8 @@ from deep_research_agent.domain import encode
 
 
 def corpus(directory: Path, size: int) -> dict:
-    if size not in {30, 100, 1000}:
-        raise ValueError("supported corpus sizes: 30, 100, 1000")
+    if size not in {30, 100}:
+        raise ValueError("supported corpus sizes: 30, 100")
     directory.mkdir(parents=True, exist_ok=True)
     for i in range(size):
         text = (

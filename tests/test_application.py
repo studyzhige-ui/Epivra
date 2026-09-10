@@ -36,7 +36,9 @@ class WorkflowTests(unittest.IsolatedAsyncioTestCase):
                     )
                 elif "submit_review" in request["tools"]:
                     if "read_artifact" not in results:
-                        call = Call("read_artifact", {"ref": request["inputs"][0]["ref"]})
+                        call = Call(
+                            "read_artifact", {"ref": request["inputs"][0]["ref"]}
+                        )
                     elif "read_source" not in results:
                         call = Call(
                             "read_source",
@@ -46,7 +48,18 @@ class WorkflowTests(unittest.IsolatedAsyncioTestCase):
                         self.assertIn("limited sample", results["read_source"]["text"])
                         call = Call(
                             "submit_review",
-                            {"accepted": True, "reason": "Value and limitation match"},
+                            {
+                                "accepted": True,
+                                "reason": "Value and limitation match",
+                                "checks": [
+                                    {
+                                        "claim": "The value is 17, with a limited sample.",
+                                        "evidence": [source_ref],
+                                        "assessment": "Matches measured value and limitation",
+                                        "requires_revision": False,
+                                    }
+                                ],
+                            },
                         )
                 elif any("review_available" in o for o in observations):
                     review = next(o for o in observations if "review_available" in o)
@@ -130,7 +143,19 @@ class WorkflowTests(unittest.IsolatedAsyncioTestCase):
                     )
                 elif "submit_review" in tools:
                     call = Call(
-                        "submit_review", {"accepted": True, "reason": "Checked"}
+                        "submit_review",
+                        {
+                            "accepted": True,
+                            "reason": "Checked",
+                            "checks": [
+                                {
+                                    "claim": "Limited result supported by the observed source.",
+                                    "evidence": [source.ref],
+                                    "assessment": "One observation only",
+                                    "requires_revision": False,
+                                }
+                            ],
+                        },
                     )
                 elif store.list("s", "review"):
                     report = store.list("s", "report")[-1]

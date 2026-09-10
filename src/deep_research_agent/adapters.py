@@ -263,6 +263,7 @@ class DeepSeek:
                         and "index" in o
                         and len(encode(o["result"])) <= 12000
                     }
+                    prior_fields = {}
                     for message in previous["request"]["messages"]:
                         if message.get("role") not in {"user", "tool"}:
                             continue
@@ -272,9 +273,13 @@ class DeepSeek:
                             continue
                         if isinstance(prior_state, dict):
                             if message["role"] == "tool":
-                                if "observation_ref" in prior_state and "result" in prior_state:
+                                if (
+                                    "observation_ref" in prior_state
+                                    and "result" in prior_state
+                                ):
                                     seen.add(prior_state["observation_ref"])
                                 continue
+                            prior_fields.update(prior_state)
                             seen.update(
                                 item["ref"]
                                 for item in prior_state.get("context", [])
@@ -286,7 +291,15 @@ class DeepSeek:
                         "role": "user",
                         "content": encode(
                             {
-                                **state,
+                                **{
+                                    key: value
+                                    for key, value in state.items()
+                                    if key != "context"
+                                    and (
+                                        key not in prior_fields
+                                        or prior_fields[key] != value
+                                    )
+                                },
                                 "context": [
                                     item
                                     for item in state.get("context", [])

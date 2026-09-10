@@ -7,6 +7,29 @@ from typing import Any
 from .domain import Artifact, encode
 
 
+def source_ranges(source: Artifact, observations: list[Artifact]) -> list[list[int]]:
+    """Returned text coverage, not proof of comprehension or evidence quality."""
+    ranges = []
+    for observation in observations:
+        body = observation.body
+        result = body.get("result", {})
+        if not isinstance(result, dict):
+            continue
+        if body.get("tool") == "read_source" and result.get("ref") == source.ref:
+            start, end = result["offset"], result["end"]
+            if 0 <= start < end <= len(source.body["text"]):
+                ranges.append([start, end])
+        elif body.get("tool") == "read_artifact" and result.get("body") == source.body:
+            ranges.append([0, len(source.body["text"])])
+    merged = []
+    for start, end in sorted(ranges):
+        if merged and start <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], end)
+        else:
+            merged.append([start, end])
+    return merged
+
+
 def assemble(
     base: dict[str, Any],
     candidates: list[Artifact],

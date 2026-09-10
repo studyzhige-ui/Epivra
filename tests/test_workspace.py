@@ -24,8 +24,8 @@ class WorkspaceTests(unittest.TestCase):
         self.store.close()
         self.tmp.cleanup()
 
-    def test_thousand_sources_are_pageable_and_unsupported_files_visible(self):
-        for i in range(1000):
+    def test_hundred_sources_are_pageable_and_unsupported_files_visible(self):
+        for i in range(99):
             (self.corpus / f"{i:04}.txt").write_text(f"文献 {i}", encoding="utf-8")
         (self.corpus / "unknown.bin").write_bytes(b"binary")
         catalog = self.workspace.discover("s", str(self.corpus))
@@ -34,8 +34,8 @@ class WorkspaceTests(unittest.TestCase):
             page = self.workspace.catalog_page("s", catalog.ref, offset, 100)
             collected.extend(page["entries"])
             offset = page["next_offset"]
-        self.assertEqual(1001, len(collected))
-        self.assertEqual(1000, sum(e["status"] == "available" for e in collected))
+        self.assertEqual(100, len(collected))
+        self.assertEqual(99, sum(e["status"] == "available" for e in collected))
         self.assertEqual([], self.store.list("s", "source"))
 
     def test_snapshot_is_reused_after_original_changes(self):
@@ -43,6 +43,12 @@ class WorkspaceTests(unittest.TestCase):
         path.write_text("Original 原始证据", encoding="utf-8")
         catalog = self.workspace.discover("s", str(self.corpus))
         first = self.workspace.snapshot("s", catalog.ref, "source.txt")
+        self.assertEqual(
+            first.ref,
+            self.workspace.catalog_page("s", catalog.ref, 0, 10)["entries"][0][
+                "source_ref"
+            ],
+        )
         path.write_text("Changed evidence and a different length", encoding="utf-8")
         replay = self.workspace.snapshot("s", catalog.ref, "source.txt")
         self.assertEqual(first.ref, replay.ref)

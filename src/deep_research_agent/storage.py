@@ -142,8 +142,9 @@ class Store:
             self._artifact(r)
             for r in self.db.execute(
                 "SELECT * FROM artifacts WHERE study=? AND kind=? AND seq>? "
-                "AND instr(body,?)>0 ORDER BY seq LIMIT ?",
-                (study, kind, after, query, limit),
+                "AND (instr(body,?)>0 OR instr(ref,?)>0 OR instr(parents,?)>0) "
+                "ORDER BY seq LIMIT ?",
+                (study, kind, after, query, query, query, limit),
             )
         ]
 

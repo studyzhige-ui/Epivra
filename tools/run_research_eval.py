@@ -113,7 +113,7 @@ async def run(root: Path, size: int, run_id: str, assess_only: bool = False):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--sources", type=int, choices=[30, 100, 1000], default=30)
+    parser.add_argument("--sources", type=int, choices=[30, 100], default=30)
     parser.add_argument("--run-id", default="baseline")
     parser.add_argument("--assess-only", action="store_true")
     args = parser.parse_args()

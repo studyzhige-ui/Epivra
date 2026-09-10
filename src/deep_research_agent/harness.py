@@ -9,7 +9,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-from .context import assemble
+from .context import assemble, source_ranges
 from .domain import (
     Artifact,
     Call,
@@ -19,7 +19,7 @@ from .domain import (
     encode,
     identity,
 )
-from .prompts import ROLES
+from .prompts import ROLES, TOOLS
 from .scheduling import Scheduler
 from .storage import Store
 from .workspace import Workspace
@@ -140,6 +140,17 @@ BUILTINS = {
             {
                 "accepted": {"type": "boolean"},
                 "reason": STRING,
+                "checks": {
+                    "type": "array",
+                    "items": object_schema(
+                        {
+                            "claim": STRING,
+                            "evidence": STRINGS,
+                            "assessment": STRING,
+                            "requires_revision": {"type": "boolean"},
+                        }
+                    ),
+                },
             }
         ),
     ),
@@ -157,7 +168,21 @@ BUILTINS = {
         "all",
         object_schema(
             {
-                "kind": STRING,
+                "kind": {
+                    **STRING,
+                    "enum": [
+                        "source",
+                        "note",
+                        "report",
+                        "review",
+                        "plan",
+                        "observation",
+                        "catalog",
+                        "memory",
+                        "work_result",
+                        "work",
+                    ],
+                },
                 "query": {"type": "string"},
                 "after": {"type": "integer"},
                 "limit": {"type": "integer"},
@@ -206,6 +231,8 @@ def validate(value: Any, schema: dict[str, Any]) -> None:
             raise ValueError("expected integer")
     else:
         raise ValueError("unsupported schema type")
+    if "enum" in schema and value not in schema["enum"]:
+        raise ValueError("expected one of: " + ", ".join(schema["enum"]))
 
 
 class Harness:
@@ -230,9 +257,10 @@ class Harness:
 
     def _schema(self, role: str, policy: dict[str, Any]) -> dict[str, dict[str, Any]]:
         result = {
-            name: {"description": name, "parameters": schema}
+            name: {"description": TOOLS.get(name, name), "parameters": schema}
             for name, (allowed, schema) in BUILTINS.items()
             if allowed in (role, "all")
+            or (role == "planner" and name == "discover_local")
             or (
                 role == "investigator"
                 and name in {"save_note", "discover_local", "snapshot_local"}
@@ -430,6 +458,11 @@ class Harness:
                 name: tool.binding for name, tool in self.tools.items()
             }:
                 raise NotAllowed("pending work requires its original tool bindings")
+            direction = self.store.get(study, work.body["direction"])
+            if step.body["request"]["tools"] != self._schema(
+                work.body["role"], direction.body["policy"]
+            ):
+                raise NotAllowed("pending work requires its original tool contracts")
             raw = await self._invoke(
                 study,
                 work_ref,
@@ -683,23 +716,29 @@ class Harness:
                 study, args["ref"], args["offset"], args["limit"]
             )
         if call.name == "find_artifacts":
-            if args["kind"] not in {
-                "source",
-                "note",
-                "report",
-                "review",
-                "plan",
-                "observation",
-                "catalog",
-                "memory",
-                "work_result",
-            }:
-                raise ValueError("unsupported research artifact kind")
             page = self.store.search(
                 study, args["kind"], args["query"], args["after"], args["limit"]
             )
             return {
-                "items": [{"ref": a.ref, "kind": a.kind} for a in page],
+                "items": [
+                    {
+                        "ref": a.ref,
+                        "kind": a.kind,
+                        **(
+                            {
+                                "origin": a.body.get("origin"),
+                                "characters": len(a.body["text"]),
+                                "coverage": a.body.get("coverage"),
+                                "read_ranges": source_ranges(
+                                    a, self._steps(study, "observation", work.ref)
+                                ),
+                            }
+                            if a.kind == "source"
+                            else {}
+                        ),
+                    }
+                    for a in page
+                ],
                 "next_after": page[-1].seq if page else None,
             }
         if call.name == "read_source":
@@ -757,6 +796,18 @@ class Harness:
             ]
             if len(reports) != 1:
                 raise ValueError("review requires one bound report")
+            if not args["checks"]:
+                raise ValueError("review requires claim-level checks")
+            for check in args["checks"]:
+                if check["claim"] not in reports[0].body["text"]:
+                    raise ValueError(
+                        "checked claim must quote the bound report exactly"
+                    )
+                for ref in check["evidence"]:
+                    if self.store.get(study, ref).kind != "source":
+                        raise ValueError("review evidence must name source snapshots")
+                if args["accepted"] and check["requires_revision"]:
+                    raise ValueError("cannot accept a report requiring revision")
             item = self.store.put(
                 study, "review", {**args, "work": work.ref}, (*parents, reports[0].ref)
             )

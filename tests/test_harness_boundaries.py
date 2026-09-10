@@ -26,6 +26,136 @@ class Model:
 
 
 class BoundaryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_planner_can_discover_authorized_inventory_before_approval(self):
+        root = Path(self.folder.name) / "documents"
+        root.mkdir()
+        (root / "paper.txt").write_text("Evidence", encoding="utf-8")
+        control = self.store.create("p", "Plan", {"local_roots": [str(root)]})
+        work = self.store.work("p", control.ref, "planner", "Plan")
+        model = Model((Call("discover_local", {"root": str(root)}),))
+        harness = Harness(self.store, model)
+        self.assertNotIn("snapshot_local", harness._request("p", work)["tools"])
+        await harness.step("p", work.ref)
+        self.assertEqual(1, len(self.store.list("p", "catalog")))
+        self.assertEqual([], self.store.list("p", "source"))
+        self.assertFalse(self.store.control("p").approved)
+
+    async def test_pending_builtin_contract_change_is_rejected_before_model_call(self):
+        model = Model()
+        harness = Harness(self.store, model)
+        self.store.put(
+            "s",
+            "step",
+            {"number": 0, "request": harness._request("s", self.work)},
+            (self.work.ref,),
+        )
+        with patch.dict(
+            "deep_research_agent.harness.TOOLS", {"read_source": "changed contract"}
+        ):
+            with self.assertRaisesRegex(Exception, "original tool contracts"):
+                await harness.step("s", self.work.ref)
+        self.assertEqual(0, model.count)
+
+    async def test_review_cannot_accept_required_changes_or_unbound_claims(self):
+        source = self.store.put("s", "source", {"text": "Uncertain effect"})
+        report = self.store.put(
+            "s",
+            "report",
+            {"text": "Effect is proven.", "evidence": [source.ref]},
+            (self.c.direction, self.work.ref),
+        )
+        reviewer = self.store.work(
+            "s", self.c.ref, "reviewer", "Check", (report.ref,), self.work.ref
+        )
+        check = {
+            "claim": "Effect is proven.",
+            "evidence": [source.ref],
+            "assessment": "Source is uncertain",
+            "requires_revision": True,
+        }
+        model = Model(
+            (
+                Call(
+                    "submit_review",
+                    {"accepted": True, "reason": "Revise", "checks": [check]},
+                ),
+            )
+        )
+        harness = Harness(self.store, model)
+        await harness.step("s", reviewer.ref)
+        self.assertEqual([], self.store.list("s", "review"))
+        self.assertIn(
+            "cannot accept",
+            self.store.list("s", "observation")[-1].body["result"]["error"],
+        )
+        model.calls = (
+            Call(
+                "submit_review",
+                {
+                    "accepted": False,
+                    "reason": "Revise",
+                    "checks": [{**check, "claim": "Invented quote"}],
+                },
+            ),
+        )
+        await harness.step("s", reviewer.ref)
+        self.assertEqual([], self.store.list("s", "review"))
+        model.calls = (
+            Call(
+                "submit_review",
+                {"accepted": False, "reason": "Revise", "checks": [check]},
+            ),
+        )
+        await harness.step("s", reviewer.ref)
+        self.assertFalse(self.store.list("s", "review")[-1].body["accepted"])
+
+    async def test_reading_progress_survives_restart_but_is_work_local(self):
+        source = self.store.put(
+            "s", "source", {"origin": "paper", "text": "abcdefghij"}
+        )
+        model = Model(
+            tuple(
+                Call("read_source", {"ref": source.ref, "offset": start, "limit": 4})
+                for start in (0, 2, 8)
+            )
+        )
+        await Harness(self.store, model).step("s", self.work.ref)
+        self.store.close()
+        self.store = Store(self.path)
+        self.assertEqual(
+            [source], self.store.search("s", "source", source.ref[:16], 0, 10)
+        )
+        self.assertEqual(
+            [], self.store.search("another-study", "source", source.ref[:16], 0, 10)
+        )
+        lookup = Model(
+            (
+                Call(
+                    "find_artifacts",
+                    {"kind": "source", "query": "", "after": 0, "limit": 10},
+                ),
+            )
+        )
+        harness = Harness(self.store, lookup)
+        await harness.step("s", self.work.ref)
+        items = self.store.list("s", "observation")[-1].body["result"]["items"]
+        self.assertEqual([[0, 6], [8, 10]], items[0]["read_ranges"])
+        child = self.store.work(
+            "s",
+            self.c.ref,
+            "investigator",
+            "Independent check",
+            (source.ref,),
+            self.work.ref,
+        )
+        await harness.step("s", child.ref)
+        self.assertEqual(
+            [],
+            self.store.list("s", "observation")[-1].body["result"]["items"][0][
+                "read_ranges"
+            ],
+        )
+
     async def test_reference_types_and_latest_catalog_survive_reconstruction(self):
         source = self.store.put("s", "source", {"text": "evidence"})
         work = self.store.work(

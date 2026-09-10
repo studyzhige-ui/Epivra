@@ -68,6 +68,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         wire = self.model.prepare(latest, previous)
         last = json.loads(wire["payload"]["messages"][-1]["content"])
         self.assertEqual(["independent-result"], [x["ref"] for x in last["context"]])
+        self.assertNotIn("task", last)
         third = self.model.prepare(
             latest,
             {
@@ -79,6 +80,17 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             [], json.loads(third["payload"]["messages"][-1]["content"])["context"]
         )
+        changed = self.model.prepare(
+            {**latest, "task": "New direction", "memory": {"text": "Keep uncertainty"}},
+            {
+                "request": third["payload"],
+                "response": response(),
+                "observations": [{"index": 0, "_ref": "third", "result": "ok"}],
+            },
+        )
+        update = json.loads(changed["payload"]["messages"][-1]["content"])
+        self.assertEqual("New direction", update["task"])
+        self.assertEqual({"text": "Keep uncertainty"}, update["memory"])
         self.model.window_chars = 2000
         previous["request"]["messages"][0]["content"] = "x" * 10000
         rebuilt = self.model.prepare(latest, previous)

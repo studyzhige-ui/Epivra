@@ -85,8 +85,18 @@ class Workspace:
             raise ValueError("invalid catalog page")
         entries = catalog.body["entries"]
         end = min(len(entries), offset + limit)
+        snapshots = {
+            source.body["origin"]: source.ref
+            for source in self.store.list(study, "source")
+            if catalog.ref in source.parents
+        }
         return {
-            "entries": entries[offset:end],
+            "ref": catalog.ref,
+            "kind": "catalog",
+            "entries": [
+                {**entry, "source_ref": snapshots.get(entry["path"])}
+                for entry in entries[offset:end]
+            ],
             "total": len(entries),
             "next_offset": end if end < len(entries) else None,
         }

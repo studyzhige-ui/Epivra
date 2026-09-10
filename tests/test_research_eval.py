@@ -10,6 +10,13 @@ from evals.research_case import QUESTION, assess, corpus
 
 
 class ResearchEvalTests(unittest.TestCase):
+    def test_large_file_evaluation_is_deferred(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            with self.assertRaises(ValueError):
+                corpus(root, 1000)
+            self.assertEqual([], list(root.iterdir()))
+
     def test_fixture_is_reproducible_and_gold_is_not_in_question(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
