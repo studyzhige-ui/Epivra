@@ -1,124 +1,106 @@
-"""Composition root: bind configuration to the transport each role will use.
-
-Every entry point needs the same three steps -- read the operator's
-environment, resolve each role to a model, and build the transport that
-model's vendor actually speaks.  Doing it in one place is what stops a second
-entry point from quietly disagreeing with the first about a provider.
-
-That is not hypothetical.  Both driver scripts were constructing
-``OpenAICompatibleClient`` directly, so :func:`build_chat_model` -- the only
-code that reads a provider's declared protocol -- was never reached from a real
-run.  An operator selecting Anthropic would have had OpenAI-shaped requests
-posted to the Messages API and seen an opaque 404, with a correct native
-transport sitting unused in the tree.  A duplicated bootstrap is how a
-capability gets tested and never actually used.
-"""
-
+"""Small local service: control is independent of model I/O."""
 from __future__ import annotations
 
-import os
-import re
-from collections.abc import Mapping, Sequence
-from pathlib import Path
+import asyncio
+from typing import Any
 
-from .config import ROLES, Role, RuntimeConfig, load_config
-from .model import STREAMING_THRESHOLD_TOKENS
-from .operations import ExecutionIdentity
-from .providers import build_chat_model
-from .reporting import RoleRuntime
-
-#: ``KEY=value`` lines, ignoring comments, blanks, and indentation.
-_ASSIGNMENT = re.compile(r"^\s*([A-Z_][A-Z0-9_]*)\s*=\s*(.*)$")
+from .domain import Conflict
+from .harness import Harness
+from .storage import Store
 
 
-def load_environment(path: Path) -> dict[str, str]:
-    """Overlay a ``.env`` file onto the process environment.
+class ResearchService:
+    def __init__(self, store: Store, harness: Harness):
+        self.store, self.harness = store, harness
+        self.tasks: dict[str, asyncio.Task] = {}
+        self.errors: dict[str, str] = {}
 
-    The file wins over the ambient environment so that pointing a run at a
-    different key file does what the operator plainly meant, rather than
-    silently keeping whatever was exported in the shell.
-    """
+    def start(self, study: str) -> None:
+        running = self.tasks.get(study)
+        if running and not running.done():
+            return
+        self.errors.pop(study, None)
+        self.tasks[study] = asyncio.create_task(self.run(study))
 
-    values = dict(os.environ)
-    if not path.is_file():
-        return values
-    for line in path.read_text(encoding="utf-8").splitlines():
-        match = _ASSIGNMENT.match(line)
-        if match:
-            values[match.group(1)] = match.group(2).strip()
-    return values
+    async def run(self, study: str) -> None:
+        while True:
+            try:
+                await self._drive(study)
+                return
+            except Conflict:
+                c = self.store.control(study)
+                if c.paused or c.cancelled:
+                    return
+                await asyncio.sleep(0)
 
+    async def _drive(self, study: str) -> None:
+        try:
+            while True:
+                c = self.store.control(study)
+                if c.paused or c.cancelled:
+                    return
+                publications = [a for a in self.store.list(study, "publication")
+                                if c.direction in a.parents]
+                if publications:
+                    return
+                if not c.approved:
+                    work = self.store.work(
+                        study, c.ref, "planner", "提出初始研究策略并提交审批。",
+                    )
+                    if self.harness.finished(study, work.ref):
+                        return
+                else:
+                    inputs = (c.plan,) if c.plan else ()
+                    root = self.store.work(
+                        study, c.ref, "researcher",
+                        "依据当前方向自主研究并交付经过核查的报告。", inputs,
+                    )
+                    # A report proposal requests an independent work context;
+                    # the scheduler does not choose when research should write.
+                    reports = [a for a in self.store.list(study, "report")
+                               if root.ref in a.parents and c.direction in a.parents]
+                    work = root
+                    for report in reports:
+                        reviews = [a for a in self.store.list(study, "review")
+                                   if report.ref in a.parents]
+                        if reviews:
+                            for review in reviews:
+                                self.store.observation(study, root.ref, c.epoch, {
+                                    "review_available": review.ref,
+                                    "report": report.ref, "decision": review.body,
+                                }, (review.ref,))
+                            continue
+                        work = self.store.work(
+                            study, c.ref, "reviewer",
+                            "核查指定报告及原始证据，提交具体核查结论。",
+                            (report.ref,), root.ref,
+                        )
+                        break
+                await self.harness.step(study, work.ref)
+                # Let control messages run even when every operation was replayed.
+                await asyncio.sleep(0)
+        except Conflict:
+            raise
+        except Exception as exc:
+            # Never include provider request bodies or credential-bearing errors.
+            self.errors[study] = type(exc).__name__
 
-def build_runtimes(
-    environ: Mapping[str, str],
-    *,
-    roles: Sequence[Role] = ROLES,
-    config: RuntimeConfig | None = None,
-) -> dict[str, RoleRuntime]:
-    """Bind each role to the model its tier resolves to.
+    def status(self, study: str) -> dict[str, Any]:
+        c = self.store.control(study)
+        return {
+            "control": c.ref, "epoch": c.epoch, "direction": c.direction,
+            "approved": c.approved, "paused": c.paused, "cancelled": c.cancelled,
+            "plans": [{"ref": a.ref, "body": a.body}
+                      for a in self.store.list(study, "plan")],
+            "reports": [{"ref": a.ref, "body": a.body}
+                        for a in self.store.list(study, "publication")],
+            "running": bool(study in self.tasks and not self.tasks[study].done()),
+            "error": self.errors.get(study),
+            "unsettled_operations": self.store.unsettled(study),
+        }
 
-    The execution identity records provider, endpoint, model id **and the limits
-    the call runs under**, because the operation ledger keys replay on them: the
-    same request against a different model is different work, and replaying one as
-    the other would attribute a verdict to a model that never produced it.  The
-    limits are there for the same reason plus one more -- it is what makes a
-    capacity failure escapable.  Raising an output ceiling to unblock a truncated
-    report has to open a *new* operation, or the fix would replay the failure it
-    was meant to repair (see §8.2).
-
-    Streaming and the output ceiling are decided together here rather than in the
-    transports.  They are one decision: a ceiling above the safe threshold is only
-    safe when the response streams, and the transports refuse the unsafe pairing
-    rather than silently downgrading it.
-    """
-
-    resolved = config or load_config(environ)
-    runtimes: dict[str, RoleRuntime] = {}
-    for role in roles:
-        chosen = resolved.model_for(role)
-        limits = chosen.limits
-        runtimes[role] = RoleRuntime(
-            model=build_chat_model(
-                chosen.provider,
-                chosen.model_id,
-                api_key=chosen.api_key(environ),
-                max_output_tokens=limits.output,
-                stream=limits.output > STREAMING_THRESHOLD_TOKENS,
-                effort=chosen.effort,
-            ),
-            execution=ExecutionIdentity(
-                provider=chosen.provider.name,
-                endpoint=chosen.api_base,
-                model_id=chosen.model_id,
-                # Named "ceiling" rather than "*_tokens": the ledger bars any
-                # field whose name contains "token" as credential-like, and that
-                # guard is worth more than the tidier name.
-                limits={
-                    "context_ceiling": str(limits.context),
-                    "output_ceiling": str(limits.output),
-                    "effort": chosen.effort,
-                },
-            ),
-            context_limit=limits.context,
-        )
-    return runtimes
-
-
-def render_role_models(config: RuntimeConfig, roles: Sequence[Role] = ROLES) -> str:
-    """A readable account of which model every role is about to use."""
-
-    lines = ["角色 → 模型："]
-    for role in roles:
-        chosen = config.model_for(role)
-        lines.append(
-            f"  {role:<13} {chosen.tier:<10} "
-            f"{chosen.provider.name}/{chosen.model_id}"
-        )
-    return "\n".join(lines)
-
-
-__all__ = [
-    "build_runtimes",
-    "load_environment",
-    "render_role_models",
-]
+    async def close(self) -> None:
+        tasks = list(self.tasks.values())
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)

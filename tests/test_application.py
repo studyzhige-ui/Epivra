@@ -1,163 +1,117 @@
-"""The composition root must build the transport each vendor actually speaks.
-
-Both driver scripts previously constructed an OpenAI client directly, so the
-protocol registry was exercised only by its own unit tests and never by a run.
-The property worth pinning is therefore not "build_chat_model dispatches" --
-that is already tested -- but "the entry points go through it".
-"""
-
 from __future__ import annotations
 
+import asyncio
+import tempfile
 import unittest
+from pathlib import Path
 
-from deep_research_agent.application import (
-    build_runtimes,
-    load_environment,
-    render_role_models,
-)
-from deep_research_agent.config import ROLES, load_config
-from deep_research_agent.model import OpenAICompatibleClient
-from deep_research_agent.providers.anthropic import AnthropicClient
+from deep_research_agent.application import ResearchService
+from deep_research_agent.domain import Call, Reply
+from deep_research_agent.harness import Harness
+from deep_research_agent.storage import Store
 
 
-class TransportSelectionTest(unittest.TestCase):
-    def test_an_anthropic_deployment_gets_the_native_messages_transport(self) -> None:
-        runtimes = build_runtimes(
-            {
-                "DEEP_RESEARCH_LLM_PROVIDER": "anthropic",
-                "ANTHROPIC_API_KEY": "sk-ant-test",
-            }
-        )
+class WorkflowTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.store = Store(Path(self.tmp.name) / "research.db")
 
-        self.assertEqual(set(ROLES), set(runtimes))
-        for role, runtime in runtimes.items():
-            with self.subTest(role=role):
-                self.assertIsInstance(runtime.model, AnthropicClient)
-                self.assertEqual("anthropic", runtime.execution.provider)
+    async def asyncTearDown(self):
+        self.store.close()
+        self.tmp.cleanup()
 
-    def test_an_openai_protocol_deployment_gets_the_openai_transport(self) -> None:
-        runtimes = build_runtimes(
-            {
-                "DEEP_RESEARCH_LLM_PROVIDER": "deepseek",
-                "DEEPSEEK_API_KEY": "sk-test",
-            }
-        )
+    async def test_plan_approval_report_independent_review_and_publication(self):
+        store = self.store
+        store.create("s", "Compare the evidence", {"network": False})
+        source = store.put("s", "source", {"text": "One measured observation"})
 
-        for runtime in runtimes.values():
-            self.assertIsInstance(runtime.model, OpenAICompatibleClient)
+        class ScriptedResearcher:
+            identity = "offline-integration"
+            calls = 0
 
-    def test_the_execution_identity_carries_the_model_that_will_answer(self) -> None:
-        """Replay is keyed on it, so a wrong value attributes work to a model
-        that never ran."""
+            async def complete(inner, request):
+                inner.calls += 1
+                tools = request["tools"]
+                if "propose_plan" in tools:
+                    call = Call("propose_plan", {"text": "Read sources and check claims"})
+                elif "submit_review" in tools:
+                    call = Call("submit_review", {"accepted": True, "reason": "Checked"})
+                elif store.list("s", "review"):
+                    report = store.list("s", "report")[-1]
+                    review = store.list("s", "review")[-1]
+                    call = Call("publish_report", {"report": report.ref, "review": review.ref})
+                else:
+                    call = Call("draft_report", {
+                        "text": "Limited result supported by the observed source.",
+                        "evidence": [source.ref],
+                    })
+                return Reply("", (call,)).to_json()
 
-        environ = {
-            "DEEP_RESEARCH_LLM_PROVIDER": "deepseek",
-            "DEEPSEEK_API_KEY": "sk-test",
-            "DEEP_RESEARCH_FAST_MODEL": "deepseek-chat-lite",
-        }
-        config = load_config(environ)
-        runtimes = build_runtimes(environ, config=config)
+        model = ScriptedResearcher()
+        harness = Harness(store, model)
+        service = ResearchService(store, harness)
+        await service.run("s")
+        self.assertEqual(1, model.calls)
+        self.assertFalse(store.control("s").approved)
+        self.assertEqual([], store.list("s", "publication"))
+        plan = store.list("s", "plan")[-1]
+        c = store.control("s")
+        store.command("s", "approve", c.ref, "approve", {"plan": plan.ref})
+        await service.run("s")
+        self.assertEqual(4, model.calls)
+        self.assertEqual(1, len(store.list("s", "publication")))
+        self.assertEqual(3, len(store.list("s", "work")))
+        await service.run("s")
+        self.assertEqual(4, model.calls)
 
-        investigator = runtimes["investigator"].execution
-        self.assertEqual("deepseek-chat-lite", investigator.model_id)
-        self.assertEqual(
-            config.model_for("investigator").api_base, investigator.endpoint
-        )
+    async def test_user_steering_during_call_continues_without_extra_resume(self):
+        store = self.store
+        c = store.create("s", "Original", {})
+        plan = store.put("s", "plan", {"text": "plan"}, (c.direction,))
+        store.command("s", "approve", c.ref, "approve", {"plan": plan.ref})
+        entered, release = asyncio.Event(), asyncio.Event()
 
-    def test_only_the_requested_roles_are_built(self) -> None:
-        """The reporting driver must not demand credentials it never uses."""
+        class Model:
+            identity = "offline-steer"
+            seen = []
 
-        runtimes = build_runtimes(
-            {"DEEP_RESEARCH_LLM_PROVIDER": "deepseek", "DEEPSEEK_API_KEY": "sk-test"},
-            roles=("analyst", "author", "reviewer"),
-        )
+            async def complete(inner, request):
+                inner.seen.append(request["direction"]["request"])
+                if len(inner.seen) == 1:
+                    entered.set()
+                    await release.wait()
+                    return Reply("", (Call("save_note", {"text": "old", "refs": []}),)).to_json()
+                current = store.control("s")
+                store.command("s", "pause-end", current.ref, "pause")
+                return Reply("", ()).to_json()
 
-        self.assertEqual({"analyst", "author", "reviewer"}, set(runtimes))
+        model = Model()
+        service = ResearchService(store, Harness(store, model))
+        service.start("s")
+        await entered.wait()
+        c = store.control("s")
+        store.command("s", "steer", c.ref, "steer", {"request": "Revised"})
+        release.set()
+        await asyncio.wait_for(service.tasks["s"], 2)
+        self.assertEqual(["Original", "Revised"], model.seen)
+        self.assertEqual([], store.list("s", "note"))
 
+    async def test_oversize_source_can_be_read_in_bounded_ranges(self):
+        store = self.store
+        c = store.create("s", "Read", {})
+        source = store.put("s", "source", {"text": "x" * 30000 + "rare counterevidence"})
+        work = store.work("s", c.ref, "planner", "inspect")
 
-class ExecutionLimitWiringTest(unittest.TestCase):
-    """Limits must reach the transport, the runner, and the fingerprint.
+        class Model:
+            identity = "offline-range"
 
-    Three separate consumers, and missing any one of them reproduces a defect the
-    audit found: the transport needs the output ceiling (a deep report used to be
-    truncated), the runner needs the input ceiling (§8.3's red line had no value to
-    check against), and the fingerprint needs both (raising a ceiling had to be a
-    new operation, or the fix would replay the failure).
-    """
+            async def complete(inner, request):
+                return Reply("", (Call("read_source", {
+                    "ref": source.ref, "offset": 30000, "limit": 100,
+                }),)).to_json()
 
-    ANTHROPIC = {
-        "DEEP_RESEARCH_LLM_PROVIDER": "anthropic",
-        "ANTHROPIC_API_KEY": "sk-ant-test",
-    }
-
-    def test_the_runner_is_given_the_input_ceiling(self) -> None:
-        runtimes = build_runtimes(self.ANTHROPIC)
-        for role, runtime in runtimes.items():
-            with self.subTest(role=role):
-                self.assertGreater(runtime.context_limit, 0)
-
-    def test_large_output_streams_and_small_output_does_not(self) -> None:
-        """One decision, made here: a large ceiling is only safe when streaming."""
-
-        runtimes = build_runtimes(self.ANTHROPIC)
-        author = runtimes["author"].model
-        investigator = runtimes["investigator"].model
-
-        self.assertTrue(author.stream, "a deep report must stream")
-        self.assertGreater(author.max_output_tokens, 33_000)
-        self.assertFalse(investigator.stream, "a bounded role need not stream")
-
-    def test_effort_reaches_the_transport_that_accepts_it(self) -> None:
-        runtimes = build_runtimes(self.ANTHROPIC)
-        self.assertEqual("low", runtimes["investigator"].model.effort)
-        self.assertEqual("xhigh", runtimes["reviewer"].model.effort)
-
-    def test_the_fingerprint_covers_the_limits_the_call_ran_under(self) -> None:
-        from deep_research_agent.operations import OperationRequest
-
-        def author_operation(environ: dict[str, str]) -> str:
-            runtime = build_runtimes(environ)["author"]
-            return OperationRequest(
-                task_id="t", kind="model_call", role="author",
-                execution=runtime.execution,
-            ).operation_id()
-
-        base = author_operation(dict(self.ANTHROPIC))
-        raised = author_operation(
-            {**self.ANTHROPIC, "DEEP_RESEARCH_AUTHOR_OUTPUT_CEILING": "90000"}
-        )
-        deeper = author_operation(
-            {**self.ANTHROPIC, "DEEP_RESEARCH_AUTHOR_EFFORT": "max"}
-        )
-
-        # This is the escape route from a capacity failure: without it, the fix
-        # for a truncated report would replay the truncation.
-        self.assertNotEqual(base, raised)
-        self.assertNotEqual(base, deeper)
-
-    def test_no_limit_field_looks_like_a_credential(self) -> None:
-        """The ledger bars credential-shaped field names; the limits must pass."""
-
-        for runtime in build_runtimes(self.ANTHROPIC).values():
-            self.assertIn("context_ceiling", runtime.execution.limits)
-            self.assertIn("output_ceiling", runtime.execution.limits)
-            self.assertIn("effort", runtime.execution.limits)
-
-
-class EnvironmentTest(unittest.TestCase):
-    def test_a_missing_env_file_is_not_an_error(self) -> None:
-        from pathlib import Path
-
-        values = load_environment(Path("no-such-file.env"))
-        self.assertIsInstance(values, dict)
-
-    def test_every_role_appears_in_the_rendered_account(self) -> None:
-        rendered = render_role_models(
-            load_config({"DEEP_RESEARCH_LLM_PROVIDER": "deepseek"})
-        )
-        for role in ROLES:
-            self.assertIn(role, rendered)
-
-
-if __name__ == "__main__":
-    unittest.main()
+        harness = Harness(store, Model(), context_chars=8000)
+        await harness.step("s", work.ref)
+        body = store.list("s", "observation")[-1].body["result"]
+        self.assertEqual("rare counterevidence", body["text"])
+        self.assertEqual(30000, body["offset"])
