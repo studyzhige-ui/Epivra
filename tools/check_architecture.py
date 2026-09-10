@@ -7,11 +7,16 @@ from pathlib import Path
 
 LAYERS = (
     ("domain", frozenset({"__init__", "domain"})),
-    ("infrastructure", frozenset({"storage", "prompts", "context", "workspace"})),
+    (
+        "infrastructure",
+        frozenset({"storage", "prompts", "context", "workspace", "adapters"}),
+    ),
     ("execution", frozenset({"harness"})),
-    ("application", frozenset({"application"})),
+    ("application", frozenset({"application", "host"})),
 )
 ALLOWED = {
+    "host": {"application", "adapters", "storage"},
+    "adapters": {"domain"},
     "__init__": set(),
     "domain": set(),
     "prompts": set(),
@@ -19,7 +24,7 @@ ALLOWED = {
     "context": {"domain"},
     "workspace": {"domain", "storage"},
     "harness": {"domain", "prompts", "storage", "context", "workspace"},
-    "application": {"domain", "harness", "storage"},
+    "application": {"domain", "harness", "storage", "adapters"},
 }
 FORBIDDEN = {"claude_agent_sdk", "codex_sdk", "langgraph"}
 IO_MODULES = {"os", "pathlib", "sqlite3", "httpx", "aiohttp", "socket", "subprocess"}

@@ -395,7 +395,19 @@ class Store:
             )
             return None
 
+    def result(self, study: str, operation_id: str) -> Any:
+        import json
+
+        row = self.db.execute(
+            "SELECT result FROM operations WHERE study=? AND id=? AND status='succeeded'",
+            (study, operation_id),
+        ).fetchone()
+        if row is None:
+            raise UnknownOutcome(operation_id)
+        return json.loads(row[0])
+
     def settle(self, operation_id: str, result: Any) -> None:
+        """Persist the returned envelope, including explicit provider failures."""
         if result is None:
             raise ValueError("operation result must have an envelope")
         serialized = encode(result)

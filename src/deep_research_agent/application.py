@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+from .adapters import ProviderFailure
 from .domain import Conflict
 from .harness import Harness
 from .storage import Store
@@ -173,7 +174,9 @@ class ResearchService:
             raise
         except Exception as exc:
             # Never include provider request bodies or credential-bearing errors.
-            self.errors[study] = type(exc).__name__
+            self.errors[study] = (
+                str(exc) if isinstance(exc, ProviderFailure) else type(exc).__name__
+            )
 
     def status(self, study: str) -> dict[str, Any]:
         c = self.store.control(study)
@@ -207,10 +210,97 @@ class ResearchService:
         except Conflict:
             raise
         except Exception as exc:
-            self.work_errors[work] = type(exc).__name__
+            self.work_errors[work] = (
+                str(exc) if isinstance(exc, ProviderFailure) else type(exc).__name__
+            )
 
     async def close(self) -> None:
         tasks = list(self.tasks.values())
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
+
+
+def online_service(
+    store: Store, study: str, keys: dict[str, str], model_name: str = "deepseek-v4-pro"
+) -> tuple[ResearchService, list]:
+    """Compose explicit providers without giving adapters access to Agent control."""
+    from .adapters import DeepSeek, JsonAPI, ProviderFailure, Tavily
+    from .harness import STRING, Tool, object_schema
+
+    model_api = JsonAPI("https://api.deepseek.com", keys["DEEPSEEK_API_KEY"])
+    search_api = JsonAPI("https://api.tavily.com", keys["TAVILY_API_KEY"])
+    search = Tavily(search_api)
+
+    def response_data(raw):
+        status = raw.get("http_status", 0)
+        if status != 200:
+            raise ProviderFailure("tavily", status)
+        if "data" not in raw:
+            raise ValueError("invalid search response")
+        return raw["data"]
+
+    def search_observation(raw):
+        data = response_data(raw)
+        return {
+            "results": [
+                {
+                    "url": r["url"],
+                    "title": r.get("title", ""),
+                    "snippet": r.get("content", ""),
+                    "content_type": "search_snippet",
+                }
+                for r in data.get("results", [])
+            ]
+        }
+
+    def extract_observation(raw):
+        data = response_data(raw)
+        sources = []
+        for result in data.get("results", []):
+            text = result.get("raw_content")
+            if not isinstance(text, str) or not text.strip():
+                continue
+            source = store.put(
+                study,
+                "source",
+                {
+                    "text": text,
+                    "origin": result["url"],
+                    "parser": "tavily-extract-v1",
+                    "coverage": "extracted_not_reviewed",
+                },
+            )
+            sources.append(
+                {"ref": source.ref, "url": result["url"], "characters": len(text)}
+            )
+        return {"sources": sources, "failed_count": len(data.get("failed_results", []))}
+
+    tools = {
+        "web_search": Tool(
+            "Find web sources; snippets are leads, not verified original evidence.",
+            object_schema({"query": STRING}),
+            search.search,
+            identity=search.identity + ":search",
+            permission="network",
+            observe=search_observation,
+            retry_delay=search.retry_delay,
+        ),
+        "fetch_web": Tool(
+            "Extract source text through Tavily; returns a persistent source reference.",
+            object_schema({"url": STRING}),
+            search.extract,
+            identity=search.identity + ":extract",
+            permission="network",
+            observe=extract_observation,
+            check=search.validate_extract,
+            retry_delay=search.retry_delay,
+        ),
+    }
+    policy = store.get(study, store.control(study).direction).body["policy"]
+    harness = Harness(
+        store,
+        DeepSeek(model_api, model=model_name, stream=policy.get("stream_model", False)),
+        tools,
+    )
+    return ResearchService(store, harness), [model_api, search_api]

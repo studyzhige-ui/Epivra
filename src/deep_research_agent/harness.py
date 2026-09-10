@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import math
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, Protocol
@@ -28,6 +30,9 @@ class Tool:
     roles: tuple[str, ...] = ("researcher", "reviewer", "investigator")
     identity: str = "v1"
     permission: str | None = None
+    observe: Callable[[Any], Any] | None = None
+    check: Callable[[dict[str, Any]], None] | None = None
+    retry_delay: Callable[[Any, int], float | None] | None = None
 
 
 def object_schema(properties: dict[str, Any]) -> dict[str, Any]:
@@ -235,12 +240,87 @@ class Harness:
             x for x in self.store.list(study, "note") if work.ref in x.parents
         )
         memories = self._steps(study, "memory", work.ref)
-        return assemble(
+        request = assemble(
             mandatory,
             candidates,
             memories[-1] if memories else None,
             self.context_chars,
         )
+        prepare = getattr(self.model, "prepare", None)
+        if prepare:
+            previous = None
+            steps = self._steps(study, "step", work.ref)
+            if steps:
+                last = steps[-1]
+                if "wire" in last.body["request"]:
+                    previous = {
+                        "request": last.body["request"]["wire"]["payload"],
+                        "response": self._result(
+                            study, identity("model", work.ref, last.ref)
+                        ),
+                        "observations": [
+                            {**a.body, "_ref": a.ref}
+                            for a in self._steps(study, "observation", work.ref)
+                            if a.body.get("step") == last.ref
+                        ],
+                    }
+                    if any("error" in o for o in previous["observations"]):
+                        previous = None
+            request["wire"] = prepare(request, previous)
+        return request
+
+    def _attempt(self, study: str, operation: str):
+        retries = [
+            a
+            for a in self.store.list(study, "retry")
+            if a.body["operation"] == operation
+        ]
+        return retries[-1] if retries else None
+
+    def _result(self, study: str, operation: str):
+        retry = self._attempt(study, operation)
+        return self.store.result(study, retry.body["next"] if retry else operation)
+
+    async def _invoke(
+        self, study, work, epoch, step, operation, request, invoke, retry_delay=None
+    ):
+        retry = self._attempt(study, operation)
+        attempt = retry.body["attempt"] if retry else 0
+        key = retry.body["next"] if retry else operation
+        while True:
+            if retry:
+                # Persisted wall-clock deadline survives process restart. Short
+                # cooperative waits also fence pause/steer before another send.
+                while retry.body["not_before"] > time.time():
+                    self.store.require_work(study, work, epoch)
+                    await asyncio.sleep(
+                        min(0.25, retry.body["not_before"] - time.time())
+                    )
+            raw = self.store.admit(study, work, epoch, key, request)
+            if raw is None:
+                raw = await invoke()
+                self.store.settle(key, raw)
+            self.store.require_work(study, work, epoch)
+            delay = retry_delay(raw, attempt) if retry_delay else None
+            if delay is None:
+                return raw
+            if not math.isfinite(delay) or delay < 0:
+                raise ValueError("invalid provider retry delay")
+            attempt += 1
+            next_key = identity("retry", operation, attempt)
+            retry = self.store.put(
+                study,
+                "retry",
+                {
+                    "operation": operation,
+                    "previous": key,
+                    "next": next_key,
+                    "attempt": attempt,
+                    "not_before": time.time() + delay,
+                },
+                (work, step),
+            )
+            key = next_key
 
     def _steps(self, study: str, kind: str, work: str) -> list[Artifact]:
         return [a for a in self.store.list(study, kind) if work in a.parents]
@@ -284,20 +364,21 @@ class Harness:
                 name: tool.identity for name, tool in self.tools.items()
             }:
                 raise NotAllowed("pending work requires its original tool bindings")
-            raw = self.store.admit(
+            raw = await self._invoke(
                 study,
                 work_ref,
                 control.epoch,
+                step.ref,
                 operation,
                 step.body["request"],
+                lambda: self.model.complete(step.body["request"]),
+                getattr(self.model, "retry_delay", None),
             )
-            if raw is None:
-                raw = await self.model.complete(step.body["request"])
-                self.store.settle(operation, raw)
             # Always save the external result; only then check the admission fence.
             self.store.require_work(study, work_ref, control.epoch)
             try:
-                reply = Reply.from_json(raw)
+                decode = getattr(self.model, "decode", None)
+                reply = Reply.from_json(decode(raw) if decode else raw)
                 if not reply.complete:
                     raise ValueError("incomplete response; no tool was executed")
             except (KeyError, TypeError, ValueError) as exc:
@@ -327,6 +408,8 @@ class Harness:
                     if call.name not in schema:
                         raise NotAllowed("tool not available to this work")
                     validate(call.arguments, schema[call.name]["parameters"])
+                    if call.name in self.tools and self.tools[call.name].check:
+                        self.tools[call.name].check(call.arguments)
                 except (ValueError, NotAllowed) as exc:
                     result = {"error": str(exc)}
                 else:
@@ -345,18 +428,25 @@ class Harness:
                     else:
                         key = identity("tool", step.ref, index)
                         req = {"tool": call.name, "arguments": call.arguments}
-                        envelope = self.store.admit(
+                        tool = self.tools[call.name]
+
+                        async def invoke():
+                            return {"value": await tool.invoke(call.arguments)}
+
+                        envelope = await self._invoke(
                             study,
                             work_ref,
                             control.epoch,
+                            step.ref,
                             key,
                             req,
+                            invoke,
+                            (lambda raw, n: tool.retry_delay(raw["value"], n))
+                            if tool.retry_delay
+                            else None,
                         )
-                        if envelope is None:
-                            value = await self.tools[call.name].invoke(call.arguments)
-                            envelope = {"value": value}
-                            self.store.settle(key, envelope)
-                        result = envelope
+                        observe = self.tools[call.name].observe
+                        result = observe(envelope["value"]) if observe else envelope
                 self.store.observation(
                     study,
                     work_ref,
@@ -418,6 +508,10 @@ class Harness:
             return {"ref": item.ref}
         if call.name == "read_artifact_range":
             artifact = self.store.get(study, args["ref"])
+            if artifact.kind in {"step", "step_done", "control"}:
+                raise NotAllowed(
+                    "execution and provider-private records are not research materials"
+                )
             body = encode(artifact.body)
             offset, limit = args["offset"], args["limit"]
             if offset < 0 or not 1 <= limit <= self.context_chars // 3:
@@ -477,6 +571,10 @@ class Harness:
             }
         if call.name == "read_artifact":
             artifact = self.store.get(study, args["ref"])
+            if artifact.kind in {"step", "step_done", "control"}:
+                raise NotAllowed(
+                    "execution and provider-private records are not research materials"
+                )
             if len(encode(artifact.body)) > self.context_chars // 2:
                 return {
                     "error": "use read_artifact_range to retrieve this body",
