@@ -3,7 +3,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-GATE = runpy.run_path(str(Path(__file__).resolve().parents[1] / "tools/check_architecture.py"))
+GATE = runpy.run_path(
+    str(Path(__file__).resolve().parents[1] / "tools/check_architecture.py")
+)
 
 
 class ArchitectureTests(unittest.TestCase):
@@ -14,9 +16,11 @@ class ArchitectureTests(unittest.TestCase):
                 (root / f"{name}.py").write_text("", encoding="utf-8")
             self.assertEqual([], GATE["check"](root))
             (root / "domain.py").write_text(
-                "from deep_research_agent import application\n", encoding="utf-8")
+                "from deep_research_agent import application\n", encoding="utf-8"
+            )
             (root / "prompts.py").write_text(
-                "def hidden():\n    import httpx\n", encoding="utf-8")
+                "def hidden():\n    import httpx\n", encoding="utf-8"
+            )
             (root / "unregistered.py").write_text("", encoding="utf-8")
             problems = GATE["check"](root)
             self.assertTrue(any("forbidden local dependency" in p for p in problems))

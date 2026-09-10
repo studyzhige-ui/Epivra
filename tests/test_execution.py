@@ -23,10 +23,12 @@ class Fixture(unittest.TestCase):
         self.path = Path(self.tmp.name) / "research.db"
         self.store = Store(self.path)
         c = self.store.create("s", "Compare sources", {"network": False})
-        plan = self.store.put("s", "plan", {"text": "Check primary evidence"},
-                              (c.direction,))
-        self.c = self.store.command("s", "approve", c.ref, "approve",
-                                    {"plan": plan.ref})
+        plan = self.store.put(
+            "s", "plan", {"text": "Check primary evidence"}, (c.direction,)
+        )
+        self.c = self.store.command(
+            "s", "approve", c.ref, "approve", {"plan": plan.ref}
+        )
         self.work = self.store.work("s", self.c.ref, "researcher", "Investigate")
 
     def tearDown(self):
@@ -42,26 +44,32 @@ class StorageTests(Fixture):
     def test_existing_unversioned_database_is_rejected_without_schema_changes(self):
         import sqlite3
         from contextlib import closing
+
         path = Path(self.tmp.name) / "old.db"
         with closing(sqlite3.connect(path)) as db:
             db.execute("CREATE TABLE old_data(value TEXT)")
         with self.assertRaisesRegex(ValueError, "incompatible"):
             Store(path)
         with closing(sqlite3.connect(path)) as db:
-            names = [r[0] for r in db.execute(
-                "SELECT name FROM sqlite_master WHERE type='table'")]
+            names = [
+                r[0]
+                for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")
+            ]
         self.assertEqual(["old_data"], names)
 
     def test_corrupted_artifact_is_not_returned_as_valid_evidence(self):
         source = self.store.put("s", "source", {"text": "original"})
-        self.store.db.execute("UPDATE artifacts SET body=? WHERE ref=?",
-                              ('{"text":"corrupted"}', source.ref))
+        self.store.db.execute(
+            "UPDATE artifacts SET body=? WHERE ref=?",
+            ('{"text":"corrupted"}', source.ref),
+        )
         with self.assertRaisesRegex(ValueError, "integrity"):
             self.store.get("s", source.ref)
 
     def test_source_cursor_does_not_hide_later_pages(self):
-        expected = [self.store.put("s", "source", {"text": f"item-{i}"}).ref
-                    for i in range(105)]
+        expected = [
+            self.store.put("s", "source", {"text": f"item-{i}"}).ref for i in range(105)
+        ]
         found, cursor = [], 0
         while True:
             page = self.store.search("s", "source", "", cursor, 20)
@@ -96,10 +104,13 @@ class StorageTests(Fixture):
         self.store.settle("paid", {"answer": 42})
         self.store.close()
         self.store = Store(self.path)
-        self.assertEqual({"answer": 42}, self.store.admit(
-            "s", self.work.ref, self.c.epoch, "paid", {"q": "x"}))
-        self.assertEqual(1, self.store.db.execute(
-            "SELECT count(*) FROM operations").fetchone()[0])
+        self.assertEqual(
+            {"answer": 42},
+            self.store.admit("s", self.work.ref, self.c.epoch, "paid", {"q": "x"}),
+        )
+        self.assertEqual(
+            1, self.store.db.execute("SELECT count(*) FROM operations").fetchone()[0]
+        )
         with self.assertRaises(Conflict):
             self.store.settle("paid", {"answer": 43})
 
@@ -110,8 +121,10 @@ class StorageTests(Fixture):
         with self.assertRaises(Conflict):
             self.store.observation("s", self.work.ref, self.c.epoch, {})
         resumed = self.command("resume")
-        self.assertEqual({"answer": 42}, self.store.admit(
-            "s", self.work.ref, resumed.epoch, "paid", {}))
+        self.assertEqual(
+            {"answer": 42},
+            self.store.admit("s", self.work.ref, resumed.epoch, "paid", {}),
+        )
 
     def test_steer_while_paused_does_not_resume(self):
         self.command("pause")
@@ -131,25 +144,48 @@ class StorageTests(Fixture):
         plan = self.store.put("s", "plan", {"text": "old"}, (old.direction,))
         revised = self.command("steer", {"request": "new"})
         with self.assertRaises(Conflict):
-            self.store.command("s", "wrong-plan", revised.ref, "approve",
-                               {"plan": plan.ref})
+            self.store.command(
+                "s", "wrong-plan", revised.ref, "approve", {"plan": plan.ref}
+            )
 
     def test_publication_needs_bound_independent_review(self):
         source = self.store.put("s", "source", {"text": "Evidence"})
-        report = self.store.put("s", "report", {
-            "text": "Result", "evidence": [source.ref],
-        }, (self.c.direction, source.ref))
-        review_work = self.store.work(
-            "s", self.c.ref, "reviewer", "Check", (report.ref,), self.work.ref,
+        report = self.store.put(
+            "s",
+            "report",
+            {
+                "text": "Result",
+                "evidence": [source.ref],
+            },
+            (self.c.direction, source.ref),
         )
-        review = self.store.put("s", "review", {
-            "accepted": True, "work": review_work.ref,
-        }, (report.ref, review_work.ref))
-        published = self.store.publish("s", self.work.ref, self.c.epoch,
-                                       report.ref, review.ref)
+        review_work = self.store.work(
+            "s",
+            self.c.ref,
+            "reviewer",
+            "Check",
+            (report.ref,),
+            self.work.ref,
+        )
+        review = self.store.put(
+            "s",
+            "review",
+            {
+                "accepted": True,
+                "work": review_work.ref,
+            },
+            (report.ref, review_work.ref),
+        )
+        published = self.store.publish(
+            "s", self.work.ref, self.c.epoch, report.ref, review.ref
+        )
         self.assertEqual(report.ref, published.body["report"])
-        self.assertEqual(published.ref, self.store.publish(
-            "s", self.work.ref, self.c.epoch, report.ref, review.ref).ref)
+        self.assertEqual(
+            published.ref,
+            self.store.publish(
+                "s", self.work.ref, self.c.epoch, report.ref, review.ref
+            ).ref,
+        )
         changed = self.command("steer", {"request": "Different scope"})
         new_work = self.store.work("s", changed.ref, "researcher", "Revisit")
         with self.assertRaises(Conflict):
@@ -161,8 +197,10 @@ class StorageTests(Fixture):
             with self.store.transaction():
                 self.store._put("s", "note", {"text": "temporary"})
                 raise ValueError("injected crash")
-        self.assertEqual(before, self.store.db.execute(
-            "SELECT count(*) FROM artifacts").fetchone()[0])
+        self.assertEqual(
+            before,
+            self.store.db.execute("SELECT count(*) FROM artifacts").fetchone()[0],
+        )
 
     def test_cancel_is_terminal(self):
         c = self.command("cancel")
@@ -188,9 +226,18 @@ class HarnessTests(Fixture, unittest.IsolatedAsyncioTestCase):
             self.fail("network tool executed despite missing grant")
 
         model = FakeModel([Reply("", (Call("search", {}),))])
-        h = Harness(self.store, model, {"search": Tool(
-            "Search", object_schema({}), search, permission="network",
-        )})
+        h = Harness(
+            self.store,
+            model,
+            {
+                "search": Tool(
+                    "Search",
+                    object_schema({}),
+                    search,
+                    permission="network",
+                )
+            },
+        )
         await h.step("s", self.work.ref)
         self.assertIn("error", self.store.list("s", "observation")[-1].body["result"])
 
@@ -203,15 +250,27 @@ class HarnessTests(Fixture, unittest.IsolatedAsyncioTestCase):
             return "data"
 
         model = FakeModel([Reply("", (Call("search", {}),), False)])
-        h = Harness(self.store, model, {"search": Tool(
-            "Search", object_schema({}), search,
-        )})
+        h = Harness(
+            self.store,
+            model,
+            {
+                "search": Tool(
+                    "Search",
+                    object_schema({}),
+                    search,
+                )
+            },
+        )
         await h.step("s", self.work.ref)
         self.assertEqual(0, count)
-        self.assertIn("incomplete", self.store.list("s", "observation")[0].body["error"])
+        self.assertIn(
+            "incomplete", self.store.list("s", "observation")[0].body["error"]
+        )
 
     async def test_resume_after_model_result_does_not_resample(self):
-        model = FakeModel([Reply("", (Call("save_note", {"text": "Keep", "refs": []}),))])
+        model = FakeModel(
+            [Reply("", (Call("save_note", {"text": "Keep", "refs": []}),))]
+        )
         h = Harness(self.store, model)
         original = self.store.observation
 
@@ -235,11 +294,21 @@ class HarnessTests(Fixture, unittest.IsolatedAsyncioTestCase):
             return {"found": "evidence"}
 
         model = FakeModel([Reply("", (Call("search", {}),))])
-        h = Harness(self.store, model, {"search": Tool(
-            "Search", object_schema({}), search,
-        )})
+        h = Harness(
+            self.store,
+            model,
+            {
+                "search": Tool(
+                    "Search",
+                    object_schema({}),
+                    search,
+                )
+            },
+        )
         original = self.store.observation
-        self.store.observation = lambda *a, **kw: (_ for _ in ()).throw(OSError("crash"))
+        self.store.observation = lambda *a, **kw: (_ for _ in ()).throw(
+            OSError("crash")
+        )
         with self.assertRaises(OSError):
             await h.step("s", self.work.ref)
         self.store.observation = original
@@ -247,10 +316,17 @@ class HarnessTests(Fixture, unittest.IsolatedAsyncioTestCase):
         self.assertEqual((1, 1), (model.calls, count))
 
     async def test_partial_multi_tool_replay_uses_frozen_request(self):
-        model = FakeModel([Reply("", (
-            Call("save_note", {"text": "one", "refs": []}),
-            Call("save_note", {"text": "two", "refs": []}),
-        ))])
+        model = FakeModel(
+            [
+                Reply(
+                    "",
+                    (
+                        Call("save_note", {"text": "one", "refs": []}),
+                        Call("save_note", {"text": "two", "refs": []}),
+                    ),
+                )
+            ]
+        )
         h = Harness(self.store, model)
         original = self.store.observation
         calls = 0
@@ -281,9 +357,18 @@ class HarnessTests(Fixture, unittest.IsolatedAsyncioTestCase):
                 inner.calls += 1
                 started.set()
                 await release.wait()
-                return Reply("", (Call("save_note", {
-                    "text": "late", "refs": [],
-                }),)).to_json()
+                return Reply(
+                    "",
+                    (
+                        Call(
+                            "save_note",
+                            {
+                                "text": "late",
+                                "refs": [],
+                            },
+                        ),
+                    ),
+                ).to_json()
 
         model = SlowModel()
         h = Harness(self.store, model)
@@ -311,7 +396,9 @@ class HarnessTests(Fixture, unittest.IsolatedAsyncioTestCase):
         other = self.store.create("planning", "Question", {})
         planner = self.store.work("planning", other.ref, "planner", "Plan")
         h = Harness(self.store, model)
-        await asyncio.gather(h.step("planning", planner.ref), h.step("planning", planner.ref))
+        await asyncio.gather(
+            h.step("planning", planner.ref), h.step("planning", planner.ref)
+        )
         self.assertEqual(1, model.calls)
 
     async def test_model_binding_change_cannot_reuse_pending_request(self):

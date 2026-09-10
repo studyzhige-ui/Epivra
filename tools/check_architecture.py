@@ -1,4 +1,5 @@
 """Reject unregistered modules and imports against the implemented dependency graph."""
+
 from __future__ import annotations
 
 import ast
@@ -6,7 +7,7 @@ from pathlib import Path
 
 LAYERS = (
     ("domain", frozenset({"__init__", "domain"})),
-    ("infrastructure", frozenset({"storage", "prompts"})),
+    ("infrastructure", frozenset({"storage", "prompts", "context", "workspace"})),
     ("execution", frozenset({"harness"})),
     ("application", frozenset({"application"})),
 )
@@ -15,7 +16,9 @@ ALLOWED = {
     "domain": set(),
     "prompts": set(),
     "storage": {"domain"},
-    "harness": {"domain", "prompts", "storage"},
+    "context": {"domain"},
+    "workspace": {"domain", "storage"},
+    "harness": {"domain", "prompts", "storage", "context", "workspace"},
     "application": {"domain", "harness", "storage"},
 }
 FORBIDDEN = {"claude_agent_sdk", "codex_sdk", "langgraph"}
@@ -37,14 +40,20 @@ def check(package: Path) -> list[str]:
             local = []
             if isinstance(node, ast.Import):
                 modules = [a.name for a in node.names]
-                local = [m.split(".")[1] for m in modules
-                         if m.startswith("deep_research_agent.")]
+                local = [
+                    m.split(".")[1]
+                    for m in modules
+                    if m.startswith("deep_research_agent.")
+                ]
             elif isinstance(node, ast.ImportFrom):
                 module = node.module or ""
                 modules = [module]
                 if node.level:
-                    local = [module.split(".")[0]] if module else [
-                        alias.name for alias in node.names]
+                    local = (
+                        [module.split(".")[0]]
+                        if module
+                        else [alias.name for alias in node.names]
+                    )
                 elif module.startswith("deep_research_agent."):
                     local = [module.split(".")[1]]
                 elif module == "deep_research_agent":
