@@ -42,6 +42,52 @@ def response(finish="tool_calls", arguments='{"value":"ok"}'):
 
 
 class AdapterTests(unittest.IsolatedAsyncioTestCase):
+    async def test_continuation_sends_only_new_observations_but_rebuild_restores_state(
+        self,
+    ):
+        context = {
+            **self.context,
+            "context": [{"ref": "old", "body": {"text": "evidence"}}],
+        }
+        first = self.model.prepare(context, None)
+        latest = {
+            **context,
+            "context": [
+                *context["context"],
+                {"ref": "tool-output", "body": {"value": "ok"}},
+                {"ref": "independent-result", "body": {"text": "new evidence"}},
+            ],
+        }
+        previous = {
+            "request": first["payload"],
+            "response": response(),
+            "observations": [
+                {"index": 0, "_ref": "tool-output", "result": {"value": "ok"}}
+            ],
+        }
+        wire = self.model.prepare(latest, previous)
+        last = json.loads(wire["payload"]["messages"][-1]["content"])
+        self.assertEqual(["independent-result"], [x["ref"] for x in last["context"]])
+        third = self.model.prepare(
+            latest,
+            {
+                "request": wire["payload"],
+                "response": response(),
+                "observations": [{"index": 0, "_ref": "next", "result": "ok"}],
+            },
+        )
+        self.assertEqual(
+            [], json.loads(third["payload"]["messages"][-1]["content"])["context"]
+        )
+        self.model.window_chars = 2000
+        previous["request"]["messages"][0]["content"] = "x" * 10000
+        rebuilt = self.model.prepare(latest, previous)
+        self.assertEqual("rebuilt", rebuilt["window_mode"])
+        self.assertEqual(
+            latest["context"],
+            json.loads(rebuilt["payload"]["messages"][-1]["content"])["context"],
+        )
+
     async def test_credential_rotation_preserves_model_binding_and_changes_only_auth(
         self,
     ):

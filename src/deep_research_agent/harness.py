@@ -251,12 +251,24 @@ class Harness:
     def _request(self, study: str, work: Artifact) -> dict[str, Any]:
         direction = self.store.get(study, work.body["direction"])
         anchors = self._steps(study, "evidence_anchor", work.ref)
+        catalogs = {}
+        for item in self.store.list(study, "catalog"):
+            catalogs[item.body["root"]] = {
+                "ref": item.ref,
+                "kind": "catalog",
+                "root": item.body["root"],
+                "entries": len(item.body["entries"]),
+            }
         mandatory = {
             "provider": self.model.identity,
             "system": ROLES[work.body["role"]],
             "task": work.body["task"],
             "direction": direction.body,
-            "input_refs": work.body["inputs"],
+            "inputs": [
+                {"ref": ref, "kind": self.store.get(study, ref).kind}
+                for ref in work.body["inputs"]
+            ],
+            "catalogs": list(catalogs.values()),
             "pinned_evidence": anchors[-1].body["refs"] if anchors else [],
             "tools": self._schema(work.body["role"], direction.body["policy"]),
             "tool_versions": {name: tool.binding for name, tool in self.tools.items()},
@@ -526,6 +538,7 @@ class Harness:
                                 )
                                 result = {
                                     "ref": source.ref,
+                                    "kind": "source",
                                     "characters": len(source.body["text"]),
                                     "coverage": source.body["coverage"],
                                     "issues": source.body["issues"],
@@ -651,6 +664,7 @@ class Harness:
                 raise ValueError("invalid artifact range")
             return {
                 "ref": artifact.ref,
+                "kind": artifact.kind,
                 "encoding": "canonical-json",
                 "text": body[offset : offset + limit],
                 "offset": offset,
@@ -659,7 +673,11 @@ class Harness:
             }
         if call.name == "discover_local":
             catalog = self.workspace.discover(study, args["root"])
-            return {"ref": catalog.ref, "count": len(catalog.body["entries"])}
+            return {
+                "ref": catalog.ref,
+                "kind": "catalog",
+                "count": len(catalog.body["entries"]),
+            }
         if call.name == "read_catalog":
             return self.workspace.catalog_page(
                 study, args["ref"], args["offset"], args["limit"]
@@ -694,6 +712,7 @@ class Harness:
                 raise ValueError("invalid source range")
             return {
                 "ref": source.ref,
+                "kind": "source",
                 "offset": offset,
                 "end": min(len(text), offset + limit),
                 "total": len(text),

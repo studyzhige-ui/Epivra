@@ -26,6 +26,32 @@ class Model:
 
 
 class BoundaryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_reference_types_and_latest_catalog_survive_reconstruction(self):
+        source = self.store.put("s", "source", {"text": "evidence"})
+        work = self.store.work(
+            "s", self.c.ref, "investigator", "Check", (source.ref,), self.work.ref
+        )
+        self.store.put("s", "catalog", {"root": "authorized", "entries": []})
+        latest = self.store.put(
+            "s", "catalog", {"root": "authorized", "entries": [{"path": "new"}]}
+        )
+        request = Harness(self.store, Model())._request("s", work)
+        self.assertEqual([{"ref": source.ref, "kind": "source"}], request["inputs"])
+        self.assertEqual(
+            [
+                {
+                    "ref": latest.ref,
+                    "kind": "catalog",
+                    "root": "authorized",
+                    "entries": 1,
+                }
+            ],
+            request["catalogs"],
+        )
+        self.store.close()
+        self.store = Store(self.path)
+        self.assertEqual(request, Harness(self.store, Model())._request("s", work))
+
     async def test_reconciliation_receipt_failure_rolls_back_result(self):
         self.store.admit("s", self.work.ref, self.c.epoch, "lost", {"fixture": True})
         c = self.store.command("s", "pause", self.c.ref, "pause")

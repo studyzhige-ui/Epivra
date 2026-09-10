@@ -242,6 +242,13 @@ class DeepSeek:
                                     "instruction": "Use read_artifact_range",
                                 }
                             )
+                        else:
+                            result = encode(
+                                {
+                                    "observation_ref": observation["_ref"],
+                                    "result": observation["result"],
+                                }
+                            )
                         outputs.append(
                             {
                                 "role": "tool",
@@ -249,6 +256,45 @@ class DeepSeek:
                                 "content": result,
                             }
                         )
+                    seen = {
+                        o["_ref"]
+                        for o in previous["observations"]
+                        if "_ref" in o
+                        and "index" in o
+                        and len(encode(o["result"])) <= 12000
+                    }
+                    for message in previous["request"]["messages"]:
+                        if message.get("role") not in {"user", "tool"}:
+                            continue
+                        try:
+                            prior_state = json.loads(message["content"])
+                        except (ValueError, TypeError):
+                            continue
+                        if isinstance(prior_state, dict):
+                            if message["role"] == "tool":
+                                if "observation_ref" in prior_state and "result" in prior_state:
+                                    seen.add(prior_state["observation_ref"])
+                                continue
+                            seen.update(
+                                item["ref"]
+                                for item in prior_state.get("context", [])
+                                if isinstance(item, dict)
+                                and "ref" in item
+                                and "body" in item
+                            )
+                    current = {
+                        "role": "user",
+                        "content": encode(
+                            {
+                                **state,
+                                "context": [
+                                    item
+                                    for item in state.get("context", [])
+                                    if item["ref"] not in seen
+                                ],
+                            }
+                        ),
+                    }
                     messages = [
                         *previous["request"]["messages"],
                         assistant,
@@ -278,7 +324,7 @@ class DeepSeek:
         if len(encode(payload)) > self.window_chars:
             payload["messages"] = [
                 {"role": "system", "content": context["system"]},
-                current,
+                {"role": "user", "content": encode(state)},
             ]
             mode = "rebuilt"
         if len(encode(payload)) > self.window_chars:

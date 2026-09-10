@@ -36,7 +36,7 @@ class WorkflowTests(unittest.IsolatedAsyncioTestCase):
                     )
                 elif "submit_review" in request["tools"]:
                     if "read_artifact" not in results:
-                        call = Call("read_artifact", {"ref": request["input_refs"][0]})
+                        call = Call("read_artifact", {"ref": request["inputs"][0]["ref"]})
                     elif "read_source" not in results:
                         call = Call(
                             "read_source",
