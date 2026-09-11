@@ -1,4 +1,4 @@
-"""Opt-in investigator isolation: change delegation text, keep the Harness fixed."""
+"""Opt-in role isolation: vary a delegation or a writer's input, not both."""
 
 from __future__ import annotations
 
@@ -21,7 +21,13 @@ from tools.run_closed_loop_eval import export
 from tools.run_review_eval import bind_run
 
 
-async def run(root: Path, run_id: str, trace_path: Path, variant: str):
+async def run(
+    root: Path,
+    run_id: str,
+    trace_path: Path,
+    variant: str,
+    reference: Path | None = None,
+):
     if not re.fullmatch(r"[a-zA-Z0-9_-]+", run_id):
         raise ValueError("invalid run ID")
     trace = json.loads(trace_path.read_text(encoding="utf-8"))
@@ -44,6 +50,35 @@ async def run(root: Path, run_id: str, trace_path: Path, variant: str):
         if variant == "direct"
         else investigations[0]["task"]
     )
+    writing = variant.startswith("writer-")
+    answer = None
+    if writing:
+        if reference is None:
+            raise ValueError("writer comparison requires a frozen reference file")
+        reference_data = json.loads(reference.read_text(encoding="utf-8"))
+        if (
+            reference_data["sources"] != case["sources"]
+            or reference_data["task"] != case["task"]
+        ):
+            raise ValueError("reference describes a different research problem")
+        reference_text = reference_data["investigation"]
+        outputs = [
+            a["body"]
+            for a in trace
+            if a["kind"] == "work_result"
+            and a["body"].get("producer")
+            == next(
+                x["ref"]
+                for x in trace
+                if x["kind"] == "work" and x["body"] == investigations[0]
+            )
+        ]
+        if len(outputs) != 1:
+            raise ValueError("expected one investigation result")
+        answer = reference_text if variant == "writer-reference" else outputs[0]["text"]
+        task = (
+            "依据选定调查成果，为用户撰写可直接使用的报告；实质研究缺口按角色职责处理。"
+        )
     # Preserve the original authorized directory for both arms. Neither arm
     # changes source availability, role instructions, tools, or user direction.
     plan = next(a["body"] for a in trace if a["kind"] == "plan")
@@ -73,6 +108,20 @@ async def run(root: Path, run_id: str, trace_path: Path, variant: str):
     ) != Counter(case["sources"]):
         raise ValueError("trace sources differ from the diagnostic case")
     catalog = catalogs[0]
+
+    def check_corpus():
+        corpus = Path(catalog["root"]).resolve()
+        paths = {corpus / entry["path"] for entry in catalog["entries"]}
+        if paths != {p for p in corpus.rglob("*") if p.is_file()} or any(
+            not p.resolve().is_relative_to(corpus) for p in paths
+        ):
+            raise ValueError("authorized diagnostic corpus changed")
+        if Counter(p.read_text(encoding="utf-8") for p in paths) != Counter(
+            case["sources"]
+        ):
+            raise ValueError("disk materials differ from frozen diagnostic sources")
+
+    check_corpus()
     folder = root / ".deep-research-agent" / f"diagnostic-{run_id}-{variant}"
     bind_run(
         root,
@@ -82,6 +131,7 @@ async def run(root: Path, run_id: str, trace_path: Path, variant: str):
                 "request": case["task"],
                 "sources": case["sources"],
                 "task": task,
+                "answer": answer,
                 "plan": plan,
                 "records": records,
                 "diagnostic_code": Path(__file__).read_text(encoding="utf-8"),
@@ -121,7 +171,32 @@ async def run(root: Path, run_id: str, trace_path: Path, variant: str):
                 copy(ref)
         c = store.control("measurement")
         owner = store.work("measurement", c.ref, "lead", "Diagnostic fixture")
-        work = store.work("measurement", c.ref, "investigator", task, (), owner.ref)
+        inputs = ()
+        if writing:
+            producer = store.work(
+                "measurement",
+                c.ref,
+                "investigator",
+                "Fixture investigation",
+                (),
+                owner.ref,
+            )
+            refs = [ref for ref, (kind, _, _) in records.items() if kind == "source"]
+            result = store.put(
+                "measurement",
+                "work_result",
+                {"text": answer, "refs": refs, "producer": producer.ref},
+                (producer.ref, c.direction, *refs),
+            )
+            inputs = (result.ref,)
+        work = store.work(
+            "measurement",
+            c.ref,
+            "writer" if writing else "investigator",
+            task,
+            inputs,
+            owner.ref,
+        )
         api = JsonAPI(
             "https://api.deepseek.com", credentials(root / ".env")["DEEPSEEK_API_KEY"]
         )
@@ -137,7 +212,17 @@ async def run(root: Path, run_id: str, trace_path: Path, variant: str):
                 ),
                 flush=True,
             )
+        check_corpus()
         export(store, "measurement", folder, {})
+        reports = [
+            a
+            for a in store.list("measurement", "report")
+            if a.body.get("producer") == work.ref
+        ]
+        if reports:
+            (folder / "report.md").write_text(
+                reports[-1].body["text"], encoding="utf-8"
+            )
     finally:
         if api:
             await api.close()
@@ -148,8 +233,19 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--trace", type=Path, required=True)
-    parser.add_argument("--variant", choices=("direct", "delegated"), required=True)
+    parser.add_argument(
+        "--variant",
+        choices=("direct", "delegated", "writer-reference", "writer-actual"),
+        required=True,
+    )
+    parser.add_argument("--reference", type=Path)
     args = parser.parse_args()
     asyncio.run(
-        run(Path(__file__).resolve().parents[1], args.run_id, args.trace, args.variant)
+        run(
+            Path(__file__).resolve().parents[1],
+            args.run_id,
+            args.trace,
+            args.variant,
+            args.reference,
+        )
     )

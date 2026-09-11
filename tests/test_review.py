@@ -30,7 +30,7 @@ class ReviewTests(unittest.TestCase):
         self.assertEqual({0: corrected, 1: other}, result)
 
     def test_suite_has_positive_controls_and_full_coverage_transfer_pair(self):
-        self.assertEqual(4, sum(c["accept"] for c in CASES))
+        self.assertEqual(5, sum(c["accept"] for c in CASES))
         transfer = next(c for c in CASES if c["id"] == "coverage_transfer")
         self.assertGreater(len(units(transfer["report"])), 5)
         self.assertFalse(transfer["accept"])

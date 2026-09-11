@@ -50,7 +50,7 @@ class Store:
             existing = self.db.execute(
                 "SELECT name FROM sqlite_master WHERE type='table'"
             ).fetchall()
-            if version not in (0, 2001) or (version == 0 and existing):
+            if version not in (0, 2001, 2002) or (version == 0 and existing):
                 raise ValueError("incompatible database; use a new redesign workspace")
             self.db.execute("PRAGMA foreign_keys=ON")
             self.db.execute("PRAGMA journal_mode=WAL")
@@ -85,7 +85,17 @@ class Store:
                     CHECK((status='succeeded') = (result IS NOT NULL))
                 );
             """)
-            self.db.execute("PRAGMA user_version=2001")
+            # Additive migration preserves every paid request and result verbatim.
+            with self.transaction():
+                columns = {
+                    row[1] for row in self.db.execute("PRAGMA table_info(operations)")
+                }
+                if "request_step" not in columns:
+                    self.db.execute(
+                        "ALTER TABLE operations ADD COLUMN request_step TEXT "
+                        "REFERENCES artifacts(ref)"
+                    )
+                self.db.execute("PRAGMA user_version=2002")
         except BaseException:
             if hasattr(self, "db"):
                 self.db.close()
@@ -406,8 +416,21 @@ class Store:
             raise NotAllowed("strategy approval required")
         return item
 
+    def _step_request(self, study: str, work: str, ref: str) -> Any:
+        step = self.get(study, ref)
+        if step.kind != "step" or work not in step.parents or "request" not in step.body:
+            raise Conflict("request step must belong to the operation work")
+        return step.body["request"]
+
     def admit(
-        self, study: str, work: str, epoch: int, operation_id: str, request: Any
+        self,
+        study: str,
+        work: str,
+        epoch: int,
+        operation_id: str,
+        request: Any,
+        *,
+        request_step: str | None = None,
     ) -> Any | None:
         """None means newly admitted. Existing completed result is replayed."""
         import json
@@ -415,31 +438,41 @@ class Store:
         serialized = encode(request)
         with self.transaction():
             self.require_work(study, work, epoch)
+            if request_step is not None and encode(
+                self._step_request(study, work, request_step)
+            ) != serialized:
+                raise Conflict("request differs from its frozen step")
             row = self.db.execute(
                 "SELECT * FROM operations WHERE id=?", (operation_id,)
             ).fetchone()
             if row:
-                if (row["study"], row["work"], row["request"]) != (
-                    study,
-                    work,
-                    serialized,
-                ):
+                if (row["study"], row["work"]) != (study, work):
+                    raise Conflict("operation identity reused with different request")
+                stored_request = (
+                    encode(self._step_request(study, work, row["request_step"]))
+                    if row["request_step"] is not None
+                    else row["request"]
+                )
+                if stored_request != serialized:
                     raise Conflict("operation identity reused with different request")
                 if row["status"] == "unknown":
                     raise UnknownOutcome(operation_id)
                 return json.loads(row["result"])
             direction = self.control(study).direction
             self.db.execute(
-                "INSERT INTO operations VALUES(?,?,?,?,?,?,?,?)",
+                "INSERT INTO operations"
+                "(id,study,work,direction,epoch,request,status,result,request_step) "
+                "VALUES(?,?,?,?,?,?,?,?,?)",
                 (
                     operation_id,
                     study,
                     work,
                     direction,
                     epoch,
-                    serialized,
+                    serialized if request_step is None else "",
                     "unknown",
                     None,
+                    request_step,
                 ),
             )
             return None

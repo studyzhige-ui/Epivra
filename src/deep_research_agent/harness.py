@@ -519,6 +519,7 @@ class Harness:
         retry_delay=None,
         retry_on_resume=None,
         resource="external",
+        request_step=None,
     ):
         retry = self._attempt(study, operation)
         attempt = retry.body["attempt"] if retry else 0
@@ -536,12 +537,16 @@ class Harness:
                 async with self.scheduler.slot(
                     resource, lambda: self.store.require_work(study, work, epoch)
                 ):
-                    raw = self.store.admit(study, work, epoch, key, request)
+                    raw = self.store.admit(
+                        study, work, epoch, key, request, request_step=request_step
+                    )
                     if raw is None:
                         raw = await invoke()
                         self.store.settle(key, raw)
             else:
-                raw = self.store.admit(study, work, epoch, key, request)
+                raw = self.store.admit(
+                    study, work, epoch, key, request, request_step=request_step
+                )
             delay = retry_delay(raw, attempt) if retry_delay else None
             if (
                 delay is None
@@ -642,6 +647,7 @@ class Harness:
                 getattr(self.model, "retry_delay", None),
                 getattr(self.model, "retry_on_resume", None),
                 getattr(self.model, "resource", "model"),
+                request_step=step.ref,
             )
             # Always save the external result; only then check the admission fence.
             self.store.require_work(study, work_ref, control.epoch)

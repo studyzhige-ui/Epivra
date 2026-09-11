@@ -75,4 +75,9 @@ closed_loop_cases属于封闭资料的小型语义与流程回归。candidate_me
 .venv/Scripts/python.exe tools/run_role_diagnostic.py --run-id delegation-v3 --trace .deep-research-agent/closed-measurement-domain-v11/trace.json --variant delegated
 ```
 
-该工具刻意不运行完整研究；没有publication是正常的角色级诊断，不是失败。result中的semantic_acceptance仍须主审。首次请求仅task不同，后续采样可不同；一次每侧不能证明因果或成功率。源目录与祖先身份、资料一致性均在调用前检查；改变工具/角色/资料配置须新run-id。
+该工具刻意不运行完整研究；没有publication是正常的角色级诊断，不是失败。result中的semantic_acceptance仍须主审。首次请求仅task不同，后续采样可不同；一次每侧不能证明因果或成功率。源目录与祖先身份、资料一致性均在调用前检查，结束后复核磁盘文件集合和正文；改变工具/角色/资料配置须新run-id。
+
+
+作者隔离使用 `--variant writer-reference` / `writer-actual`，两者都传 `--reference evals/role_calibration.json`；其余参数与上例相同。两臂使用同一任务、计划、来源和角色，分别注入经校准的文本与真实调查文本。这是仅保留来源的文本重新交接，不是完整旧调查图恢复；使用前检查答案没有不可回查的旧笔记引用。参考成果已接近成品，不能把该实验当作开放写作验收。
+
+`role_calibration.json` 同时提供 `measurement_role_positive` / `measurement_role_negative` 两份核查输入，后者仅追加一个错误断言。它也产生文内矛盾，因此拒绝可能来自矛盾识别；必须核对具体反驳理由。原始标签和判分依据不进入模型上下文。`run_review_eval.py --effort high` / `--effort max` 可隔离提供方思考参数，每个新实验使用独立run-id，不重复发送旧账本调用。

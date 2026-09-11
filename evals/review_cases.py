@@ -1,5 +1,8 @@
 """Paired semantic review fixtures. Gold decisions never enter model context."""
 
+import json
+from pathlib import Path
+
 CASES = [
     {
         "id": "cost_inference",
@@ -77,3 +80,20 @@ CASES.extend(
         },
     ]
 )
+
+# Shared, independently calibrated inputs for role-level diagnostics.
+_calibration = json.loads(
+    Path(__file__).with_name("role_calibration.json").read_text(encoding="utf-8")
+)
+for _variant, _accept in (("positive", True), ("negative", False)):
+    CASES.append(
+        {
+            "id": "measurement_role_" + _variant,
+            "task": _calibration["task"],
+            "sources": _calibration["sources"],
+            "report": _calibration["report"]
+            + ("" if _accept else "\n\n" + _calibration["negative_sentence"]),
+            "accept": _accept,
+            "issue": _calibration["rationale"],
+        }
+    )
