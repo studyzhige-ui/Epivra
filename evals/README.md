@@ -55,3 +55,24 @@
 ```
 
 `--assess-only` 只重新导出已有运行，输出 `trace.json`、`result.json` 和已发布的 `report.md`；语义验收另记，不由脚本自动判分。`running=true` 时未结算操作可能仍在传输，不能把它直接称为阻断。评测目录受忽略，保存模型私有协议的数据库不作为辅助模型输入。当前新运行绑定夹具、模型和实现指纹，修改后应使用新run-id；历史运行按其保存请求解释。
+
+
+## 判分合同与外推边界
+
+closed_loop_cases属于封闭资料的小型语义与流程回归。candidate_mechanisms只是候选检查项，不是已覆盖能力；未发生改向、失败、重启的任务，不为相应机制判通过或失败。全套短报告校准不能替代开放检索、长文阅读、改向补查或真实文档研究。
+
+每项主审判断分别记录：报告原句及单元、对应来源/逻辑反例、具体错误、严重度、涉及维度；行为结论必须有工作/成果/调用轨迹定位，核查理由必须定位review原文。缺证据记未验证，不用一份失败报告推定18项均失败。报告拒绝允许依据预先明确的通用正确性要求，但新出现的专门要求必须说明并独立校准，不能悄悄改变真值。
+
+判据允许合理的表达、假设与方法差异，不要求固定最终答案或唯一行动。必须区分算术正确、方法适用、主张支持、交付适用和风格；不因风格偏好拒绝，也不因主结论方向相同而豁免实质误述。长度口径应在新测试启动前说明，不能在收到报告后选择更严格算法。未来基准需同时含足够证据正例、不足证据、反证和合理替代方法，并保留未参与调试的任务。
+
+此次独立测试复核、可计算反例与分层实验设计见[职责与根因审计](../docs/product-redesign/ROLE_DESIGN_REVIEW.md#分层根因审计先隔离失败再改变实现2026-09-11)。合成案例可检查特定逻辑，但主审也可能错，争议点须保留并核准，不能把AI自评作为真值。
+
+
+仅隔离调查者的委派文字（固定measurement题、同一原计划/资料/模型；每侧独立目录）：
+
+```powershell
+.venv/Scripts/python.exe tools/run_role_diagnostic.py --run-id delegation-v3 --trace .deep-research-agent/closed-measurement-domain-v11/trace.json --variant direct
+.venv/Scripts/python.exe tools/run_role_diagnostic.py --run-id delegation-v3 --trace .deep-research-agent/closed-measurement-domain-v11/trace.json --variant delegated
+```
+
+该工具刻意不运行完整研究；没有publication是正常的角色级诊断，不是失败。result中的semantic_acceptance仍须主审。首次请求仅task不同，后续采样可不同；一次每侧不能证明因果或成功率。源目录与祖先身份、资料一致性均在调用前检查；改变工具/角色/资料配置须新run-id。
