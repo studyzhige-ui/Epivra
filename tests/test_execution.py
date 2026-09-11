@@ -186,6 +186,14 @@ class StorageTests(Fixture):
                 "s", self.work.ref, self.c.epoch, report.ref, review.ref
             ).ref,
         )
+        self.store.put(
+            "s",
+            "review",
+            {"accepted": False, "work": review_work.ref},
+            (report.ref, review_work.ref),
+        )
+        with self.assertRaisesRegex(Conflict, "latest review"):
+            self.store.publish("s", self.work.ref, self.c.epoch, report.ref, review.ref)
         changed = self.command("steer", {"request": "Different scope"})
         new_work = self.store.work("s", changed.ref, "researcher", "Revisit")
         with self.assertRaises(Conflict):

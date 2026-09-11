@@ -20,6 +20,7 @@ from .domain import (
     identity,
 )
 from .prompts import ROLES, TOOLS
+from .review import checked, units
 from .scheduling import Scheduler
 from .storage import Store
 from .workspace import Workspace
@@ -134,20 +135,23 @@ BUILTINS = {
             }
         ),
     ),
-    "submit_review": (
+    "read_report": (
+        "reviewer",
+        object_schema({"offset": {"type": "integer"}, "limit": {"type": "integer"}}),
+    ),
+    "submit_review": ("reviewer", object_schema({"reason": STRING})),
+    "record_review": (
         "reviewer",
         object_schema(
             {
-                "accepted": {"type": "boolean"},
-                "reason": STRING,
                 "checks": {
                     "type": "array",
                     "items": object_schema(
                         {
-                            "claim": STRING,
+                            "unit": {"type": "integer"},
                             "evidence": STRINGS,
                             "assessment": STRING,
-                            "requires_revision": {"type": "boolean"},
+                            "defects": STRINGS,
                         }
                     ),
                 },
@@ -175,6 +179,7 @@ BUILTINS = {
                         "note",
                         "report",
                         "review",
+                        "review_check",
                         "plan",
                         "observation",
                         "catalog",
@@ -276,6 +281,20 @@ class Harness:
                 }
         return result
 
+    def _review(self, study: str, work: Artifact):
+        reports = [
+            self.store.get(study, ref)
+            for ref in work.body["inputs"]
+            if self.store.get(study, ref).kind == "report"
+        ]
+        if len(reports) != 1:
+            raise ValueError("review requires one bound report")
+        return (
+            reports[0],
+            units(reports[0].body["text"]),
+            checked(self._steps(study, "review_check", work.ref)),
+        )
+
     def _request(self, study: str, work: Artifact) -> dict[str, Any]:
         direction = self.store.get(study, work.body["direction"])
         anchors = self._steps(study, "evidence_anchor", work.ref)
@@ -301,6 +320,17 @@ class Harness:
             "tools": self._schema(work.body["role"], direction.body["policy"]),
             "tool_versions": {name: tool.binding for name, tool in self.tools.items()},
         }
+        if work.body["role"] == "reviewer":
+            report, parts, checks = self._review(study, work)
+            mandatory["review_progress"] = {
+                "report": report.ref,
+                "evidence": report.body["evidence"],
+                "total_units": len(parts),
+                "checked_units": sorted(checks),
+                "revision_units": sorted(
+                    i for i, check in checks.items() if check["defects"]
+                ),
+            }
         candidates = [
             x for x in self.store.list(study, "observation") if work.ref in x.parents
         ]
@@ -481,7 +511,11 @@ class Harness:
                 decode = getattr(self.model, "decode", None)
                 reply = Reply.from_json(decode(raw) if decode else raw)
                 if not reply.complete:
-                    raise ValueError("incomplete response; no tool was executed")
+                    raise ValueError(
+                        "incomplete response; no tool was executed. "
+                        "Commit a small tool call next, split long text or review checks "
+                        "into smaller batches; do not repeat the whole response."
+                    )
             except (KeyError, TypeError, ValueError) as exc:
                 self.store.observation(
                     study,
@@ -788,28 +822,48 @@ class Harness:
                 if self.store.get(study, ref).kind != "source":
                     raise ValueError("evidence must reference source snapshots")
             item = self.store.put(study, "report", args, (*parents, *args["evidence"]))
-        elif call.name == "submit_review":
-            reports = [
-                self.store.get(study, ref)
-                for ref in work.body["inputs"]
-                if self.store.get(study, ref).kind == "report"
-            ]
-            if len(reports) != 1:
-                raise ValueError("review requires one bound report")
+        elif call.name == "read_report":
+            report, parts, checks = self._review(study, work)
+            offset, limit = args["offset"], args["limit"]
+            if offset < 0 or not 1 <= limit <= 20:
+                raise ValueError("invalid report page")
+            return {
+                "report": report.ref,
+                "units": parts[offset : offset + limit],
+                "evidence": report.body["evidence"],
+                "total": len(parts),
+                "next_offset": offset + limit if offset + limit < len(parts) else None,
+            }
+        elif call.name == "record_review":
+            report, parts, checks = self._review(study, work)
             if not args["checks"]:
-                raise ValueError("review requires claim-level checks")
+                raise ValueError("review requires unit checks")
+            seen = set()
             for check in args["checks"]:
-                if check["claim"] not in reports[0].body["text"]:
-                    raise ValueError(
-                        "checked claim must quote the bound report exactly"
-                    )
+                if not 0 <= check["unit"] < len(parts) or check["unit"] in seen:
+                    raise ValueError("review unit is invalid or duplicated")
+                seen.add(check["unit"])
                 for ref in check["evidence"]:
                     if self.store.get(study, ref).kind != "source":
                         raise ValueError("review evidence must name source snapshots")
-                if args["accepted"] and check["requires_revision"]:
-                    raise ValueError("cannot accept a report requiring revision")
+            item = self.store.put(study, "review_check", args, (*parents, report.ref))
+        elif call.name == "submit_review":
+            report, parts, checks = self._review(study, work)
+            missing = [part["unit"] for part in parts if part["unit"] not in checks]
+            if missing:
+                raise ValueError(f"unchecked report units: {missing}")
             item = self.store.put(
-                study, "review", {**args, "work": work.ref}, (*parents, reports[0].ref)
+                study,
+                "review",
+                {
+                    **args,
+                    "work": work.ref,
+                    "accepted": not any(c["defects"] for c in checks.values()),
+                    "checks": [
+                        {**checks[p["unit"]], "claim": p["text"]} for p in parts
+                    ],
+                },
+                (*parents, report.ref),
             )
             self.store.put(
                 study, "work_result", {"ref": item.ref}, (work.ref, item.ref)

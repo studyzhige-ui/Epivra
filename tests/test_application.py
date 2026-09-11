@@ -47,16 +47,14 @@ class WorkflowTests(unittest.IsolatedAsyncioTestCase):
                     else:
                         self.assertIn("limited sample", results["read_source"]["text"])
                         call = Call(
-                            "submit_review",
+                            "record_review",
                             {
-                                "accepted": True,
-                                "reason": "Value and limitation match",
                                 "checks": [
                                     {
-                                        "claim": "The value is 17, with a limited sample.",
+                                        "unit": 0,
                                         "evidence": [source_ref],
                                         "assessment": "Matches measured value and limitation",
-                                        "requires_revision": False,
+                                        "defects": [],
                                     }
                                 ],
                             },
@@ -104,7 +102,12 @@ class WorkflowTests(unittest.IsolatedAsyncioTestCase):
                     report_ref = results["draft_report"]["ref"]
                     if call.name == "publish_report":
                         call.arguments["report"] = report_ref
-                return Reply("", (call,)).to_json()
+                return Reply(
+                    "",
+                    (call, Call("submit_review", {"reason": "Checked"}))
+                    if call.name == "record_review"
+                    else (call,),
+                ).to_json()
 
         service = ResearchService(store, Harness(store, LocalModel()))
         await service.run("s")
@@ -143,16 +146,14 @@ class WorkflowTests(unittest.IsolatedAsyncioTestCase):
                     )
                 elif "submit_review" in tools:
                     call = Call(
-                        "submit_review",
+                        "record_review",
                         {
-                            "accepted": True,
-                            "reason": "Checked",
                             "checks": [
                                 {
-                                    "claim": "Limited result supported by the observed source.",
+                                    "unit": 0,
                                     "evidence": [source.ref],
                                     "assessment": "One observation only",
-                                    "requires_revision": False,
+                                    "defects": [],
                                 }
                             ],
                         },
@@ -171,7 +172,12 @@ class WorkflowTests(unittest.IsolatedAsyncioTestCase):
                             "evidence": [source.ref],
                         },
                     )
-                return Reply("", (call,)).to_json()
+                return Reply(
+                    "",
+                    (call, Call("submit_review", {"reason": "Checked"}))
+                    if call.name == "record_review"
+                    else (call,),
+                ).to_json()
 
         model = ScriptedResearcher()
         harness = Harness(store, model)

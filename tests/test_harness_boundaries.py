@@ -56,58 +56,77 @@ class BoundaryTests(unittest.IsolatedAsyncioTestCase):
                 await harness.step("s", self.work.ref)
         self.assertEqual(0, model.count)
 
-    async def test_review_cannot_accept_required_changes_or_unbound_claims(self):
+    async def test_review_requires_complete_coverage_and_derives_rejection(self):
         source = self.store.put("s", "source", {"text": "Uncertain effect"})
         report = self.store.put(
             "s",
             "report",
-            {"text": "Effect is proven.", "evidence": [source.ref]},
+            {
+                "text": "Effect is uncertain.\n\nTherefore certainly deploy.",
+                "evidence": [source.ref],
+            },
             (self.c.direction, self.work.ref),
         )
         reviewer = self.store.work(
             "s", self.c.ref, "reviewer", "Check", (report.ref,), self.work.ref
         )
         check = {
-            "claim": "Effect is proven.",
+            "unit": 0,
             "evidence": [source.ref],
-            "assessment": "Source is uncertain",
-            "requires_revision": True,
+            "assessment": "Matches source",
+            "defects": [],
         }
         model = Model(
             (
-                Call(
-                    "submit_review",
-                    {"accepted": True, "reason": "Revise", "checks": [check]},
-                ),
+                Call("record_review", {"checks": [check]}),
+                Call("submit_review", {"reason": "Accept"}),
             )
         )
         harness = Harness(self.store, model)
         await harness.step("s", reviewer.ref)
         self.assertEqual([], self.store.list("s", "review"))
         self.assertIn(
-            "cannot accept",
+            "unchecked report units",
             self.store.list("s", "observation")[-1].body["result"]["error"],
         )
+        self.store.close()
+        self.store = Store(self.path)
+        harness = Harness(self.store, model)
+        self.assertEqual(
+            [0], harness._request("s", reviewer)["review_progress"]["checked_units"]
+        )
         model.calls = (
             Call(
-                "submit_review",
+                "record_review",
                 {
-                    "accepted": False,
-                    "reason": "Revise",
-                    "checks": [{**check, "claim": "Invented quote"}],
+                    "checks": [
+                        {
+                            **check,
+                            "unit": 1,
+                            "assessment": "Unjustified action",
+                            "defects": ["Unsupported assertion"],
+                        }
+                    ]
                 },
             ),
+            Call("submit_review", {"reason": "Overall direction fine"}),
         )
         await harness.step("s", reviewer.ref)
-        self.assertEqual([], self.store.list("s", "review"))
-        model.calls = (
-            Call(
-                "submit_review",
-                {"accepted": False, "reason": "Revise", "checks": [check]},
-            ),
+        review = self.store.list("s", "review")[-1]
+        self.assertFalse(review.body["accepted"])
+        self.assertEqual(2, len(review.body["checks"]))
+        new_report = self.store.put(
+            "s",
+            "report",
+            {"text": "Revised version", "evidence": [source.ref]},
+            (self.c.direction, self.work.ref),
         )
-        await harness.step("s", reviewer.ref)
-        self.assertFalse(self.store.list("s", "review")[-1].body["accepted"])
+        new_work = self.store.work(
+            "s", self.c.ref, "reviewer", "Check", (new_report.ref,), self.work.ref
+        )
+        self.assertEqual(
+            [], harness._request("s", new_work)["review_progress"]["checked_units"]
+        )
 
     async def test_reading_progress_survives_restart_but_is_work_local(self):
         source = self.store.put(

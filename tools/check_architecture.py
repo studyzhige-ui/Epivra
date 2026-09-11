@@ -18,6 +18,7 @@ LAYERS = (
                 "adapters",
                 "scheduling",
                 "materials",
+                "review",
             }
         ),
     ),
@@ -34,8 +35,17 @@ ALLOWED = {
     "prompts": set(),
     "storage": {"domain"},
     "context": {"domain"},
+    "review": {"domain"},
     "workspace": {"domain", "storage", "materials"},
-    "harness": {"domain", "prompts", "storage", "context", "workspace", "scheduling"},
+    "harness": {
+        "domain",
+        "prompts",
+        "storage",
+        "context",
+        "workspace",
+        "scheduling",
+        "review",
+    },
     "application": {"domain", "harness", "storage", "adapters"},
 }
 FORBIDDEN = {"claude_agent_sdk", "codex_sdk", "langgraph"}

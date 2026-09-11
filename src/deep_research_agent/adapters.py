@@ -196,16 +196,27 @@ class DeepSeek:
         api: JsonAPI,
         model: str = DEFAULT_MODEL,
         thinking: bool = True,
-        max_tokens: int = 8192,
+        max_tokens: int | None = None,
         window_chars: int = 120000,
         stream: bool = False,
     ):
         self.api, self.model = api, model
-        self.thinking, self.max_tokens = thinking, max_tokens
+        self.thinking = thinking
+        self.max_tokens = (
+            max_tokens if max_tokens is not None else (65536 if thinking else 8192)
+        )
+        # DeepSeek Chat Completions contract, checked 2026-09-11; see ENGINEERING_REVIEW.md.
+        if type(self.max_tokens) is not int or not 1 <= self.max_tokens <= 393216:
+            raise ValueError("DeepSeek max_tokens must be an integer in 1..393216")
         self.window_chars = window_chars
         self.stream = stream
         self.identity = identity(
-            "deepseek-chat-v1", api.account, model, thinking, max_tokens, window_chars
+            "deepseek-chat-v1",
+            api.account,
+            model,
+            thinking,
+            self.max_tokens,
+            window_chars,
         )
         if stream:
             self.identity = identity(self.identity, "sse-v1")
@@ -395,14 +406,14 @@ class Tavily:
 
     def __init__(self, api: JsonAPI):
         self.api = api
-        self.identity = identity("tavily-v1", api.account)
+        self.identity = identity("tavily-v2-official-defaults", api.account)
 
     async def search(self, args: dict[str, Any]) -> dict:
         return await self.api.post(
             "/search",
             {
                 "query": args["query"],
-                "max_results": 5,
+                "max_results": 10,
                 "include_answer": False,
                 "include_raw_content": False,
             },
@@ -428,5 +439,5 @@ class Tavily:
     async def extract(self, args: dict[str, Any]) -> dict:
         self.validate_extract(args)
         return await self.api.post(
-            "/extract", {"urls": [args["url"]], "format": "text"}
+            "/extract", {"urls": [args["url"]], "format": "markdown"}
         )

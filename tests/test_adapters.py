@@ -42,6 +42,57 @@ def response(finish="tool_calls", arguments='{"value":"ok"}'):
 
 
 class AdapterTests(unittest.IsolatedAsyncioTestCase):
+    async def test_provider_contract_defaults_on_the_wire(self):
+        requests = []
+
+        def capture(request):
+            requests.append((request.url.path, json.loads(request.content)))
+            return httpx.Response(200, json={"results": []})
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(capture)) as client:
+            tavily = Tavily(JsonAPI("https://fixture.test", "key", client))
+            await tavily.search({"query": "研究方法"})
+            await tavily.extract({"url": "https://example.com/paper"})
+        self.assertEqual(
+            requests,
+            [
+                (
+                    "/search",
+                    {
+                        "query": "研究方法",
+                        "max_results": 10,
+                        "include_answer": False,
+                        "include_raw_content": False,
+                    },
+                ),
+                (
+                    "/extract",
+                    {"urls": ["https://example.com/paper"], "format": "markdown"},
+                ),
+            ],
+        )
+
+    async def test_output_budget_rejects_invalid_values_before_dispatch(self):
+        for value in (0, -1, 393217, True, 1.5, "8192"):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                DeepSeek(self.api, max_tokens=value)
+        for value in (1, 393216):
+            self.assertEqual(value, DeepSeek(self.api, max_tokens=value).max_tokens)
+
+    async def test_thinking_output_budget_is_not_non_thinking_default(self):
+        self.assertEqual(
+            65536, self.model.prepare(self.context, None)["payload"]["max_tokens"]
+        )
+        plain = DeepSeek(self.api, thinking=False)
+        self.assertEqual(
+            8192, plain.prepare(self.context, None)["payload"]["max_tokens"]
+        )
+        explicit = DeepSeek(self.api, max_tokens=16384)
+        self.assertEqual(
+            16384, explicit.prepare(self.context, None)["payload"]["max_tokens"]
+        )
+        self.assertNotEqual(self.model.identity, explicit.identity)
+
     async def test_continuation_sends_only_new_observations_but_rebuild_restores_state(
         self,
     ):

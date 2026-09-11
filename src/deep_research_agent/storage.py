@@ -522,6 +522,11 @@ class Store:
             ):
                 raise Conflict("report and accepting review must bind this direction")
             reviewer = self.get(study, review.body["work"])
+            if any(
+                other.seq > review.seq and report.ref in other.parents
+                for other in self.list(study, "review")
+            ):
+                raise Conflict("publication requires the latest review of this report")
             if (
                 reviewer.kind != "work"
                 or reviewer.body["role"] != "reviewer"
