@@ -88,21 +88,6 @@ class ResearchService:
                         if not self.harness.finished(study, w.ref)
                         and w.ref not in self.work_errors
                     ]
-                    if pending:
-                        pending.sort(
-                            key=lambda w: len(self.harness._steps(study, "step", w.ref))
-                        )
-                        outcomes = await asyncio.gather(
-                            *(
-                                self._investigate(study, w.ref)
-                                for w in pending[: self.concurrency]
-                            ),
-                            return_exceptions=True,
-                        )
-                        for outcome in outcomes:
-                            if isinstance(outcome, BaseException):
-                                raise outcome
-                        continue
                     for child in children:
                         for result in self.harness._steps(
                             study, "work_result", child.ref
@@ -167,6 +152,35 @@ class ResearchService:
                             root.ref,
                         )
                         break
+                    if pending:
+                        waits = self.harness._steps(study, "work_wait", root.ref)
+                        waiting = (
+                            work.ref == root.ref
+                            and waits
+                            and any(
+                                child.ref in waits[-1].body["refs"] for child in pending
+                            )
+                        )
+                        ready = pending + ([] if waiting else [work])
+
+                        def last_step(w):
+                            steps = self.harness._steps(study, "step", w.ref)
+                            return steps[-1].seq if steps else -1
+
+                        ready.sort(key=last_step)
+                        outcomes = await asyncio.gather(
+                            *(
+                                self._investigate(study, w.ref)
+                                if w.body["role"] == "investigator"
+                                else self.harness.step(study, w.ref)
+                                for w in ready[: self.concurrency]
+                            ),
+                            return_exceptions=True,
+                        )
+                        for outcome in outcomes:
+                            if isinstance(outcome, BaseException):
+                                raise outcome
+                        continue
                 await self.harness.step(study, work.ref)
                 # Let control messages run even when every operation was replayed.
                 await asyncio.sleep(0)

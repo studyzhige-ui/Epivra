@@ -9,6 +9,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+from .calculation import calculate
 from .context import assemble, source_ranges
 from .domain import (
     Artifact,
@@ -71,6 +72,8 @@ def object_schema(properties: dict[str, Any]) -> dict[str, Any]:
 STRING = {"type": "string", "minLength": 1}
 STRINGS = {"type": "array", "items": STRING}
 BUILTINS = {
+    "calculate": ("all", object_schema({"expression": STRING})),
+    "wait_for_work": ("researcher", object_schema({"refs": STRINGS})),
     "pin_evidence": ("all", object_schema({"refs": STRINGS})),
     "delegate_research": (
         "researcher",
@@ -331,6 +334,16 @@ class Harness:
                 for ref in work.body["inputs"]
             ],
             "catalogs": list(catalogs.values()),
+            "delegated_work": [
+                {
+                    "ref": child.ref,
+                    "task": child.body["task"],
+                    "finished": self.finished(study, child.ref),
+                }
+                for child in self.store.list(study, "work")
+                if child.body["owner"] == work.ref
+                and child.body["role"] == "investigator"
+            ],
             "pinned_evidence": anchors[-1].body["refs"] if anchors else [],
             "tools": self._schema(work.body["role"], direction.body["policy"]),
             "tool_versions": {name: tool.binding for name, tool in self.tools.items()},
@@ -714,6 +727,19 @@ class Harness:
                 study, "evidence_anchor", {"refs": refs}, (*parents, *refs)
             )
             return {"ref": item.ref}
+        if call.name == "wait_for_work":
+            if not args["refs"]:
+                raise ValueError("wait requires delegated work references")
+            for ref in args["refs"]:
+                child = self.store.get(study, ref)
+                if (
+                    child.kind != "work"
+                    or child.body["owner"] != work.ref
+                    or child.body["role"] != "investigator"
+                ):
+                    raise ValueError("can only wait for own investigations")
+            item = self.store.put(study, "work_wait", args, (*parents, *args["refs"]))
+            return {"ref": item.ref}
         if call.name == "delegate_research":
             child = self.store.work(
                 study,
@@ -825,6 +851,8 @@ class Harness:
                     "ref": artifact.ref,
                 }
             return {"kind": artifact.kind, "body": artifact.body}
+        if call.name == "calculate":
+            return calculate(args["expression"])
         if call.name == "save_note":
             item = self.store.put(study, "note", args, (*parents, *args["refs"]))
         elif call.name == "propose_plan":

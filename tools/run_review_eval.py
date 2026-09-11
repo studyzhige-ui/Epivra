@@ -18,7 +18,9 @@ from deep_research_agent.storage import Store
 from evals.review_cases import CASES
 
 
-async def run(root: Path, run_id: str, report_db: Path | None = None):
+async def run(
+    root: Path, run_id: str, report_db: Path | None = None, mechanisms=False, only=None
+):
     if not re.fullmatch(r"[a-zA-Z0-9_-]+", run_id):
         raise ValueError("invalid run ID")
     folder = root / ".deep-research-agent" / f"review-{run_id}"
@@ -32,6 +34,24 @@ async def run(root: Path, run_id: str, report_db: Path | None = None):
                 source.backup(destination)
     store = Store(database)
     cases = CASES
+    if mechanisms:
+        if report_db:
+            raise ValueError(
+                "mechanism pairs cannot be combined with a report database"
+            )
+        from evals.mechanism_cases import CASES as mechanism_cases
+
+        cases = [
+            {
+                "id": c["id"] + "-" + variant,
+                "task": c["task"],
+                "sources": c["sources"],
+                "report": c[variant]["report"],
+                "accept": variant == "positive",
+            }
+            for c in mechanism_cases
+            for variant in ("positive", "negative")
+        ]
     target_report = None
     if report_db:
         row = store.db.execute(
@@ -43,6 +63,11 @@ async def run(root: Path, run_id: str, report_db: Path | None = None):
         target_report = store.get(row[0], json.loads(row[1])["report"])
         cases = [{"id": row[0], "accept": False}]
 
+    if only:
+        cases = [c for c in cases if c["id"] in only]
+        if {c["id"] for c in cases} != set(only):
+            store.close()
+            raise ValueError("unknown case selection")
     api = JsonAPI(
         "https://api.deepseek.com", credentials(root / ".env")["DEEPSEEK_API_KEY"]
     )
@@ -55,7 +80,9 @@ async def run(root: Path, run_id: str, report_db: Path | None = None):
                 c = store.control(study)
             except ValueError:
                 c = store.create(
-                    study, "仅根据提供材料核查报告是否可交付。", {"network": False}
+                    study,
+                    case.get("task", "仅根据提供材料核查报告是否可交付。"),
+                    {"network": False},
                 )
                 plan = store.put(
                     study, "plan", {"text": "评测夹具：独立核查"}, (c.direction,)
@@ -98,7 +125,9 @@ async def run(root: Path, run_id: str, report_db: Path | None = None):
                     )
             except Exception as exc:
                 error = type(exc).__name__
-            reviews = [r for r in store.list(study, "review") if r.body.get("work") == work.ref]
+            reviews = [
+                r for r in store.list(study, "review") if r.body.get("work") == work.ref
+            ]
             accepted = reviews[-1].body["accepted"] if reviews else None
             results.append(
                 {
@@ -132,9 +161,27 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run-id", required=True)
     parser.add_argument(
+        "--only",
+        nargs="+",
+        help="Exact case IDs to repeat without rerunning the full suite",
+    )
+    parser.add_argument(
+        "--mechanisms",
+        action="store_true",
+        help="36 primary-reviewed report calibration examples; not a behavior acceptance test",
+    )
+    parser.add_argument(
         "--report-db",
         type=Path,
         help="Copy and re-review a known failing report; original remains unchanged",
     )
     args = parser.parse_args()
-    asyncio.run(run(Path(__file__).resolve().parents[1], args.run_id, args.report_db))
+    asyncio.run(
+        run(
+            Path(__file__).resolve().parents[1],
+            args.run_id,
+            args.report_db,
+            args.mechanisms,
+            args.only,
+        )
+    )

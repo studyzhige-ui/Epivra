@@ -19,6 +19,7 @@ LAYERS = (
                 "scheduling",
                 "materials",
                 "review",
+                "calculation",
             }
         ),
     ),
@@ -36,8 +37,10 @@ ALLOWED = {
     "storage": {"domain"},
     "context": {"domain"},
     "review": {"domain"},
+    "calculation": set(),
     "workspace": {"domain", "storage", "materials"},
     "harness": {
+        "calculation",
         "domain",
         "prompts",
         "storage",

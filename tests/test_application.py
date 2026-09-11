@@ -12,6 +12,79 @@ from deep_research_agent.storage import Store
 
 
 class WorkflowTests(unittest.IsolatedAsyncioTestCase):
+    async def test_root_progresses_before_child_finishes_and_wait_survives_restart(
+        self,
+    ):
+        store = self.store
+        c = store.create("s", "Investigate", {})
+        plan = store.put("s", "plan", {"text": "Investigate"}, (c.direction,))
+        store.command("s", "approve", c.ref, "approve", {"plan": plan.ref})
+        parent_calls = 0
+        child_calls = 0
+        interrupted = False
+
+        class Model:
+            identity = "cooperative-scheduling"
+
+            async def complete(inner, request):
+                nonlocal parent_calls, child_calls, interrupted
+                if "finish_investigation" in request["tools"]:
+                    child_calls += 1
+                    if store.list("s", "work_wait") and not interrupted:
+                        interrupted = True
+                        control = store.control("s")
+                        store.command("s", "pause", control.ref, "pause")
+                    call = (
+                        Call("finish_investigation", {"text": "Evidence", "refs": []})
+                        if child_calls >= 5
+                        else Call(
+                            "save_note", {"text": f"progress {child_calls}", "refs": []}
+                        )
+                    )
+                else:
+                    parent_calls += 1
+                    if parent_calls == 1:
+                        call = Call(
+                            "delegate_research",
+                            {"task": "Long investigation", "refs": []},
+                        )
+                    elif parent_calls == 2:
+                        self.assertLess(child_calls, 5)
+                        call = Call(
+                            "wait_for_work",
+                            {"refs": [request["delegated_work"][0]["ref"]]},
+                        )
+                    else:
+                        self.assertEqual(3, parent_calls)
+                        self.assertTrue(request["delegated_work"][0]["finished"])
+                        self.assertTrue(
+                            any(
+                                "investigation_result" in x.get("body", {})
+                                for x in request["context"]
+                            )
+                        )
+                        control = store.control("s")
+                        store.command("s", "done", control.ref, "pause")
+                        return Reply("", ()).to_json()
+                return Reply("", (call,)).to_json()
+
+        model = Model()
+        service = ResearchService(store, Harness(store, model), concurrency=1)
+        await asyncio.wait_for(service.run("s"), 3)
+        self.assertFalse(service.errors)
+        self.assertTrue(interrupted)
+        self.assertEqual(2, parent_calls)
+        path = store.path
+        store.close()
+        self.store = store = Store(path)
+        control = store.control("s")
+        store.command("s", "resume", control.ref, "resume")
+        service = ResearchService(store, Harness(store, model), concurrency=1)
+        await asyncio.wait_for(service.run("s"), 3)
+        self.assertFalse(service.errors)
+        self.assertEqual(3, parent_calls)
+        self.assertTrue(store.list("s", "work_wait"))
+
     async def test_actual_local_material_reaches_report_through_tools(self):
         corpus = Path(self.tmp.name) / "corpus"
         corpus.mkdir()

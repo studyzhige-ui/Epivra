@@ -26,6 +26,36 @@ class Model:
 
 
 class BoundaryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_wait_rejects_non_work_and_other_owners(self):
+        other = self.store.work("s", self.c.ref, "researcher", "Other owner")
+        child = self.store.work(
+            "s", self.c.ref, "investigator", "Other child", (), other.ref
+        )
+        source = self.store.put("s", "source", {"text": "not work"})
+        model = Model(
+            tuple(
+                Call("wait_for_work", {"refs": refs})
+                for refs in ([], [source.ref], [child.ref])
+            )
+        )
+        await Harness(self.store, model).step("s", self.work.ref)
+        self.assertEqual([], self.store.list("s", "work_wait"))
+        observations = self.store.list("s", "observation")
+        self.assertEqual(
+            3, sum("error" in a.body.get("result", {}) for a in observations)
+        )
+
+    async def test_calculation_is_recorded_and_cannot_execute_python(self):
+        model = Model((Call("calculate", {"expression": "(20+22+24)/3"}),))
+        harness = Harness(self.store, model)
+        await harness.step("s", self.work.ref)
+        result = self.store.list("s", "observation")[-1].body["result"]
+        self.assertEqual("22", result["exact"])
+        self.assertEqual("(20+22+24)/3", result["expression"])
+        model.calls = (Call("calculate", {"expression": "open('secret')"}),)
+        await harness.step("s", self.work.ref)
+        self.assertIn("error", self.store.list("s", "observation")[-1].body["result"])
+
     async def test_reviewer_can_retrieve_uncited_authorized_local_material(self):
         root = Path(self.folder.name) / "review-material"
         root.mkdir()
