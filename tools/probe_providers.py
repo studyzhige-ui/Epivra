@@ -38,9 +38,7 @@ async def run(root: Path, stream: bool = False) -> dict:
             c = store.command(
                 "probe", "approve-probe", c.ref, "approve", {"plan": plan.ref}
             )
-        work = store.work(
-            "probe", c.ref, "researcher", "Provider protocol verification"
-        )
+        work = store.work("probe", c.ref, "lead", "Provider protocol verification")
 
         async def paid(label, request, invoke):
             key = identity("probe", label, request)

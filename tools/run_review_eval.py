@@ -90,7 +90,7 @@ async def run(
                 c = store.command(
                     study, "fixture-approval", c.ref, "approve", {"plan": plan.ref}
                 )
-            owner = store.work(study, c.ref, "researcher", "评测报告")
+            owner = store.work(study, c.ref, "lead", "评测报告")
             if target_report:
                 report = target_report
                 sources = [store.get(study, ref) for ref in report.body["evidence"]]

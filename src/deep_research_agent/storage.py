@@ -14,6 +14,7 @@ from .domain import (
     Control,
     NotAllowed,
     OwnershipError,
+    RuntimeMismatch,
     UnknownOutcome,
     encode,
     identity,
@@ -190,6 +191,7 @@ class Store:
                 "direction",
                 {
                     "request": request,
+                    "runtime": "research-mainline-v1",
                     "policy": policy,
                 },
             )
@@ -284,6 +286,7 @@ class Store:
                     "direction",
                     {
                         "request": text,
+                        "runtime": previous.body.get("runtime"),
                         "policy": previous.body["policy"],
                     },
                     (direction,),
@@ -307,6 +310,12 @@ class Store:
             )
             return result
 
+    def require_runtime(self, study: str, direction: str) -> None:
+        if self.get(study, direction).body.get("runtime") != "research-mainline-v1":
+            raise RuntimeMismatch(
+                "Archived research runtime: read-only audit; start a new study"
+            )
+
     def work(
         self,
         study: str,
@@ -322,16 +331,52 @@ class Store:
                 raise Conflict("control version changed")
             if current.paused or current.cancelled:
                 raise NotAllowed("study is not accepting work")
-            if not current.approved and role != "planner":
+            if not current.approved and role != "lead":
                 raise NotAllowed("strategy approval required")
-            if role not in {"planner", "researcher", "reviewer", "investigator"}:
+            self.require_runtime(study, current.direction)
+            if role not in {
+                "lead",
+                "reviewer",
+                "investigator",
+                "synthesizer",
+                "writer",
+            }:
                 raise ValueError("unknown role")
             if owner is not None:
                 parent = self.get(study, owner)
-                if parent.kind != "work" or parent.body["role"] != "researcher":
-                    raise NotAllowed("only a researcher may delegate")
+                if parent.kind != "work" or parent.body["role"] != "lead":
+                    raise NotAllowed("only a lead may delegate")
                 if parent.body["direction"] != current.direction:
                     raise Conflict("delegating work belongs to a superseded direction")
+            if role in {"synthesizer", "writer"}:
+                expected_role = (
+                    "investigator" if role == "synthesizer" else "synthesizer"
+                )
+                results = [self.get(study, ref) for ref in inputs]
+                valid = False
+                for result in results:
+                    if result.kind != "work_result" or not result.body.get("producer"):
+                        continue
+                    producer = self.get(study, result.body["producer"])
+                    if (
+                        producer.kind == "work"
+                        and producer.ref in result.parents
+                        and producer.body["role"] == expected_role
+                        and producer.body["direction"] == current.direction
+                    ):
+                        valid = True
+                if not valid:
+                    raise NotAllowed(
+                        f"{role} requires a current {expected_role} result"
+                    )
+            if role == "reviewer":
+                reports = [
+                    self.get(study, ref)
+                    for ref in inputs
+                    if self.get(study, ref).kind == "report"
+                ]
+                if len(reports) != 1:
+                    raise NotAllowed("review requires one report")
             return self._put(
                 study,
                 "work",
@@ -347,6 +392,7 @@ class Store:
 
     def require_work(self, study: str, work: str, epoch: int) -> Artifact:
         current = self.control(study)
+        self.require_runtime(study, current.direction)
         item = self.get(study, work)
         if item.kind != "work":
             raise ValueError("expected work")
@@ -354,7 +400,7 @@ class Store:
             raise Conflict("work or admission belongs to an older control version")
         if current.paused or current.cancelled:
             raise NotAllowed("study is paused or cancelled")
-        if not current.approved and item.body["role"] != "planner":
+        if not current.approved and item.body["role"] != "lead":
             raise NotAllowed("strategy approval required")
         return item
 
@@ -508,8 +554,8 @@ class Store:
     ) -> Artifact:
         with self.transaction():
             item = self.require_work(study, work, epoch)
-            if item.body["role"] != "researcher":
-                raise NotAllowed("only researcher can publish")
+            if item.body["role"] != "lead":
+                raise NotAllowed("only lead can publish")
             direction = self.control(study).direction
             report = self.get(study, report_ref)
             review = self.get(study, review_ref)
@@ -521,6 +567,14 @@ class Store:
                 or review.body.get("accepted") is not True
             ):
                 raise Conflict("report and accepting review must bind this direction")
+            author = self.get(study, report.body.get("producer", report.ref))
+            if (
+                author.kind != "work"
+                or author.body["role"] != "writer"
+                or author.body["owner"] != work
+                or author.ref not in report.parents
+            ):
+                raise Conflict("report must come from this lead's writer")
             reviewer = self.get(study, review.body["work"])
             if any(
                 other.seq > review.seq and report.ref in other.parents

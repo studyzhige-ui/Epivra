@@ -88,7 +88,7 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
             store = Store(Path(folder) / "state.db")
             try:
                 c = store.create("s", "Research", {})
-                work = store.work("s", c.ref, "planner", "Plan")
+                work = store.work("s", c.ref, "lead", "Plan")
                 entered, release = asyncio.Event(), asyncio.Event()
 
                 class Model:
@@ -123,7 +123,7 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
             store = Store(Path(folder) / "state.db")
             try:
                 c = store.create("s", "Research", {})
-                work = store.work("s", c.ref, "planner", "Plan")
+                work = store.work("s", c.ref, "lead", "Plan")
 
                 class Model:
                     identity = "fixture"

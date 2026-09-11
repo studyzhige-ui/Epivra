@@ -22,6 +22,10 @@ def export(store, study, folder, errors, running=False):
     kinds = (
         "plan",
         "work",
+        "work_result",
+        "work_wait",
+        "source",
+        "evidence_anchor",
         "note",
         "memory",
         "report",
@@ -173,7 +177,9 @@ async def run(root, case_id, run_id, assess_only=False):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--case", choices=["decision", "archive", "measurement"], required=True
+        "--case",
+        choices=["decision", "archive", "measurement", "training"],
+        required=True,
     )
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--assess-only", action="store_true")

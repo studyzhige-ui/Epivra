@@ -28,14 +28,14 @@ class WorkflowTests(unittest.IsolatedAsyncioTestCase):
 
             async def complete(inner, request):
                 nonlocal parent_calls, child_calls, interrupted
-                if "finish_investigation" in request["tools"]:
+                if "finish_work" in request["tools"]:
                     child_calls += 1
                     if store.list("s", "work_wait") and not interrupted:
                         interrupted = True
                         control = store.control("s")
                         store.command("s", "pause", control.ref, "pause")
                     call = (
-                        Call("finish_investigation", {"text": "Evidence", "refs": []})
+                        Call("finish_work", {"text": "Evidence", "refs": []})
                         if child_calls >= 5
                         else Call(
                             "save_note", {"text": f"progress {child_calls}", "refs": []}
@@ -45,8 +45,12 @@ class WorkflowTests(unittest.IsolatedAsyncioTestCase):
                     parent_calls += 1
                     if parent_calls == 1:
                         call = Call(
-                            "delegate_research",
-                            {"task": "Long investigation", "refs": []},
+                            "delegate_work",
+                            {
+                                "role": "investigator",
+                                "task": "Long investigation",
+                                "refs": [],
+                            },
                         )
                     elif parent_calls == 2:
                         self.assertLess(child_calls, 5)
@@ -59,7 +63,7 @@ class WorkflowTests(unittest.IsolatedAsyncioTestCase):
                         self.assertTrue(request["delegated_work"][0]["finished"])
                         self.assertTrue(
                             any(
-                                "investigation_result" in x.get("body", {})
+                                "work_result" in x.get("body", {})
                                 for x in request["context"]
                             )
                         )
@@ -86,6 +90,9 @@ class WorkflowTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(store.list("s", "work_wait"))
 
     async def test_actual_local_material_reaches_report_through_tools(self):
+        await self._mainline(False)
+
+    async def _mainline(self, reject_once):
         corpus = Path(self.tmp.name) / "corpus"
         corpus.mkdir()
         (corpus / "evidence.txt").write_text(
@@ -94,104 +101,198 @@ class WorkflowTests(unittest.IsolatedAsyncioTestCase):
         store = self.store
         store.create("s", "Read user evidence", {"local_roots": [str(corpus)]})
         source_ref = None
-        report_ref = None
 
         class LocalModel:
-            identity = "offline-local-closed-loop"
+            identity = "offline-mainline"
 
             async def complete(inner, request):
-                nonlocal source_ref, report_ref
-                observations = [item.get("body", {}) for item in request["context"]]
-                results = {o["tool"]: o["result"] for o in observations if "tool" in o}
+                nonlocal source_ref
+                obs = [x.get("body", {}) for x in request["context"]]
+                results = {o["tool"]: o["result"] for o in obs if "tool" in o}
+                role = request["role"]
                 if "propose_plan" in request["tools"]:
-                    call = Call(
-                        "propose_plan", {"text": "Read and check the user material"}
-                    )
-                elif "submit_review" in request["tools"]:
-                    if "read_artifact" not in results:
-                        call = Call(
-                            "read_artifact", {"ref": request["inputs"][0]["ref"]}
-                        )
-                    elif "read_source" not in results:
-                        call = Call(
-                            "read_source",
-                            {"ref": source_ref, "offset": 0, "limit": 1000},
-                        )
+                    calls = [
+                        Call("propose_plan", {"text": "Read and check user evidence"})
+                    ]
+                elif role == "lead":
+                    children = request["delegated_work"]
+                    unfinished = [w["ref"] for w in children if not w["finished"]]
+                    if unfinished:
+                        calls = [Call("wait_for_work", {"refs": unfinished})]
                     else:
-                        self.assertIn("limited sample", results["read_source"]["text"])
-                        call = Call(
+                        child_results = {
+                            store.get("s", o["work"]).body["role"]: o
+                            for o in obs
+                            if "work_result" in o
+                        }
+                        next_role, refs, task = "investigator", [], "Measure evidence"
+                        if (
+                            "reviewer" in child_results
+                            and child_results["reviewer"]["work_result"]
+                            == max(
+                                (o for o in obs if "work_result" in o),
+                                key=lambda o: store.get("s", o["work_result"]).seq,
+                            )["work_result"]
+                        ):
+                            review = store.get(
+                                "s", child_results["reviewer"]["result"]["ref"]
+                            )
+                            report = next(
+                                ref
+                                for ref in review.parents
+                                if store.get("s", ref).kind == "report"
+                            )
+                            if review.body["accepted"]:
+                                return Reply(
+                                    "",
+                                    (
+                                        Call(
+                                            "publish_report",
+                                            {"report": report, "review": review.ref},
+                                        ),
+                                    ),
+                                ).to_json()
+                            next_role, refs, task = (
+                                "writer",
+                                [
+                                    child_results["synthesizer"]["work_result"],
+                                    report,
+                                    review.ref,
+                                ],
+                                "Revise wording",
+                            )
+                        elif "writer" in child_results:
+                            next_role, refs = (
+                                "reviewer",
+                                [child_results["writer"]["result"]["ref"]],
+                            )
+                        elif "synthesizer" in child_results:
+                            next_role, refs = (
+                                "writer",
+                                [child_results["synthesizer"]["work_result"]],
+                            )
+                        elif "investigator" in child_results:
+                            next_role, refs = (
+                                "synthesizer",
+                                [child_results["investigator"]["work_result"]],
+                            )
+                        calls = [
+                            Call(
+                                "delegate_work",
+                                {"role": next_role, "task": task, "refs": refs},
+                            )
+                        ]
+                        # Pending work becomes visible on next model step; wait then.
+                elif role == "investigator":
+                    if "discover_local" not in results:
+                        calls = [Call("discover_local", {"root": str(corpus)})]
+                    elif "snapshot_local" not in results:
+                        calls = [
+                            Call(
+                                "snapshot_local",
+                                {
+                                    "catalog": results["discover_local"]["ref"],
+                                    "path": "evidence.txt",
+                                },
+                            )
+                        ]
+                    elif "read_source" not in results:
+                        source_ref = results["snapshot_local"]["ref"]
+                        calls = [
+                            Call(
+                                "read_source",
+                                {"ref": source_ref, "offset": 0, "limit": 1000},
+                            )
+                        ]
+                    elif "record_evidence" not in results:
+                        calls = [
+                            Call(
+                                "record_evidence",
+                                {
+                                    "text": "Observed 17",
+                                    "source": source_ref,
+                                    "offset": 0,
+                                    "quote": "Measured value: 17; limited sample.",
+                                    "limits": "limited sample",
+                                },
+                            )
+                        ]
+                    else:
+                        calls = [
+                            Call(
+                                "finish_work",
+                                {
+                                    "text": "17 in a limited sample",
+                                    "refs": [
+                                        source_ref,
+                                        results["record_evidence"]["ref"],
+                                    ],
+                                },
+                            )
+                        ]
+                elif role == "synthesizer":
+                    result = store.get("s", request["inputs"][0]["ref"])
+                    self.assertIn("limited sample", result.body["text"])
+                    calls = [
+                        Call(
+                            "finish_work",
+                            {
+                                "text": "The sample measured 17; no population extrapolation",
+                                "refs": [result.ref, source_ref],
+                            },
+                        )
+                    ]
+                elif role == "writer":
+                    calls = [
+                        Call(
+                            "draft_report",
+                            {
+                                "text": "Measured 17 in a limited sample.",
+                                "evidence": [source_ref],
+                            },
+                        )
+                    ]
+                else:
+                    reject = reject_once and not store.list("s", "review")
+                    calls = [
+                        Call(
                             "record_review",
                             {
                                 "checks": [
                                     {
                                         "unit": 0,
                                         "evidence": [source_ref],
-                                        "assessment": "Matches measured value and limitation",
-                                        "defects": [],
+                                        "assessment": "Bounded observation",
+                                        "defects": ["Clarify wording"]
+                                        if reject
+                                        else [],
                                     }
-                                ],
+                                ]
                             },
-                        )
-                elif any("review_available" in o for o in observations):
-                    review = next(o for o in observations if "review_available" in o)
-                    call = Call(
-                        "publish_report",
-                        {"report": report_ref, "review": review["review_available"]},
-                    )
-                elif "discover_local" not in results:
-                    call = Call("discover_local", {"root": str(corpus)})
-                elif "read_catalog" not in results:
-                    call = Call(
-                        "read_catalog",
-                        {
-                            "ref": results["discover_local"]["ref"],
-                            "offset": 0,
-                            "limit": 10,
-                        },
-                    )
-                elif "snapshot_local" not in results:
-                    call = Call(
-                        "snapshot_local",
-                        {
-                            "catalog": results["discover_local"]["ref"],
-                            "path": results["read_catalog"]["entries"][0]["path"],
-                        },
-                    )
-                elif "read_source" not in results:
-                    source_ref = results["snapshot_local"]["ref"]
-                    call = Call(
-                        "read_source", {"ref": source_ref, "offset": 0, "limit": 1000}
-                    )
-                else:
-                    self.assertIn("17", results["read_source"]["text"])
-                    call = Call(
-                        "draft_report",
-                        {
-                            "text": "The value is 17, with a limited sample.",
-                            "evidence": [source_ref],
-                        },
-                    )
-                if "draft_report" in results:
-                    report_ref = results["draft_report"]["ref"]
-                    if call.name == "publish_report":
-                        call.arguments["report"] = report_ref
-                return Reply(
-                    "",
-                    (call, Call("submit_review", {"reason": "Checked", "defects": []}))
-                    if call.name == "record_review"
-                    else (call,),
-                ).to_json()
+                        ),
+                        Call("submit_review", {"reason": "Checked", "defects": []}),
+                    ]
+                return Reply("", tuple(calls)).to_json()
 
-        service = ResearchService(store, Harness(store, LocalModel()))
-        await service.run("s")
+        service = ResearchService(store, Harness(store, LocalModel()), concurrency=2)
+        await asyncio.wait_for(service.run("s"), 3)
         c = store.control("s")
         store.command(
             "s", "approve", c.ref, "approve", {"plan": store.list("s", "plan")[-1].ref}
         )
-        await asyncio.wait_for(service.run("s"), 3)
+        await asyncio.wait_for(service.run("s"), 5)
         self.assertFalse(service.errors)
         self.assertEqual(1, len(store.list("s", "publication")))
         self.assertEqual(1, len(store.list("s", "source")))
+        roles = [w.body["role"] for w in store.list("s", "work")]
+        self.assertEqual(1, roles.count("investigator"))
+        self.assertEqual(1, roles.count("synthesizer"))
+        self.assertEqual(2 if reject_once else 1, roles.count("writer"))
+        note = store.list("s", "note")[0]
+        self.assertEqual("limited sample", note.body["limits"])
+        calls_before = len(store.list("s", "step"))
+        await service.run("s")
+        self.assertEqual(calls_before, len(store.list("s", "step")))
 
     async def asyncSetUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -202,72 +303,7 @@ class WorkflowTests(unittest.IsolatedAsyncioTestCase):
         self.tmp.cleanup()
 
     async def test_plan_approval_report_independent_review_and_publication(self):
-        store = self.store
-        store.create("s", "Compare the evidence", {"network": False})
-        source = store.put("s", "source", {"text": "One measured observation"})
-
-        class ScriptedResearcher:
-            identity = "offline-integration"
-            calls = 0
-
-            async def complete(inner, request):
-                inner.calls += 1
-                tools = request["tools"]
-                if "propose_plan" in tools:
-                    call = Call(
-                        "propose_plan", {"text": "Read sources and check claims"}
-                    )
-                elif "submit_review" in tools:
-                    call = Call(
-                        "record_review",
-                        {
-                            "checks": [
-                                {
-                                    "unit": 0,
-                                    "evidence": [source.ref],
-                                    "assessment": "One observation only",
-                                    "defects": [],
-                                }
-                            ],
-                        },
-                    )
-                elif store.list("s", "review"):
-                    report = store.list("s", "report")[-1]
-                    review = store.list("s", "review")[-1]
-                    call = Call(
-                        "publish_report", {"report": report.ref, "review": review.ref}
-                    )
-                else:
-                    call = Call(
-                        "draft_report",
-                        {
-                            "text": "Limited result supported by the observed source.",
-                            "evidence": [source.ref],
-                        },
-                    )
-                return Reply(
-                    "",
-                    (call, Call("submit_review", {"reason": "Checked", "defects": []}))
-                    if call.name == "record_review"
-                    else (call,),
-                ).to_json()
-
-        model = ScriptedResearcher()
-        harness = Harness(store, model)
-        service = ResearchService(store, harness)
-        await service.run("s")
-        self.assertEqual(1, model.calls)
-        self.assertFalse(store.control("s").approved)
-        self.assertEqual([], store.list("s", "publication"))
-        plan = store.list("s", "plan")[-1]
-        c = store.control("s")
-        store.command("s", "approve", c.ref, "approve", {"plan": plan.ref})
-        await service.run("s")
-        self.assertEqual(4, model.calls)
-        self.assertEqual(1, len(store.list("s", "publication")))
-        self.assertEqual(3, len(store.list("s", "work")))
-        await service.run("s")
-        self.assertEqual(4, model.calls)
+        await self._mainline(True)
 
     async def test_user_steering_during_call_continues_without_extra_resume(self):
         store = self.store
@@ -309,7 +345,9 @@ class WorkflowTests(unittest.IsolatedAsyncioTestCase):
         source = store.put(
             "s", "source", {"text": "x" * 30000 + "rare counterevidence"}
         )
-        work = store.work("s", c.ref, "planner", "inspect")
+        plan = store.put("s", "plan", {"text": "Read"}, (c.direction,))
+        c = store.command("s", "approve", c.ref, "approve", {"plan": plan.ref})
+        work = store.work("s", c.ref, "investigator", "inspect")
 
         class Model:
             identity = "offline-range"
@@ -358,7 +396,7 @@ class CollaborationTests(unittest.IsolatedAsyncioTestCase):
 
                     async def complete(inner, request):
                         nonlocal active, peak, root_calls
-                        if "finish_investigation" in request["tools"]:
+                        if "finish_work" in request["tools"]:
                             active += 1
                             peak = max(peak, active)
                             seen.append(request)
@@ -368,7 +406,7 @@ class CollaborationTests(unittest.IsolatedAsyncioTestCase):
                                 "",
                                 (
                                     Call(
-                                        "finish_investigation",
+                                        "finish_work",
                                         {
                                             "text": request["task"] + " result",
                                             "refs": [],
@@ -382,8 +420,9 @@ class CollaborationTests(unittest.IsolatedAsyncioTestCase):
                                 "",
                                 tuple(
                                     Call(
-                                        "delegate_research",
+                                        "delegate_work",
                                         {
+                                            "role": "investigator",
                                             "task": f"Independent question {i}",
                                             "refs": [],
                                         },
@@ -391,10 +430,26 @@ class CollaborationTests(unittest.IsolatedAsyncioTestCase):
                                     for i in range(5)
                                 ),
                             ).to_json()
+                        if any(not w["finished"] for w in request["delegated_work"]):
+                            return Reply(
+                                "",
+                                (
+                                    Call(
+                                        "wait_for_work",
+                                        {
+                                            "refs": [
+                                                w["ref"]
+                                                for w in request["delegated_work"]
+                                                if not w["finished"]
+                                            ]
+                                        },
+                                    ),
+                                ),
+                            ).to_json()
                         results = [
                             x
                             for x in request["context"]
-                            if "investigation_result" in x.get("body", {})
+                            if "work_result" in x.get("body", {})
                         ]
                         self.assertEqual(5, len(results))
                         c = store.control("s")
@@ -407,9 +462,7 @@ class CollaborationTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(5, len(seen))
                 self.assertEqual(5, len({r["task"] for r in seen}))
                 self.assertTrue(all(r["memory"] is None for r in seen))
-                self.assertTrue(
-                    all("delegate_research" not in r["tools"] for r in seen)
-                )
+                self.assertTrue(all("delegate_work" not in r["tools"] for r in seen))
                 self.assertEqual(5, len(store.list("s", "work_result")))
             finally:
                 store.close()

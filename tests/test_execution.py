@@ -13,8 +13,14 @@ from deep_research_agent.domain import (
     Reply,
     UnknownOutcome,
 )
-from deep_research_agent.harness import Harness, Tool, object_schema
+from deep_research_agent.harness import Harness, object_schema
+from deep_research_agent.harness import Tool as BaseTool
 from deep_research_agent.storage import Store
+
+
+def Tool(*args, **kwargs):
+    kwargs.setdefault("roles", ("lead", "investigator", "reviewer"))
+    return BaseTool(*args, **kwargs)
 
 
 class Fixture(unittest.TestCase):
@@ -29,7 +35,7 @@ class Fixture(unittest.TestCase):
         self.c = self.store.command(
             "s", "approve", c.ref, "approve", {"plan": plan.ref}
         )
-        self.work = self.store.work("s", self.c.ref, "researcher", "Investigate")
+        self.work = self.store.work("s", self.c.ref, "lead", "Investigate")
 
     def tearDown(self):
         self.store.close()
@@ -149,15 +155,37 @@ class StorageTests(Fixture):
             )
 
     def test_publication_needs_bound_independent_review(self):
+        inv = self.store.work(
+            "s", self.c.ref, "investigator", "Find", owner=self.work.ref
+        )
+        findings = self.store.put(
+            "s",
+            "work_result",
+            {"text": "Found", "refs": [], "producer": inv.ref},
+            (inv.ref,),
+        )
+        syn = self.store.work(
+            "s", self.c.ref, "synthesizer", "Combine", (findings.ref,), self.work.ref
+        )
+        synthesis = self.store.put(
+            "s",
+            "work_result",
+            {"text": "Combined", "refs": [], "producer": syn.ref},
+            (syn.ref,),
+        )
+        writer = self.store.work(
+            "s", self.c.ref, "writer", "Write", (synthesis.ref,), self.work.ref
+        )
         source = self.store.put("s", "source", {"text": "Evidence"})
         report = self.store.put(
             "s",
             "report",
             {
                 "text": "Result",
+                "producer": writer.ref,
                 "evidence": [source.ref],
             },
-            (self.c.direction, source.ref),
+            (self.c.direction, source.ref, writer.ref),
         )
         review_work = self.store.work(
             "s",
@@ -195,7 +223,7 @@ class StorageTests(Fixture):
         with self.assertRaisesRegex(Conflict, "latest review"):
             self.store.publish("s", self.work.ref, self.c.epoch, report.ref, review.ref)
         changed = self.command("steer", {"request": "Different scope"})
-        new_work = self.store.work("s", changed.ref, "researcher", "Revisit")
+        new_work = self.store.work("s", changed.ref, "lead", "Revisit")
         with self.assertRaises(Conflict):
             self.store.publish("s", new_work.ref, changed.epoch, report.ref, review.ref)
 
@@ -402,7 +430,7 @@ class HarnessTests(Fixture, unittest.IsolatedAsyncioTestCase):
     async def test_concurrent_step_does_not_duplicate_model_call(self):
         model = FakeModel([Reply("", (Call("propose_plan", {"text": "Plan"}),))])
         other = self.store.create("planning", "Question", {})
-        planner = self.store.work("planning", other.ref, "planner", "Plan")
+        planner = self.store.work("planning", other.ref, "lead", "Plan")
         h = Harness(self.store, model)
         await asyncio.gather(
             h.step("planning", planner.ref), h.step("planning", planner.ref)

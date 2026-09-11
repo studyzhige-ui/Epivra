@@ -1,0 +1,196 @@
+from __future__ import annotations
+
+import tempfile
+import unittest
+from pathlib import Path
+
+from deep_research_agent.application import ResearchService
+from deep_research_agent.domain import Call, Conflict, NotAllowed, Reply
+from deep_research_agent.harness import Harness, Tool, object_schema
+from deep_research_agent.storage import Store
+
+
+class MainlineTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.folder = tempfile.TemporaryDirectory()
+        self.store = Store(Path(self.folder.name) / "research.db")
+        c = self.store.create("s", "Question", {})
+        p = self.store.put("s", "plan", {"text": "Plan"}, (c.direction,))
+        self.c = self.store.command("s", "approve", c.ref, "approve", {"plan": p.ref})
+        self.lead = self.store.work("s", self.c.ref, "lead", "Lead", (p.ref,))
+
+    async def asyncTearDown(self):
+        self.store.close()
+        self.folder.cleanup()
+
+    def child(self, role, task, refs=()):
+        return self.store.work("s", self.c.ref, role, task, refs, self.lead.ref)
+
+    async def execute(self, work, call):
+        class Model:
+            identity = "boundary"
+
+            async def complete(self, request):
+                return Reply("", (call,)).to_json()
+
+        h = Harness(self.store, Model())
+        await h.step("s", work.ref)
+        return h
+
+    async def test_dependency_reference_cannot_impersonate_producer(self):
+        a, b = self.child("investigator", "A"), self.child("investigator", "B")
+        h = await self.execute(
+            a, Call("save_memory", {"text": "A progress only", "refs": [b.ref]})
+        )
+        self.assertEqual(
+            "A progress only", h._request("s", a)["memory"]["body"]["text"]
+        )
+        self.assertIsNone(h._request("s", b)["memory"])
+        h = await self.execute(
+            a, Call("finish_work", {"text": "A only", "refs": [b.ref]})
+        )
+        self.assertTrue(h.finished("s", a.ref))
+        self.assertFalse(h.finished("s", b.ref))
+        result = h._steps("s", "work_result", a.ref)[0]
+        syn = self.child("synthesizer", "Combine", (result.ref,))
+        other = self.child("investigator", "C")
+        await self.execute(other, Call("finish_work", {"text": "C", "refs": [syn.ref]}))
+        forged = h._steps("s", "work_result", other.ref)[0]
+        with self.assertRaises(NotAllowed):
+            self.child("writer", "Bypass", (forged.ref,))
+        self.assertFalse(h.finished("s", syn.ref))
+
+    async def test_archived_runtime_cannot_restart_paid_work(self):
+        # Construct a legacy snapshot without mutating any real database.
+        old = self.store._put("old", "direction", {"request": "Old", "policy": {}})
+        self.store._control("old", 0, old.ref, True, False, False, ())
+        old_work = self.store._put(
+            "old",
+            "work",
+            {
+                "role": "researcher",
+                "direction": old.ref,
+                "task": "Unfinished",
+                "inputs": [],
+                "owner": None,
+            },
+            (old.ref,),
+        )
+        self.store.db.execute(
+            "INSERT INTO operations(id,study,work,direction,epoch,request,status) VALUES(?,?,?,?,?,?,?)",
+            ("old-paid", "old", old_work.ref, old.ref, 0, "{}", "unknown"),
+        )
+
+        class Model:
+            identity = "never-call"
+
+            async def complete(self, request):
+                raise AssertionError("must not restart legacy research")
+
+        service = ResearchService(self.store, Harness(self.store, Model()))
+        await service.run("old")
+        self.assertEqual("RuntimeMismatch", service.errors["old"])
+        self.assertEqual(1, len(self.store.unsettled("old")))
+        self.assertEqual([], self.store.list("old", "step"))
+
+    async def test_evidence_location_checked_and_limits_retained(self):
+        inv = self.child("investigator", "Read")
+        source = self.store.put("s", "source", {"text": "Value 17; sample only"})
+        args = {
+            "text": "Measured 17",
+            "source": source.ref,
+            "offset": 1,
+            "quote": "Value 17",
+            "limits": "sample only",
+        }
+        await self.execute(inv, Call("record_evidence", args))
+        self.assertEqual([], self.store.list("s", "note"))
+        args["offset"] = 0
+        await self.execute(inv, Call("record_evidence", args))
+        note = self.store.list("s", "note")[0]
+        self.assertEqual("sample only", note.body["limits"])
+        self.assertIn(source.ref, note.parents)
+
+    async def test_no_lead_drafting_or_unapproved_external_tool(self):
+        await self.execute(
+            self.lead, Call("draft_report", {"text": "Bypass", "evidence": []})
+        )
+        self.assertFalse(self.store.list("s", "report"))
+        with self.assertRaises(NotAllowed):
+            self.child("writer", "No synthesis")
+        c = self.store.create("p", "Plan", {"network": True})
+        lead = self.store.work("p", c.ref, "lead", "Plan")
+
+        class Model:
+            identity = "plan"
+
+        async def paid(args):
+            raise AssertionError("must not be called")
+
+        h = Harness(
+            self.store, Model(), {"paid": Tool("Paid", object_schema({}), paid)}
+        )
+        self.assertNotIn("paid", h._request("p", lead)["tools"])
+        self.assertNotIn("read_source", h._request("s", self.lead)["tools"])
+        self.assertNotIn("snapshot_local", h._request("s", self.lead)["tools"])
+
+    async def test_report_dependency_cannot_impersonate_author(self):
+        inv = self.child("investigator", "Find")
+        h = await self.execute(inv, Call("finish_work", {"text": "Facts", "refs": []}))
+        syn = self.child(
+            "synthesizer", "Combine", (h._steps("s", "work_result", inv.ref)[0].ref,)
+        )
+        await self.execute(syn, Call("finish_work", {"text": "Answer", "refs": []}))
+        synthesis = h._steps("s", "work_result", syn.ref)[0]
+        other_lead = self.store.work("s", self.c.ref, "lead", "Other lead")
+        other_writer = self.store.work(
+            "s", self.c.ref, "writer", "Other writer", (synthesis.ref,), other_lead.ref
+        )
+        writer = self.child("writer", "Write", (synthesis.ref, other_writer.ref))
+        await self.execute(
+            writer, Call("draft_report", {"text": "Answer", "evidence": []})
+        )
+        report = self.store.list("s", "report")[0]
+        reviewer = self.child("reviewer", "Review", (report.ref,))
+        await self.execute(
+            reviewer,
+            Call(
+                "record_review",
+                {
+                    "checks": [
+                        {
+                            "unit": 0,
+                            "evidence": [],
+                            "assessment": "Checked",
+                            "defects": [],
+                        }
+                    ]
+                },
+            ),
+        )
+        await self.execute(
+            reviewer, Call("submit_review", {"reason": "Checked", "defects": []})
+        )
+        review = self.store.list("s", "review")[0]
+        with self.assertRaises(Conflict):
+            self.store.publish(
+                "s", other_lead.ref, self.c.epoch, report.ref, review.ref
+            )
+        self.assertEqual(
+            self.lead.ref, self.store.get("s", report.body["producer"]).body["owner"]
+        )
+
+    async def test_old_direction_result_cannot_start_new_writer(self):
+        inv = self.child("investigator", "Find")
+        h = await self.execute(inv, Call("finish_work", {"text": "Found", "refs": []}))
+        syn = self.child(
+            "synthesizer", "Combine", (h._steps("s", "work_result", inv.ref)[0].ref,)
+        )
+        await self.execute(syn, Call("finish_work", {"text": "Combined", "refs": []}))
+        old = h._steps("s", "work_result", syn.ref)[0]
+        self.c = self.store.command(
+            "s", "steer", self.c.ref, "steer", {"request": "Changed"}
+        )
+        self.lead = self.store.work("s", self.c.ref, "lead", "New lead")
+        with self.assertRaises(NotAllowed):
+            self.child("writer", "Old result", (old.ref,))

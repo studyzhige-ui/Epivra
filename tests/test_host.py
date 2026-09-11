@@ -55,7 +55,7 @@ class HostTests(unittest.IsolatedAsyncioTestCase):
 
             host = Host(root, factory)
             c = host.store.create("bad", "Research", {})
-            work = host.store.work("bad", c.ref, "planner", "Plan")
+            work = host.store.work("bad", c.ref, "lead", "Plan")
             host.store.admit("bad", work.ref, c.epoch, "lost", {"fixture": True})
             host.store.create("good", "Research", {})
             task = asyncio.create_task(host.serve())

@@ -8,9 +8,15 @@ from pathlib import Path
 from unittest.mock import patch
 
 from deep_research_agent.domain import Call, Conflict, Reply, UnknownOutcome
-from deep_research_agent.harness import STRING, Harness, Tool, object_schema
+from deep_research_agent.harness import STRING, Harness, object_schema
+from deep_research_agent.harness import Tool as BaseTool
 from deep_research_agent.scheduling import Scheduler
 from deep_research_agent.storage import Store
+
+
+def Tool(*args, **kwargs):
+    kwargs.setdefault("roles", ("lead", "investigator", "reviewer"))
+    return BaseTool(*args, **kwargs)
 
 
 class Model:
@@ -27,7 +33,7 @@ class Model:
 
 class BoundaryTests(unittest.IsolatedAsyncioTestCase):
     async def test_wait_rejects_non_work_and_other_owners(self):
-        other = self.store.work("s", self.c.ref, "researcher", "Other owner")
+        other = self.store.work("s", self.c.ref, "lead", "Other owner")
         child = self.store.work(
             "s", self.c.ref, "investigator", "Other child", (), other.ref
         )
@@ -46,6 +52,9 @@ class BoundaryTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_calculation_is_recorded_and_cannot_execute_python(self):
+        self.work = self.store.work(
+            "s", self.c.ref, "investigator", "Read and analyze", owner=self.work.ref
+        )
         model = Model((Call("calculate", {"expression": "(20+22+24)/3"}),))
         harness = Harness(self.store, model)
         await harness.step("s", self.work.ref)
@@ -65,7 +74,7 @@ class BoundaryTests(unittest.IsolatedAsyncioTestCase):
             "r", "plan", {"text": "Compare all relevant material"}, (c.direction,)
         )
         c = self.store.command("r", "approve", c.ref, "approve", {"plan": plan.ref})
-        owner = self.store.work("r", c.ref, "researcher", "Research")
+        owner = self.store.work("r", c.ref, "lead", "Research")
         report = self.store.put("r", "report", {"text": "Partial", "evidence": []})
         reviewer = self.store.work(
             "r", c.ref, "reviewer", "Check", (report.ref,), owner.ref
@@ -83,7 +92,7 @@ class BoundaryTests(unittest.IsolatedAsyncioTestCase):
         )
         schema = harness._request("r", reviewer)["tools"]
         self.assertNotIn("publish_report", schema)
-        self.assertNotIn("delegate_research", schema)
+        self.assertNotIn("delegate_work", schema)
 
     async def test_reviewer_scope_survives_restart_and_marks_old_plan_after_steering(
         self,
@@ -107,7 +116,7 @@ class BoundaryTests(unittest.IsolatedAsyncioTestCase):
             "steer",
             {"request": "Write an evidence review, not a recommendation"},
         )
-        work = self.store.work("s", c.ref, "researcher", "Continue")
+        work = self.store.work("s", c.ref, "lead", "Continue")
         self.store.close()
         self.store = Store(self.path)
         request = Harness(self.store, Model())._request("s", work)
@@ -159,7 +168,7 @@ class BoundaryTests(unittest.IsolatedAsyncioTestCase):
         root.mkdir()
         (root / "paper.txt").write_text("Evidence", encoding="utf-8")
         control = self.store.create("p", "Plan", {"local_roots": [str(root)]})
-        work = self.store.work("p", control.ref, "planner", "Plan")
+        work = self.store.work("p", control.ref, "lead", "Plan")
         model = Model((Call("discover_local", {"root": str(root)}),))
         harness = Harness(self.store, model)
         self.assertNotIn("snapshot_local", harness._request("p", work)["tools"])
@@ -169,6 +178,9 @@ class BoundaryTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(self.store.control("p").approved)
 
     async def test_pending_builtin_contract_change_is_rejected_before_model_call(self):
+        self.work = self.store.work(
+            "s", self.c.ref, "investigator", "Read and analyze", owner=self.work.ref
+        )
         model = Model()
         harness = Harness(self.store, model)
         self.store.put(
@@ -257,6 +269,9 @@ class BoundaryTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_reading_progress_survives_restart_but_is_work_local(self):
+        self.work = self.store.work(
+            "s", self.c.ref, "investigator", "Read and analyze", owner=self.work.ref
+        )
         source = self.store.put(
             "s", "source", {"origin": "paper", "text": "abcdefghij"}
         )
@@ -293,7 +308,7 @@ class BoundaryTests(unittest.IsolatedAsyncioTestCase):
             "investigator",
             "Independent check",
             (source.ref,),
-            self.work.ref,
+            self.work.body["owner"],
         )
         await harness.step("s", child.ref)
         self.assertEqual(
@@ -356,7 +371,7 @@ class BoundaryTests(unittest.IsolatedAsyncioTestCase):
         c = self.store.create(study, "Research", {})
         plan = self.store.put(study, "plan", {"text": "Plan"}, (c.direction,))
         c = self.store.command(study, "approve", c.ref, "approve", {"plan": plan.ref})
-        return c, self.store.work(study, c.ref, "researcher", "Research")
+        return c, self.store.work(study, c.ref, "lead", "Research")
 
     async def asyncTearDown(self):
         self.store.close()
@@ -501,12 +516,20 @@ class BoundaryTests(unittest.IsolatedAsyncioTestCase):
             )
 
     async def test_rare_evidence_anchor_survives_context_pressure_and_restart(self):
+        self.work = self.store.work(
+            "s", self.c.ref, "investigator", "Read and analyze", owner=self.work.ref
+        )
         source = self.store.put("s", "source", {"text": "Rare contradictory evidence"})
         model = Model((Call("pin_evidence", {"refs": [source.ref]}),))
         harness = Harness(self.store, model, context_chars=16000)
         await harness.step("s", self.work.ref)
         for i in range(1000):
-            self.store.put("s", "note", {"text": str(i) + "x" * 100}, (self.work.ref,))
+            self.store.put(
+                "s",
+                "note",
+                {"text": str(i) + "x" * 100, "producer": self.work.ref},
+                (self.work.ref,),
+            )
         before = harness._request("s", self.work)
         self.assertEqual([source.ref], before["pinned_evidence"])
         self.assertGreater(before["omitted_count"], 0)

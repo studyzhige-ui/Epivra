@@ -12,8 +12,14 @@ from deep_research_agent.adapters import (
     Tavily,
 )
 from deep_research_agent.domain import Call, Conflict, Reply, UnknownOutcome
-from deep_research_agent.harness import Harness, Tool, object_schema
+from deep_research_agent.harness import Harness, object_schema
+from deep_research_agent.harness import Tool as BaseTool
 from deep_research_agent.storage import Store
+
+
+def Tool(*args, **kwargs):
+    kwargs.setdefault("roles", ("lead", "investigator", "reviewer"))
+    return BaseTool(*args, **kwargs)
 
 
 class RecoveryTests(unittest.IsolatedAsyncioTestCase):
@@ -123,7 +129,7 @@ class RecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.c = self.store.command(
             "s", "approve", c.ref, "approve", {"plan": plan.ref}
         )
-        self.work = self.store.work("s", self.c.ref, "researcher", "Investigate")
+        self.work = self.store.work("s", self.c.ref, "lead", "Investigate")
 
     async def asyncTearDown(self):
         self.store.close()

@@ -62,7 +62,7 @@ class ResearchService:
                     work = self.store.work(
                         study,
                         c.ref,
-                        "planner",
+                        "lead",
                         "提出初始研究策略并提交审批。",
                     )
                     if self.harness.finished(study, work.ref):
@@ -72,7 +72,7 @@ class ResearchService:
                     root = self.store.work(
                         study,
                         c.ref,
-                        "researcher",
+                        "lead",
                         "依据当前方向自主研究并交付经过核查的报告。",
                         inputs,
                     )
@@ -80,7 +80,6 @@ class ResearchService:
                         w
                         for w in self.store.list(study, "work")
                         if w.body["owner"] == root.ref
-                        and w.body["role"] == "investigator"
                     ]
                     pending = [
                         w
@@ -97,8 +96,9 @@ class ResearchService:
                                 root.ref,
                                 c.epoch,
                                 {
-                                    "investigation_result": result.ref,
+                                    "work_result": result.ref,
                                     "work": child.ref,
+                                    "role": child.body["role"],
                                     "result": result.body,
                                 },
                                 (result.ref,),
@@ -115,72 +115,30 @@ class ResearchService:
                                 },
                                 (child.ref,),
                             )
-                    # A report proposal requests an independent work context;
-                    # the scheduler does not choose when research should write.
-                    reports = [
-                        a
-                        for a in self.store.list(study, "report")
-                        if root.ref in a.parents and c.direction in a.parents
-                    ]
-                    work = root
-                    for report in reports:
-                        reviews = [
-                            a
-                            for a in self.store.list(study, "review")
-                            if report.ref in a.parents
-                        ]
-                        if reviews:
-                            for review in reviews:
-                                self.store.observation(
-                                    study,
-                                    root.ref,
-                                    c.epoch,
-                                    {
-                                        "review_available": review.ref,
-                                        "report": report.ref,
-                                        "decision": review.body,
-                                    },
-                                    (review.ref,),
-                                )
-                            continue
-                        work = self.store.work(
-                            study,
-                            c.ref,
-                            "reviewer",
-                            "核查指定报告及原始证据，提交具体核查结论。",
-                            (report.ref,),
-                            root.ref,
-                        )
-                        break
-                    if pending:
-                        waits = self.harness._steps(study, "work_wait", root.ref)
-                        waiting = (
-                            work.ref == root.ref
-                            and waits
-                            and any(
-                                child.ref in waits[-1].body["refs"] for child in pending
-                            )
-                        )
-                        ready = pending + ([] if waiting else [work])
+                    waits = self.harness._steps(study, "work_wait", root.ref)
+                    waiting = bool(
+                        waits and any(w.ref in waits[-1].body["refs"] for w in pending)
+                    )
+                    ready = pending + ([] if waiting else [root])
 
-                        def last_step(w):
-                            steps = self.harness._steps(study, "step", w.ref)
-                            return steps[-1].seq if steps else -1
+                    def last_step(w):
+                        steps = self.harness._steps(study, "step", w.ref)
+                        return steps[-1].seq if steps else -1
 
-                        ready.sort(key=last_step)
-                        outcomes = await asyncio.gather(
-                            *(
-                                self._investigate(study, w.ref)
-                                if w.body["role"] == "investigator"
-                                else self.harness.step(study, w.ref)
-                                for w in ready[: self.concurrency]
-                            ),
-                            return_exceptions=True,
-                        )
-                        for outcome in outcomes:
-                            if isinstance(outcome, BaseException):
-                                raise outcome
-                        continue
+                    ready.sort(key=last_step)
+                    outcomes = await asyncio.gather(
+                        *(
+                            self._run_child(study, w.ref)
+                            if w.body["owner"]
+                            else self.harness.step(study, w.ref)
+                            for w in ready[: self.concurrency]
+                        ),
+                        return_exceptions=True,
+                    )
+                    for outcome in outcomes:
+                        if isinstance(outcome, BaseException):
+                            raise outcome
+                    continue
                 await self.harness.step(study, work.ref)
                 # Let control messages run even when every operation was replayed.
                 await asyncio.sleep(0)
@@ -219,7 +177,7 @@ class ResearchService:
             },
         }
 
-    async def _investigate(self, study: str, work: str) -> None:
+    async def _run_child(self, study: str, work: str) -> None:
         try:
             await self.harness.step(study, work)
         except Conflict:
@@ -305,6 +263,7 @@ def online_service(
             search.search,
             identity=search.identity + ":search",
             permission="network",
+            roles=("investigator", "reviewer"),
             observe=search_observation,
             retry_delay=search.retry_delay,
             retry_on_resume=search.retry_on_resume,
@@ -317,6 +276,7 @@ def online_service(
             search.extract,
             identity=search.identity + ":extract",
             permission="network",
+            roles=("investigator", "reviewer"),
             observe=extract_observation,
             check=search.validate_extract,
             retry_delay=search.retry_delay,

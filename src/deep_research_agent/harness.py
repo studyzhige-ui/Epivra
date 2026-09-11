@@ -38,7 +38,7 @@ class Tool:
     description: str
     schema: dict[str, Any]
     invoke: Callable[[dict[str, Any]], Awaitable[Any]]
-    roles: tuple[str, ...] = ("researcher", "reviewer", "investigator")
+    roles: tuple[str, ...] = ("reviewer", "investigator")
     identity: str = "v1"
     permission: str | None = None
     observe: Callable[[Any], Any] | None = None
@@ -72,14 +72,36 @@ def object_schema(properties: dict[str, Any]) -> dict[str, Any]:
 STRING = {"type": "string", "minLength": 1}
 STRINGS = {"type": "array", "items": STRING}
 BUILTINS = {
-    "calculate": ("all", object_schema({"expression": STRING})),
-    "wait_for_work": ("researcher", object_schema({"refs": STRINGS})),
-    "pin_evidence": ("all", object_schema({"refs": STRINGS})),
-    "delegate_research": (
-        "researcher",
-        object_schema({"task": STRING, "refs": STRINGS}),
+    "request_revision": ("writer", object_schema({"text": STRING, "refs": STRINGS})),
+    "record_evidence": (
+        "investigator",
+        object_schema(
+            {
+                "text": STRING,
+                "source": STRING,
+                "offset": {"type": "integer"},
+                "quote": STRING,
+                "limits": {"type": "string"},
+            }
+        ),
     ),
-    "finish_investigation": (
+    "calculate": ("all", object_schema({"expression": STRING})),
+    "wait_for_work": ("lead", object_schema({"refs": STRINGS})),
+    "pin_evidence": ("all", object_schema({"refs": STRINGS})),
+    "delegate_work": (
+        "lead",
+        object_schema(
+            {
+                "role": {
+                    **STRING,
+                    "enum": ["investigator", "synthesizer", "writer", "reviewer"],
+                },
+                "task": STRING,
+                "refs": STRINGS,
+            }
+        ),
+    ),
+    "finish_work": (
         "investigator",
         object_schema(
             {
@@ -107,7 +129,7 @@ BUILTINS = {
             }
         ),
     ),
-    "discover_local": ("researcher", object_schema({"root": STRING})),
+    "discover_local": ("lead", object_schema({"root": STRING})),
     "read_catalog": (
         "all",
         object_schema(
@@ -119,7 +141,7 @@ BUILTINS = {
         ),
     ),
     "snapshot_local": (
-        "researcher",
+        "lead",
         object_schema(
             {
                 "catalog": STRING,
@@ -127,10 +149,10 @@ BUILTINS = {
             }
         ),
     ),
-    "propose_plan": ("planner", object_schema({"text": STRING})),
-    "save_note": ("researcher", object_schema({"text": STRING, "refs": STRINGS})),
+    "propose_plan": ("lead", object_schema({"text": STRING})),
+    "save_note": ("lead", object_schema({"text": STRING, "refs": STRINGS})),
     "draft_report": (
-        "researcher",
+        "writer",
         object_schema(
             {
                 "text": STRING,
@@ -165,7 +187,7 @@ BUILTINS = {
         ),
     ),
     "publish_report": (
-        "researcher",
+        "lead",
         object_schema(
             {
                 "report": STRING,
@@ -271,15 +293,49 @@ class Harness:
             name: {"description": TOOLS.get(name, name), "parameters": schema}
             for name, (allowed, schema) in BUILTINS.items()
             if allowed in (role, "all")
-            or (role == "planner" and name == "discover_local")
+            or (role == "lead" and name == "discover_local")
+            or (role == "synthesizer" and name == "finish_work")
             or (
-                role in {"investigator", "reviewer"}
+                role in {"investigator", "reviewer", "synthesizer", "writer"}
                 and name in {"save_note", "discover_local", "snapshot_local"}
             )
         }
+        if role == "lead" and policy.get("_approved"):
+            result = {
+                k: v
+                for k, v in result.items()
+                if k
+                in {
+                    "delegate_work",
+                    "wait_for_work",
+                    "save_memory",
+                    "save_note",
+                    "read_artifact",
+                    "read_artifact_range",
+                    "find_artifacts",
+                    "publish_report",
+                }
+            }
+        elif role == "lead":
+            result = {
+                k: v
+                for k, v in result.items()
+                if k
+                in {
+                    "propose_plan",
+                    "discover_local",
+                    "read_catalog",
+                    "find_artifacts",
+                    "read_artifact",
+                    "read_artifact_range",
+                    "save_memory",
+                }
+            }
         for name, tool in self.tools.items():
-            if role in tool.roles and (
-                tool.permission is None or policy.get(tool.permission) is True
+            if (
+                policy.get("_approved")
+                and role in tool.roles
+                and (tool.permission is None or policy.get(tool.permission) is True)
             ):
                 result[name] = {
                     "description": tool.description,
@@ -317,6 +373,7 @@ class Harness:
         mandatory = {
             "provider": self.model.identity,
             "system": ROLES[work.body["role"]],
+            "role": work.body["role"],
             "task": work.body["task"],
             "direction": direction.body,
             "research_scope": {
@@ -342,10 +399,12 @@ class Harness:
                 }
                 for child in self.store.list(study, "work")
                 if child.body["owner"] == work.ref
-                and child.body["role"] == "investigator"
             ],
             "pinned_evidence": anchors[-1].body["refs"] if anchors else [],
-            "tools": self._schema(work.body["role"], direction.body["policy"]),
+            "tools": self._schema(
+                work.body["role"],
+                {**direction.body["policy"], "_approved": control.approved},
+            ),
             "tool_versions": {name: tool.binding for name, tool in self.tools.items()},
         }
         if work.body["role"] == "reviewer":
@@ -362,9 +421,7 @@ class Harness:
         candidates = [
             x for x in self.store.list(study, "observation") if work.ref in x.parents
         ]
-        candidates.extend(
-            x for x in self.store.list(study, "note") if work.ref in x.parents
-        )
+        candidates.extend(self._steps(study, "note", work.ref))
         memories = self._steps(study, "memory", work.ref)
         request = assemble(
             mandatory,
@@ -475,7 +532,16 @@ class Harness:
             key = next_key
 
     def _steps(self, study: str, kind: str, work: str) -> list[Artifact]:
-        return [a for a in self.store.list(study, kind) if work in a.parents]
+        return [
+            a
+            for a in self.store.list(study, kind)
+            if (
+                a.body.get("producer") == work
+                if kind
+                in {"work_result", "note", "memory", "evidence_anchor", "work_wait"}
+                else work in a.parents
+            )
+        ]
 
     def finished(self, study: str, work: str) -> bool:
         return bool(self._steps(study, "work_result", work))
@@ -518,7 +584,8 @@ class Harness:
                 raise NotAllowed("pending work requires its original tool bindings")
             direction = self.store.get(study, work.body["direction"])
             if step.body["request"]["tools"] != self._schema(
-                work.body["role"], direction.body["policy"]
+                work.body["role"],
+                {**direction.body["policy"], "_approved": control.approved},
             ):
                 raise NotAllowed("pending work requires its original tool contracts")
             raw = await self._invoke(
@@ -724,7 +791,10 @@ class Harness:
             if any(self.store.get(study, ref).kind != "source" for ref in refs):
                 raise ValueError("evidence anchors must name source snapshots")
             item = self.store.put(
-                study, "evidence_anchor", {"refs": refs}, (*parents, *refs)
+                study,
+                "evidence_anchor",
+                {"refs": refs, "producer": work.ref},
+                (*parents, *refs),
             )
             return {"ref": item.ref}
         if call.name == "wait_for_work":
@@ -732,36 +802,51 @@ class Harness:
                 raise ValueError("wait requires delegated work references")
             for ref in args["refs"]:
                 child = self.store.get(study, ref)
-                if (
-                    child.kind != "work"
-                    or child.body["owner"] != work.ref
-                    or child.body["role"] != "investigator"
-                ):
-                    raise ValueError("can only wait for own investigations")
-            item = self.store.put(study, "work_wait", args, (*parents, *args["refs"]))
+                if child.kind != "work" or child.body["owner"] != work.ref:
+                    raise ValueError("can only wait for own delegated work")
+            item = self.store.put(
+                study,
+                "work_wait",
+                {**args, "producer": work.ref},
+                (*parents, *args["refs"]),
+            )
             return {"ref": item.ref}
-        if call.name == "delegate_research":
+        if call.name == "delegate_work":
             child = self.store.work(
                 study,
                 self.store.control(study).ref,
-                "investigator",
+                args["role"],
                 args["task"],
                 tuple(args["refs"]),
                 work.ref,
             )
             return {"work": child.ref}
-        if call.name == "finish_investigation":
-            item = self.store.put(study, "work_result", args, (*parents, *args["refs"]))
+        if call.name in {"finish_work", "request_revision"}:
+            item = self.store.put(
+                study,
+                "work_result",
+                {**args, "producer": work.ref},
+                (*parents, *work.body["inputs"], *args["refs"]),
+            )
             return {"ref": item.ref}
         if call.name == "save_memory":
             if len(encode(args)) > self.context_chars // 4:
                 raise ValueError(
                     "memory too large; preserve critical facts and references"
                 )
-            item = self.store.put(study, "memory", args, (*parents, *args["refs"]))
+            item = self.store.put(
+                study,
+                "memory",
+                {**args, "producer": work.ref},
+                (*parents, *args["refs"]),
+            )
             return {"ref": item.ref}
         if call.name == "read_artifact_range":
             artifact = self.store.get(study, args["ref"])
+            if work.body["role"] == "lead" and artifact.kind == "source":
+                raise NotAllowed(
+                    "Delegate source examination; lead reads research findings"
+                )
             if artifact.kind in {"step", "step_done", "control", "material_bytes"}:
                 raise NotAllowed(
                     "execution and provider-private records are not research materials"
@@ -841,6 +926,10 @@ class Harness:
             }
         if call.name == "read_artifact":
             artifact = self.store.get(study, args["ref"])
+            if work.body["role"] == "lead" and artifact.kind == "source":
+                raise NotAllowed(
+                    "Delegate source examination; lead reads research findings"
+                )
             if artifact.kind in {"step", "step_done", "control", "material_bytes"}:
                 raise NotAllowed(
                     "execution and provider-private records are not research materials"
@@ -853,18 +942,47 @@ class Harness:
             return {"kind": artifact.kind, "body": artifact.body}
         if call.name == "calculate":
             return calculate(args["expression"])
-        if call.name == "save_note":
-            item = self.store.put(study, "note", args, (*parents, *args["refs"]))
+        if call.name == "record_evidence":
+            source = self.store.get(study, args["source"])
+            start = args["offset"]
+            if (
+                source.kind != "source"
+                or start < 0
+                or source.body["text"][start : start + len(args["quote"])]
+                != args["quote"]
+            ):
+                raise ValueError("evidence quote does not match source position")
+            item = self.store.put(
+                study, "note", {**args, "producer": work.ref}, (*parents, source.ref)
+            )
+        elif call.name == "save_note":
+            item = self.store.put(
+                study, "note", {**args, "producer": work.ref}, (*parents, *args["refs"])
+            )
         elif call.name == "propose_plan":
             item = self.store.put(study, "plan", args, parents)
             self.store.put(
-                study, "work_result", {"ref": item.ref}, (work.ref, item.ref)
+                study,
+                "work_result",
+                {"ref": item.ref, "producer": work.ref},
+                (work.ref, item.ref),
             )
         elif call.name == "draft_report":
             for ref in args["evidence"]:
                 if self.store.get(study, ref).kind != "source":
                     raise ValueError("evidence must reference source snapshots")
-            item = self.store.put(study, "report", args, (*parents, *args["evidence"]))
+            item = self.store.put(
+                study,
+                "report",
+                {**args, "producer": work.ref},
+                (*parents, *work.body["inputs"], *args["evidence"]),
+            )
+            self.store.put(
+                study,
+                "work_result",
+                {"ref": item.ref, "producer": work.ref},
+                (work.ref, item.ref),
+            )
         elif call.name == "read_report":
             report, parts, checks = self._review(study, work)
             offset, limit = args["offset"], args["limit"]
@@ -910,14 +1028,20 @@ class Harness:
                 (*parents, report.ref),
             )
             self.store.put(
-                study, "work_result", {"ref": item.ref}, (work.ref, item.ref)
+                study,
+                "work_result",
+                {"ref": item.ref, "producer": work.ref},
+                (work.ref, item.ref),
             )
         elif call.name == "publish_report":
             item = self.store.publish(
                 study, work.ref, epoch, args["report"], args["review"]
             )
             self.store.put(
-                study, "work_result", {"ref": item.ref}, (work.ref, item.ref)
+                study,
+                "work_result",
+                {"ref": item.ref, "producer": work.ref},
+                (work.ref, item.ref),
             )
         else:
             raise ValueError("unknown built-in tool")

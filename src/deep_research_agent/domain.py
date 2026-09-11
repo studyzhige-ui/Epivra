@@ -16,6 +16,10 @@ class NotAllowed(ValueError):
     """The requested action is outside the current authority."""
 
 
+class RuntimeMismatch(NotAllowed):
+    """An archived research protocol cannot resume under different semantics."""
+
+
 class UnknownOutcome(RuntimeError):
     """A request may have run; automatic resubmission would risk duplication."""
 

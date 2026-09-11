@@ -169,7 +169,7 @@ class MaterialAsyncTests(unittest.IsolatedAsyncioTestCase):
                 c = store.create("s", "Research", {"local_roots": [str(root)]})
                 plan = store.put("s", "plan", {"text": "Plan"}, (c.direction,))
                 c = store.command("s", "approve", c.ref, "approve", {"plan": plan.ref})
-                work = store.work("s", c.ref, "researcher", "Read PDF")
+                work = store.work("s", c.ref, "investigator", "Read PDF")
                 (root / "source.pdf").write_bytes(pdf_bytes())
                 catalog = Workspace(store).discover("s", str(root))
 
