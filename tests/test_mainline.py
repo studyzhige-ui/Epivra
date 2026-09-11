@@ -6,7 +6,8 @@ from pathlib import Path
 
 from deep_research_agent.application import ResearchService
 from deep_research_agent.domain import Call, Conflict, NotAllowed, Reply
-from deep_research_agent.harness import Harness, Tool, object_schema
+from deep_research_agent.harness import BUILTINS, Harness, Tool, object_schema, validate
+from deep_research_agent.review import text_metrics
 from deep_research_agent.storage import Store
 
 
@@ -59,6 +60,61 @@ class MainlineTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(NotAllowed):
             self.child("writer", "Bypass", (forged.ref,))
         self.assertFalse(h.finished("s", syn.ref))
+
+    async def test_report_handoff_is_not_manuscript(self):
+        inv = self.child("investigator", "Investigate")
+        h = await self.execute(
+            inv, Call("finish_work", {"text": "Finding", "refs": []})
+        )
+        result = h._steps("s", "work_result", inv.ref)[0]
+        syn = self.child("synthesizer", "Combine", (result.ref,))
+        self.assertTrue(
+            any(
+                x.get("body", {}).get("text") == "Finding"
+                for x in h._request("s", syn)["context"]
+            )
+        )
+        h = await self.execute(
+            syn, Call("finish_work", {"text": "Answer", "refs": [result.ref]})
+        )
+        writer = self.child(
+            "writer", "Write", (h._steps("s", "work_result", syn.ref)[0].ref,)
+        )
+        text = "\n\n".join(["结果：90人次。", *[f"第{i}节" for i in range(12)]])
+        args = {
+            "text": text,
+            "evidence": [],
+            "handoff": "Changed wording; internal only",
+        }
+        h = await self.execute(writer, Call("draft_report", args))
+        report = self.store.list("s", "report")[0]
+        self.assertEqual(text, report.body["text"])
+        self.assertNotIn("handoff", report.body)
+        result = h._steps("s", "work_result", writer.ref)[0]
+        self.assertEqual(args["handoff"], result.body["handoff"])
+        reviewer = self.child("reviewer", "Check", (report.ref,))
+        await self.execute(reviewer, Call("read_report", {"offset": 0, "limit": 20}))
+        observation = self.store.list("s", "observation")[-1].body["result"]
+        self.assertEqual(text_metrics(text), observation["text_metrics"])
+        self.assertEqual(text_metrics(text), observation["displayed_units_metrics"])
+        self.assertNotIn("measure_text", h._request("s", reviewer)["tools"])
+        self.assertEqual(13, len(observation["unit_metrics"]))
+        self.assertEqual(text_metrics("第11节"), observation["unit_metrics"]["12"])
+        self.assertNotIn("internal only", str(observation))
+
+    def test_measurement_and_optional_fields(self):
+        self.assertEqual(
+            {"characters": 6, "non_whitespace_characters": 3},
+            text_metrics("中 a\n😀\t"),
+        )
+        schema = BUILTINS["draft_report"][1]
+        validate({"text": "Report", "evidence": []}, schema)
+        with self.assertRaises(ValueError):
+            validate({"evidence": []}, schema)
+        with self.assertRaises(ValueError):
+            validate({"text": "Report", "evidence": [], "handoff": 5}, schema)
+        with self.assertRaises(ValueError):
+            validate({"text": "Report", "evidence": [], "unexpected": "x"}, schema)
 
     async def test_archived_runtime_cannot_restart_paid_work(self):
         # Construct a legacy snapshot without mutating any real database.

@@ -19,7 +19,12 @@ from evals.review_cases import CASES
 
 
 async def run(
-    root: Path, run_id: str, report_db: Path | None = None, mechanisms=False, only=None
+    root: Path,
+    run_id: str,
+    report_db: Path | None = None,
+    mechanisms=False,
+    only=None,
+    expect_accept=False,
 ):
     if not re.fullmatch(r"[a-zA-Z0-9_-]+", run_id):
         raise ValueError("invalid run ID")
@@ -61,7 +66,7 @@ async def run(
             store.close()
             raise ValueError("source run has no publication")
         target_report = store.get(row[0], json.loads(row[1])["report"])
-        cases = [{"id": row[0], "accept": False}]
+        cases = [{"id": row[0], "accept": expect_accept}]
 
     if only:
         cases = [c for c in cases if c["id"] in only]
@@ -161,6 +166,11 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run-id", required=True)
     parser.add_argument(
+        "--expect-accept",
+        action="store_true",
+        help="Expected label for a copied positive report; never sent to the model",
+    )
+    parser.add_argument(
         "--only",
         nargs="+",
         help="Exact case IDs to repeat without rerunning the full suite",
@@ -183,5 +193,6 @@ if __name__ == "__main__":
             args.report_db,
             args.mechanisms,
             args.only,
+            args.expect_accept,
         )
     )

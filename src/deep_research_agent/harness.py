@@ -1,4 +1,4 @@
-"""One resumable Agent loop shared by planner, researcher and reviewer."""
+"""One resumable Agent loop shared by all research responsibilities."""
 
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ from .domain import (
     identity,
 )
 from .prompts import ROLES, TOOLS
-from .review import checked, units
+from .review import checked, text_metrics, units
 from .scheduling import Scheduler
 from .storage import Store
 from .workspace import Workspace
@@ -86,6 +86,7 @@ BUILTINS = {
         ),
     ),
     "calculate": ("all", object_schema({"expression": STRING})),
+    "measure_text": ("writer", object_schema({"text": STRING})),
     "wait_for_work": ("lead", object_schema({"refs": STRINGS})),
     "pin_evidence": ("all", object_schema({"refs": STRINGS})),
     "delegate_work": (
@@ -153,12 +154,12 @@ BUILTINS = {
     "save_note": ("lead", object_schema({"text": STRING, "refs": STRINGS})),
     "draft_report": (
         "writer",
-        object_schema(
-            {
-                "text": STRING,
-                "evidence": STRINGS,
-            }
-        ),
+        {
+            **object_schema(
+                {"text": STRING, "evidence": STRINGS, "handoff": {"type": "string"}}
+            ),
+            "required": ["text", "evidence"],
+        },
     ),
     "read_report": (
         "reviewer",
@@ -242,10 +243,10 @@ def validate(value: Any, schema: dict[str, Any]) -> None:
         if not isinstance(value, dict):
             raise ValueError("expected object")
         props = schema["properties"]
-        if set(value) != set(props):
+        if not set(schema.get("required", ())).issubset(value) or set(value) - set(props):
             raise ValueError("unexpected or missing fields")
-        for key, subschema in props.items():
-            validate(value[key], subschema)
+        for key in value:
+            validate(value[key], props[key])
     elif kind == "array":
         if not isinstance(value, list):
             raise ValueError("expected array")
@@ -422,6 +423,11 @@ class Harness:
             x for x in self.store.list(study, "observation") if work.ref in x.parents
         ]
         candidates.extend(self._steps(study, "note", work.ref))
+        candidates.extend(
+            self.store.get(study, ref)
+            for ref in work.body["inputs"]
+            if self.store.get(study, ref).kind in {"work_result", "plan"}
+        )
         memories = self._steps(study, "memory", work.ref)
         request = assemble(
             mandatory,
@@ -967,6 +973,8 @@ class Harness:
                 {"ref": item.ref, "producer": work.ref},
                 (work.ref, item.ref),
             )
+        elif call.name == "measure_text":
+            return text_metrics(args["text"])
         elif call.name == "draft_report":
             for ref in args["evidence"]:
                 if self.store.get(study, ref).kind != "source":
@@ -974,13 +982,21 @@ class Harness:
             item = self.store.put(
                 study,
                 "report",
-                {**args, "producer": work.ref},
+                {
+                    "text": args["text"],
+                    "evidence": args["evidence"],
+                    "producer": work.ref,
+                },
                 (*parents, *work.body["inputs"], *args["evidence"]),
             )
             self.store.put(
                 study,
                 "work_result",
-                {"ref": item.ref, "producer": work.ref},
+                {
+                    "ref": item.ref,
+                    "producer": work.ref,
+                    "handoff": args.get("handoff", ""),
+                },
                 (work.ref, item.ref),
             )
         elif call.name == "read_report":
@@ -993,6 +1009,14 @@ class Harness:
                 "units": parts[offset : offset + limit],
                 "evidence": report.body["evidence"],
                 "total": len(parts),
+                "text_metrics": text_metrics(report.body["text"]),
+                "displayed_units_metrics": text_metrics(
+                    "\n\n".join(p["text"] for p in parts[offset : offset + limit])
+                ),
+                "unit_metrics": {
+                    str(p["unit"]): text_metrics(p["text"])
+                    for p in parts[offset : offset + limit]
+                },
                 "next_offset": offset + limit if offset + limit < len(parts) else None,
             }
         elif call.name == "record_review":

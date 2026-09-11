@@ -7,6 +7,7 @@ import asyncio
 import json
 import re
 import sys
+from collections import Counter, defaultdict
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -49,18 +50,36 @@ def export(store, study, folder, errors, running=False):
     if publications:
         report = store.get(study, publications[-1].body["report"])
         (folder / "report.md").write_text(report.body["text"], encoding="utf-8")
-    usage = sum(
-        json.loads(r[0]).get("data", {}).get("usage", {}).get("total_tokens", 0)
-        for r in store.db.execute(
-            "SELECT result FROM operations WHERE status='succeeded'"
-        )
-    )
+    usage_by_role = defaultdict(Counter)
+    for work, raw in store.db.execute(
+        "SELECT work,result FROM operations WHERE study=? AND status='succeeded'",
+        (study,),
+    ):
+        usage = json.loads(raw).get("data", {}).get("usage", {})
+        if not usage:
+            continue
+        totals = usage_by_role[store.get(study, work).body["role"]]
+        totals["calls"] += 1
+        for key in (
+            "total_tokens",
+            "prompt_tokens",
+            "completion_tokens",
+            "prompt_cache_hit_tokens",
+            "prompt_cache_miss_tokens",
+        ):
+            if key in usage:
+                totals[key] += usage[key]
+        if "reasoning_tokens" in usage.get("completion_tokens_details", {}):
+            totals["reasoning_tokens"] += usage["completion_tokens_details"][
+                "reasoning_tokens"
+            ]
     result = {
         "running": running,
         "published": bool(publications),
         "unknown": len(store.unsettled(study)),
         "steps": len(store.list(study, "step")),
-        "tokens": usage,
+        "tokens": sum(u["total_tokens"] for u in usage_by_role.values()),
+        "usage_by_role": usage_by_role,
         "errors": errors,
         "semantic_acceptance": "pending_primary_review",
     }
