@@ -92,7 +92,11 @@ class WorkflowTests(unittest.IsolatedAsyncioTestCase):
     async def test_actual_local_material_reaches_report_through_tools(self):
         await self._mainline(False)
 
-    async def _mainline(self, reject_once):
+    async def test_complete_investigation_can_go_directly_to_writer_and_revise(self):
+        await self._mainline(True, direct=True)
+
+    async def _mainline(self, reject_once, direct=False):
+        answer_role = "investigator" if direct else "synthesizer"
         corpus = Path(self.tmp.name) / "corpus"
         corpus.mkdir()
         (corpus / "evidence.txt").write_text(
@@ -112,7 +116,21 @@ class WorkflowTests(unittest.IsolatedAsyncioTestCase):
                 role = request["role"]
                 if "propose_plan" in request["tools"]:
                     calls = [
-                        Call("propose_plan", {"text": "Read and check user evidence"})
+                        Call(
+                            "propose_plan",
+                            {
+                                "text": "Read and check user evidence",
+                                "brief": {
+                                    "subject": "User evidence",
+                                    "given_context": ["User supplied evidence"],
+                                    "questions": ["What does the evidence establish?"],
+                                    "material_scope": {
+                                        "mode": "case_materials",
+                                        "basis": "User supplied case",
+                                    },
+                                },
+                            },
+                        )
                     ]
                 elif role == "lead":
                     children = request["delegated_work"]
@@ -155,7 +173,7 @@ class WorkflowTests(unittest.IsolatedAsyncioTestCase):
                             next_role, refs, task = (
                                 "writer",
                                 [
-                                    child_results["synthesizer"]["work_result"],
+                                    child_results[answer_role]["work_result"],
                                     report,
                                     review.ref,
                                 ],
@@ -173,7 +191,7 @@ class WorkflowTests(unittest.IsolatedAsyncioTestCase):
                             )
                         elif "investigator" in child_results:
                             next_role, refs = (
-                                "synthesizer",
+                                "writer" if direct else "synthesizer",
                                 [child_results["investigator"]["work_result"]],
                             )
                         calls = [
@@ -243,6 +261,9 @@ class WorkflowTests(unittest.IsolatedAsyncioTestCase):
                         )
                     ]
                 elif role == "writer":
+                    answer = store.get("s", request["inputs"][0]["ref"])
+                    self.assertIn("17", answer.body["text"])
+                    self.assertIn("sample", answer.body["text"])
                     calls = [
                         Call(
                             "draft_report",
@@ -286,7 +307,7 @@ class WorkflowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(1, len(store.list("s", "source")))
         roles = [w.body["role"] for w in store.list("s", "work")]
         self.assertEqual(1, roles.count("investigator"))
-        self.assertEqual(1, roles.count("synthesizer"))
+        self.assertEqual(0 if direct else 1, roles.count("synthesizer"))
         self.assertEqual(2 if reject_once else 1, roles.count("writer"))
         note = store.list("s", "note")[0]
         self.assertEqual("limited sample", note.body["limits"])

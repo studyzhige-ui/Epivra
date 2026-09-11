@@ -289,7 +289,12 @@ def online_service(
     model_name = model_name or policy.get("model", DEFAULT_MODEL)
     harness = Harness(
         store,
-        DeepSeek(model_api, model=model_name, stream=policy.get("stream_model", False)),
+        DeepSeek(
+            model_api,
+            model=model_name,
+            stream=policy.get("stream_model", False),
+            reasoning_effort=policy.get("reasoning_effort", "high"),
+        ),
         tools,
         scheduler=scheduler,
     )

@@ -197,18 +197,24 @@ class DeepSeek:
         model: str = DEFAULT_MODEL,
         thinking: bool = True,
         max_tokens: int | None = None,
-        window_chars: int = 120000,
+        context_tokens: int = 1000000,
         stream: bool = False,
+        reasoning_effort: str = "high",
     ):
         self.api, self.model = api, model
         self.thinking = thinking
+        if reasoning_effort not in {"low", "high", "max"}:
+            raise ValueError("DeepSeek reasoning effort must be low, high or max")
+        self.reasoning_effort = reasoning_effort
         self.max_tokens = (
             max_tokens if max_tokens is not None else (65536 if thinking else 8192)
         )
         # DeepSeek Chat Completions contract, checked 2026-09-11; see ENGINEERING_REVIEW.md.
         if type(self.max_tokens) is not int or not 1 <= self.max_tokens <= 393216:
             raise ValueError("DeepSeek max_tokens must be an integer in 1..393216")
-        self.window_chars = window_chars
+        if type(context_tokens) is not int or context_tokens <= self.max_tokens:
+            raise ValueError("context tokens must exceed the output allowance")
+        self.context_tokens = context_tokens
         self.stream = stream
         self.identity = identity(
             "deepseek-chat-v1",
@@ -216,7 +222,8 @@ class DeepSeek:
             model,
             thinking,
             self.max_tokens,
-            window_chars,
+            context_tokens,
+            reasoning_effort,
         )
         if stream:
             self.identity = identity(self.identity, "sse-v1")
@@ -342,18 +349,49 @@ class DeepSeek:
             "messages": messages,
             "tools": tools,
             "thinking": {"type": "enabled" if self.thinking else "disabled"},
+            "reasoning_effort": self.reasoning_effort,
             "max_tokens": self.max_tokens,
             "stream": self.stream,
         }
-        if len(encode(payload)) > self.window_chars:
+        estimated = self._input_tokens(payload, previous if mode == "continued" else None)
+        if estimated + self.max_tokens > self.context_tokens:
             payload["messages"] = [
                 {"role": "system", "content": context["system"]},
                 {"role": "user", "content": encode(state)},
             ]
             mode = "rebuilt"
-        if len(encode(payload)) > self.window_chars:
+            estimated = self._input_tokens(payload, None)
+        if estimated + self.max_tokens > self.context_tokens:
             raise ValueError("essential context exceeds provider window")
-        return {"payload": payload, "window_mode": mode}
+        return {
+            "payload": payload,
+            "window_mode": mode,
+            "estimated_input_tokens": estimated,
+        }
+
+    @staticmethod
+    def _input_tokens(payload: dict, previous: dict | None) -> int:
+        # Reuse billed prompt usage for an unchanged prefix. Only the new tail
+        # needs a byte estimate; this includes private continuation without
+        # inspecting or summarizing it. JSON framing is counted conservatively.
+        if previous:
+            prior = previous["request"]
+            messages = prior["messages"]
+            usage = previous["response"].get("data", {}).get("usage", {}) or {}
+            count = usage.get("prompt_tokens")
+            if (
+                type(count) is int
+                and count > 0
+                and payload["messages"][: len(messages)] == messages
+                and payload["tools"] == prior.get("tools")
+                and payload["model"] == prior.get("model")
+            ):
+                return count + len(
+                    encode(payload["messages"][len(messages) :]).encode("utf-8")
+                )
+        return len(
+            encode({k: payload[k] for k in ("messages", "tools")}).encode("utf-8")
+        )
 
     async def complete(self, request: dict[str, Any]) -> dict[str, Any]:
         payload = request["wire"]["payload"]

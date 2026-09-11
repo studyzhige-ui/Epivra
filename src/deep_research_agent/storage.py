@@ -349,11 +349,13 @@ class Store:
                 if parent.body["direction"] != current.direction:
                     raise Conflict("delegating work belongs to a superseded direction")
             if role in {"synthesizer", "writer"}:
-                expected_role = (
-                    "investigator" if role == "synthesizer" else "synthesizer"
+                expected_roles = (
+                    {"investigator"}
+                    if role == "synthesizer"
+                    else {"investigator", "synthesizer"}
                 )
                 results = [self.get(study, ref) for ref in inputs]
-                valid = False
+                valid = set()
                 for result in results:
                     if result.kind != "work_result" or not result.body.get("producer"):
                         continue
@@ -361,13 +363,13 @@ class Store:
                     if (
                         producer.kind == "work"
                         and producer.ref in result.parents
-                        and producer.body["role"] == expected_role
+                        and producer.body["role"] in expected_roles
                         and producer.body["direction"] == current.direction
                     ):
-                        valid = True
-                if not valid:
+                        valid.add(result.ref)
+                if not valid or (role == "writer" and len(valid) != 1):
                     raise NotAllowed(
-                        f"{role} requires a current {expected_role} result"
+                        f"{role} requires {'one answer' if role == 'writer' else 'an investigation'} result from current research"
                     )
             if role == "reviewer":
                 reports = [

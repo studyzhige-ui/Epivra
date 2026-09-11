@@ -150,7 +150,37 @@ BUILTINS = {
             }
         ),
     ),
-    "propose_plan": ("lead", object_schema({"text": STRING})),
+    "propose_plan": (
+        "lead",
+        object_schema(
+            {
+                "text": STRING,
+                "brief": object_schema(
+                    {
+                        "subject": {
+                            **STRING,
+                            "description": "用户指定的研究对象或主题；与关于它的待检验经验主张分开。",
+                        },
+                        "given_context": STRINGS,
+                        "questions": {**STRINGS, "minItems": 1},
+                        "material_scope": object_schema(
+                            {
+                                "mode": {
+                                    **STRING,
+                                    "enum": [
+                                        "case_materials",
+                                        "library",
+                                        "unspecified",
+                                    ],
+                                },
+                                "basis": STRING,
+                            }
+                        ),
+                    }
+                ),
+            }
+        ),
+    ),
     "save_note": ("lead", object_schema({"text": STRING, "refs": STRINGS})),
     "draft_report": (
         "writer",
@@ -243,13 +273,17 @@ def validate(value: Any, schema: dict[str, Any]) -> None:
         if not isinstance(value, dict):
             raise ValueError("expected object")
         props = schema["properties"]
-        if not set(schema.get("required", ())).issubset(value) or set(value) - set(props):
+        if not set(schema.get("required", ())).issubset(value) or set(value) - set(
+            props
+        ):
             raise ValueError("unexpected or missing fields")
         for key in value:
             validate(value[key], props[key])
     elif kind == "array":
         if not isinstance(value, list):
             raise ValueError("expected array")
+        if len(value) < schema.get("minItems", 0):
+            raise ValueError("too few items")
         for item in value:
             validate(item, schema["items"])
     elif kind == "string":
@@ -378,6 +412,9 @@ class Harness:
             "task": work.body["task"],
             "direction": direction.body,
             "research_scope": {
+                "brief": plan.body.get("brief")
+                if plan is not None and direction.ref in plan.parents
+                else None,
                 "approved_plan": None
                 if plan is None
                 else {

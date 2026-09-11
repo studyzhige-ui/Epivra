@@ -8,14 +8,69 @@ import json
 import re
 import sqlite3
 import sys
+from contextlib import closing
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from deep_research_agent.adapters import DeepSeek, JsonAPI, credentials
+from deep_research_agent.adapters import DEFAULT_MODEL, DeepSeek, JsonAPI, credentials
+from deep_research_agent.domain import identity
 from deep_research_agent.harness import Harness
 from deep_research_agent.storage import Store
 from evals.review_cases import CASES
+
+
+def source_snapshot(database: Path) -> dict:
+    """Fingerprint immutable records without exporting private execution bodies."""
+    with closing(
+        sqlite3.connect(f"{database.resolve().as_uri()}?mode=ro", uri=True)
+    ) as db:
+        db.execute("BEGIN")
+        publication = db.execute(
+            "SELECT study,body FROM artifacts WHERE kind='publication' ORDER BY seq DESC LIMIT 1"
+        ).fetchone()
+        if publication is None:
+            raise ValueError("source run has no publication")
+        return {
+            "study": publication[0],
+            "report": json.loads(publication[1])["report"],
+            "records": identity(
+                [r[0] for r in db.execute("SELECT ref FROM artifacts ORDER BY seq")]
+            ),
+        }
+
+
+def bind_run(root: Path, folder: Path, cases: list, effort: str, source=None) -> dict:
+    """Reject config drift before opening providers or mutating a prior run."""
+    if effort not in {"low", "high", "max"}:
+        raise ValueError("invalid reasoning effort")
+    implementation = identity(
+        [
+            [str(p.relative_to(root)), p.read_text(encoding="utf-8")]
+            for p in sorted((root / "src/deep_research_agent").glob("*.py"))
+        ],
+        Path(__file__).read_text(encoding="utf-8"),
+    )
+    config = {
+        "model": DEFAULT_MODEL,
+        "effort": effort,
+        "implementation": implementation,
+        "cases": cases,
+        "source": source,
+    }
+    manifest = {"binding": identity(config), **config}
+    path = folder / "fixture.json"
+    if path.exists():
+        if json.loads(path.read_text(encoding="utf-8")) != manifest:
+            raise ValueError("review inputs or configuration changed; use a new run ID")
+    elif folder.exists() and any(folder.iterdir()):
+        raise ValueError("unbound review run is audit-only; use a new run ID")
+    else:
+        folder.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+    return manifest
 
 
 async def run(
@@ -25,19 +80,12 @@ async def run(
     mechanisms=False,
     only=None,
     expect_accept=False,
+    effort="high",
 ):
     if not re.fullmatch(r"[a-zA-Z0-9_-]+", run_id):
         raise ValueError("invalid run ID")
     folder = root / ".deep-research-agent" / f"review-{run_id}"
     database = folder / "research.db"
-    if report_db and not database.exists():
-        folder.mkdir(parents=True, exist_ok=True)
-        with sqlite3.connect(
-            f"{report_db.resolve().as_uri()}?mode=ro", uri=True
-        ) as source:
-            with sqlite3.connect(database) as destination:
-                source.backup(destination)
-    store = Store(database)
     cases = CASES
     if mechanisms:
         if report_db:
@@ -58,27 +106,41 @@ async def run(
             for variant in ("positive", "negative")
         ]
     target_report = None
+    snapshot = None
     if report_db:
-        row = store.db.execute(
-            "SELECT study,body FROM artifacts WHERE kind='publication' ORDER BY seq DESC LIMIT 1"
-        ).fetchone()
-        if row is None:
-            store.close()
-            raise ValueError("source run has no publication")
-        target_report = store.get(row[0], json.loads(row[1])["report"])
-        cases = [{"id": row[0], "accept": expect_accept}]
+        snapshot = {"path": str(report_db.resolve()), **source_snapshot(report_db)}
+        cases = [{"id": snapshot["study"], "accept": expect_accept}]
 
     if only:
         cases = [c for c in cases if c["id"] in only]
         if {c["id"] for c in cases} != set(only):
-            store.close()
             raise ValueError("unknown case selection")
-    api = JsonAPI(
-        "https://api.deepseek.com", credentials(root / ".env")["DEEPSEEK_API_KEY"]
-    )
-    harness = Harness(store, DeepSeek(api, stream=True))
+    manifest = bind_run(root, folder, cases, effort, snapshot)
+    if report_db and not database.exists():
+        try:
+            with closing(
+                sqlite3.connect(f"{report_db.resolve().as_uri()}?mode=ro", uri=True)
+            ) as source:
+                with closing(sqlite3.connect(database)) as destination:
+                    source.backup(destination)
+            if source_snapshot(database) != {
+                k: v for k, v in snapshot.items() if k != "path"
+            }:
+                raise ValueError("source changed while copying; use a new run ID")
+        except BaseException:
+            # A partial/unverified seed must never be resumed as the bound input.
+            (folder / "fixture.json").unlink()
+            raise
+    store = Store(database)
+    api = None
     results = []
     try:
+        if snapshot:
+            target_report = store.get(snapshot["study"], snapshot["report"])
+        api = JsonAPI(
+            "https://api.deepseek.com", credentials(root / ".env")["DEEPSEEK_API_KEY"]
+        )
+        harness = Harness(store, DeepSeek(api, stream=True, reasoning_effort=effort))
         for case in cases:
             study = case["id"]
             try:
@@ -143,6 +205,10 @@ async def run(
                     "error": error,
                     "review": reviews[-1].body if reviews else None,
                     "manual_reason_check": "required",
+                    "run_binding": manifest["binding"],
+                    "model": manifest["model"],
+                    "effort": manifest["effort"],
+                    "implementation": manifest["implementation"],
                 }
             )
             (folder / "result.json").write_text(
@@ -158,13 +224,15 @@ async def run(
             flush=True,
         )
     finally:
-        await api.close()
+        if api is not None:
+            await api.close()
         store.close()
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run-id", required=True)
+    parser.add_argument("--effort", choices=("low", "high", "max"), default="high")
     parser.add_argument(
         "--expect-accept",
         action="store_true",
@@ -194,5 +262,6 @@ if __name__ == "__main__":
             args.mechanisms,
             args.only,
             args.expect_accept,
+            args.effort,
         )
     )

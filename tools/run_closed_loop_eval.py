@@ -89,7 +89,7 @@ def export(store, study, folder, errors, running=False):
     return result
 
 
-async def run(root, case_id, run_id, assess_only=False):
+async def run(root, case_id, run_id, assess_only=False, plan_only=False):
     if not re.fullmatch(r"[a-zA-Z0-9_-]+", run_id):
         raise ValueError("invalid run ID")
     cases = json.loads(
@@ -176,6 +176,8 @@ async def run(root, case_id, run_id, assess_only=False):
                 plans = store.list(case_id, "plan")
                 if not plans:
                     break
+                if plan_only:
+                    break
                 store.command(
                     case_id,
                     "fixture-approval",
@@ -196,6 +198,11 @@ async def run(root, case_id, run_id, assess_only=False):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
+        "--plan-only",
+        action="store_true",
+        help="Stop before fixture approval to inspect the research brief",
+    )
+    parser.add_argument(
         "--case",
         choices=["decision", "archive", "measurement", "training"],
         required=True,
@@ -209,5 +216,6 @@ if __name__ == "__main__":
             args.case,
             args.run_id,
             args.assess_only,
+            args.plan_only,
         )
     )

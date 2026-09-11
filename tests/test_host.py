@@ -45,7 +45,26 @@ class HostTests(unittest.IsolatedAsyncioTestCase):
 
                 async def complete(self, request):
                     return Reply(
-                        "", (Call("propose_plan", {"text": "Plan"}),)
+                        "",
+                        (
+                            Call(
+                                "propose_plan",
+                                {
+                                    "text": "Plan",
+                                    "brief": {
+                                        "subject": "User evidence",
+                                        "given_context": ["User supplied evidence"],
+                                        "questions": [
+                                            "What does the evidence establish?"
+                                        ],
+                                        "material_scope": {
+                                            "mode": "case_materials",
+                                            "basis": "User supplied case",
+                                        },
+                                    },
+                                },
+                            ),
+                        ),
                     ).to_json()
 
             def factory(store, study):
@@ -200,7 +219,26 @@ class HostTests(unittest.IsolatedAsyncioTestCase):
                     entered.set()
                     await release.wait()
                     return Reply(
-                        "", (Call("propose_plan", {"text": "Plan"}),)
+                        "",
+                        (
+                            Call(
+                                "propose_plan",
+                                {
+                                    "text": "Plan",
+                                    "brief": {
+                                        "subject": "User evidence",
+                                        "given_context": ["User supplied evidence"],
+                                        "questions": [
+                                            "What does the evidence establish?"
+                                        ],
+                                        "material_scope": {
+                                            "mode": "case_materials",
+                                            "basis": "User supplied case",
+                                        },
+                                    },
+                                },
+                            ),
+                        ),
                     ).to_json()
 
             model = Model()

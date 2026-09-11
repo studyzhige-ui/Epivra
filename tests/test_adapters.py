@@ -42,6 +42,46 @@ def response(finish="tool_calls", arguments='{"value":"ok"}'):
 
 
 class AdapterTests(unittest.IsolatedAsyncioTestCase):
+    async def test_long_reasoning_does_not_reset_a_small_research_task(self):
+        first = self.model.prepare(self.context, None)
+        raw = response()
+        raw["data"]["choices"][0]["message"]["reasoning_content"] = "分析" * 50000
+        raw["data"]["usage"]["prompt_tokens"] = 3000
+        wire = self.model.prepare(
+            self.context,
+            {
+                "request": first["payload"],
+                "response": raw,
+                "observations": [{"index": 0, "result": "read", "_ref": "obs"}],
+            },
+        )
+        self.assertEqual("continued", wire["window_mode"])
+        self.assertGreater(wire["estimated_input_tokens"], 300000)
+        self.assertEqual(
+            raw["data"]["choices"][0]["message"]["reasoning_content"],
+            wire["payload"]["messages"][2]["reasoning_content"],
+        )
+
+    async def test_capacity_estimate_uses_actual_prefix_usage_and_reserves_output(self):
+        payload = {
+            "model": "deepseek-flash",
+            "tools": [],
+            "messages": [{"role": "user", "content": "材料" * 100000}],
+        }
+        previous = {
+            "request": payload,
+            "response": {"data": {"usage": {"prompt_tokens": 120000}}},
+        }
+        self.assertEqual(120002, self.model._input_tokens(payload, previous))
+        changed = {**payload, "tools": [{"name": "changed"}]}
+        self.assertGreater(self.model._input_tokens(changed, previous), 600000)
+        for value in (True, 0, 65536, 2.5):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                DeepSeek(self.api, context_tokens=value)
+        model = DeepSeek(self.api, context_tokens=65537)
+        with self.assertRaisesRegex(ValueError, "essential context"):
+            model.prepare(self.context, None)
+
     async def test_provider_contract_defaults_on_the_wire(self):
         requests = []
 
@@ -81,6 +121,10 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_thinking_output_budget_is_not_non_thinking_default(self):
         self.assertEqual(
+            "high",
+            self.model.prepare(self.context, None)["payload"]["reasoning_effort"],
+        )
+        self.assertEqual(
             65536, self.model.prepare(self.context, None)["payload"]["max_tokens"]
         )
         plain = DeepSeek(self.api, thinking=False)
@@ -92,6 +136,17 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
             16384, explicit.prepare(self.context, None)["payload"]["max_tokens"]
         )
         self.assertNotEqual(self.model.identity, explicit.identity)
+
+    async def test_reasoning_effort_is_explicit_and_bound(self):
+        for effort in ("low", "high", "max"):
+            model = DeepSeek(self.api, reasoning_effort=effort)
+            self.assertEqual(
+                effort, model.prepare(self.context, None)["payload"]["reasoning_effort"]
+            )
+            if effort != "high":
+                self.assertNotEqual(self.model.identity, model.identity)
+        with self.assertRaises(ValueError):
+            DeepSeek(self.api, reasoning_effort="made-up")
 
     async def test_continuation_sends_only_new_observations_but_rebuild_restores_state(
         self,
@@ -142,7 +197,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         update = json.loads(changed["payload"]["messages"][-1]["content"])
         self.assertEqual("New direction", update["task"])
         self.assertEqual({"text": "Keep uncertainty"}, update["memory"])
-        self.model.window_chars = 2000
+        self.model.context_tokens = self.model.max_tokens + 2000
         previous["request"]["messages"][0]["content"] = "x" * 10000
         rebuilt = self.model.prepare(latest, previous)
         self.assertEqual("rebuilt", rebuilt["window_mode"])
@@ -325,7 +380,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
             )
 
     async def test_oversized_window_is_rebuilt_at_complete_tool_boundary(self):
-        self.model.window_chars = 2000
+        self.model.context_tokens = self.model.max_tokens + 2000
         old = self.model.prepare(self.context, None)["payload"]
         old["messages"][1]["content"] = "x" * 10000
         wire = self.model.prepare(

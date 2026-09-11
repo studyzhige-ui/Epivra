@@ -428,7 +428,30 @@ class HarnessTests(Fixture, unittest.IsolatedAsyncioTestCase):
         self.assertIn("error", self.store.list("s", "observation")[0].body["result"])
 
     async def test_concurrent_step_does_not_duplicate_model_call(self):
-        model = FakeModel([Reply("", (Call("propose_plan", {"text": "Plan"}),))])
+        model = FakeModel(
+            [
+                Reply(
+                    "",
+                    (
+                        Call(
+                            "propose_plan",
+                            {
+                                "text": "Plan",
+                                "brief": {
+                                    "subject": "User evidence",
+                                    "given_context": ["User supplied evidence"],
+                                    "questions": ["What does the evidence establish?"],
+                                    "material_scope": {
+                                        "mode": "case_materials",
+                                        "basis": "User supplied case",
+                                    },
+                                },
+                            },
+                        ),
+                    ),
+                )
+            ]
+        )
         other = self.store.create("planning", "Question", {})
         planner = self.store.work("planning", other.ref, "lead", "Plan")
         h = Harness(self.store, model)

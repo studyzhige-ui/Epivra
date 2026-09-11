@@ -16,7 +16,15 @@ class MainlineTests(unittest.IsolatedAsyncioTestCase):
         self.folder = tempfile.TemporaryDirectory()
         self.store = Store(Path(self.folder.name) / "research.db")
         c = self.store.create("s", "Question", {})
-        p = self.store.put("s", "plan", {"text": "Plan"}, (c.direction,))
+        self.brief = {
+            "subject": "User evidence",
+            "given_context": ["Case materials supplied by user"],
+            "questions": ["Does the evidence support the premise?"],
+            "material_scope": {"mode": "case_materials", "basis": "User task"},
+        }
+        p = self.store.put(
+            "s", "plan", {"text": "Plan", "brief": self.brief}, (c.direction,)
+        )
         self.c = self.store.command("s", "approve", c.ref, "approve", {"plan": p.ref})
         self.lead = self.store.work("s", self.c.ref, "lead", "Lead", (p.ref,))
 
@@ -57,9 +65,40 @@ class MainlineTests(unittest.IsolatedAsyncioTestCase):
         other = self.child("investigator", "C")
         await self.execute(other, Call("finish_work", {"text": "C", "refs": [syn.ref]}))
         forged = h._steps("s", "work_result", other.ref)[0]
+        self.assertEqual(other.ref, forged.body["producer"])
+        self.assertEqual([], h._steps("s", "work_result", syn.ref))
         with self.assertRaises(NotAllowed):
-            self.child("writer", "Bypass", (forged.ref,))
+            self.child("writer", "Uncombined answers", (result.ref, forged.ref))
         self.assertFalse(h.finished("s", syn.ref))
+
+    async def test_brief_is_shared_but_superseded_on_steer(self):
+        inv = self.child("investigator", "Subquestion")
+        h = await self.execute(
+            inv, Call("save_memory", {"text": "Progress", "refs": []})
+        )
+        for work in (inv, self.lead):
+            self.assertEqual(
+                self.brief, h._request("s", work)["research_scope"]["brief"]
+            )
+        c = self.store.command(
+            "s", "new-question", self.c.ref, "steer", {"request": "Changed subject"}
+        )
+        new = self.store.work("s", c.ref, "lead", "New question")
+        scope = h._request("s", new)["research_scope"]
+        self.assertIsNone(scope["brief"])
+        self.assertFalse(scope["approved_plan"]["current_direction"])
+
+    def test_plan_requires_subject_questions_and_material_scope(self):
+        schema = BUILTINS["propose_plan"][1]
+        validate({"text": "Method", "brief": self.brief}, schema)
+        for brief in (
+            {**self.brief, "questions": []},
+            {**self.brief, "material_scope": {"mode": "all-related", "basis": "guess"}},
+        ):
+            with self.assertRaises(ValueError):
+                validate({"text": "Method", "brief": brief}, schema)
+        with self.assertRaises(ValueError):
+            validate({"text": "Method"}, schema)
 
     async def test_report_handoff_is_not_manuscript(self):
         inv = self.child("investigator", "Investigate")
