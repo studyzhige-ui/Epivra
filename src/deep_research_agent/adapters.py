@@ -11,7 +11,7 @@ import httpx
 
 from .domain import encode, identity
 
-DEFAULT_MODEL = "deepseek-v4-flash"
+DEFAULT_MODEL = "deepseek-flash"
 
 
 class ProviderFailure(RuntimeError):

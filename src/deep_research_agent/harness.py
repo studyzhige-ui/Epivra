@@ -139,7 +139,10 @@ BUILTINS = {
         "reviewer",
         object_schema({"offset": {"type": "integer"}, "limit": {"type": "integer"}}),
     ),
-    "submit_review": ("reviewer", object_schema({"reason": STRING})),
+    "submit_review": (
+        "reviewer",
+        object_schema({"reason": STRING, "defects": STRINGS}),
+    ),
     "record_review": (
         "reviewer",
         object_schema(
@@ -267,7 +270,7 @@ class Harness:
             if allowed in (role, "all")
             or (role == "planner" and name == "discover_local")
             or (
-                role == "investigator"
+                role in {"investigator", "reviewer"}
                 and name in {"save_note", "discover_local", "snapshot_local"}
             )
         }
@@ -297,6 +300,8 @@ class Harness:
 
     def _request(self, study: str, work: Artifact) -> dict[str, Any]:
         direction = self.store.get(study, work.body["direction"])
+        control = self.store.control(study)
+        plan = self.store.get(study, control.plan) if control.plan else None
         anchors = self._steps(study, "evidence_anchor", work.ref)
         catalogs = {}
         for item in self.store.list(study, "catalog"):
@@ -311,6 +316,16 @@ class Harness:
             "system": ROLES[work.body["role"]],
             "task": work.body["task"],
             "direction": direction.body,
+            "research_scope": {
+                "approved_plan": None
+                if plan is None
+                else {
+                    "ref": plan.ref,
+                    "current_direction": direction.ref in plan.parents,
+                },
+                "available_sources": len(self.store.list(study, "source")),
+                "source_lookup": "find_artifacts(kind='source', query='', after=0)",
+            },
             "inputs": [
                 {"ref": ref, "kind": self.store.get(study, ref).kind}
                 for ref in work.body["inputs"]
@@ -858,7 +873,8 @@ class Harness:
                 {
                     **args,
                     "work": work.ref,
-                    "accepted": not any(c["defects"] for c in checks.values()),
+                    "accepted": not args["defects"]
+                    and not any(c["defects"] for c in checks.values()),
                     "checks": [
                         {**checks[p["unit"]], "claim": p["text"]} for p in parts
                     ],

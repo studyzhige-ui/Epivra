@@ -26,6 +26,104 @@ class Model:
 
 
 class BoundaryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_reviewer_can_retrieve_uncited_authorized_local_material(self):
+        root = Path(self.folder.name) / "review-material"
+        root.mkdir()
+        (root / "counter.txt").write_text("Counterevidence", encoding="utf-8")
+        c = self.store.create("r", "Compare", {"local_roots": [str(root)]})
+        plan = self.store.put(
+            "r", "plan", {"text": "Compare all relevant material"}, (c.direction,)
+        )
+        c = self.store.command("r", "approve", c.ref, "approve", {"plan": plan.ref})
+        owner = self.store.work("r", c.ref, "researcher", "Research")
+        report = self.store.put("r", "report", {"text": "Partial", "evidence": []})
+        reviewer = self.store.work(
+            "r", c.ref, "reviewer", "Check", (report.ref,), owner.ref
+        )
+        model = Model((Call("discover_local", {"root": str(root)}),))
+        harness = Harness(self.store, model)
+        await harness.step("r", reviewer.ref)
+        catalog = self.store.list("r", "catalog")[-1]
+        model.calls = (
+            Call("snapshot_local", {"catalog": catalog.ref, "path": "counter.txt"}),
+        )
+        await harness.step("r", reviewer.ref)
+        self.assertEqual(
+            "Counterevidence", self.store.list("r", "source")[-1].body["text"]
+        )
+        schema = harness._request("r", reviewer)["tools"]
+        self.assertNotIn("publish_report", schema)
+        self.assertNotIn("delegate_research", schema)
+
+    async def test_reviewer_scope_survives_restart_and_marks_old_plan_after_steering(
+        self,
+    ):
+        source = self.store.put("s", "source", {"text": "Uncited counterevidence"})
+        report = self.store.put(
+            "s", "report", {"text": "Partial answer", "evidence": []}
+        )
+        reviewer = self.store.work(
+            "s", self.c.ref, "reviewer", "Review", (report.ref,), self.work.ref
+        )
+        scope = Harness(self.store, Model())._request("s", reviewer)["research_scope"]
+        self.assertEqual(self.c.plan, scope["approved_plan"]["ref"])
+        self.assertTrue(scope["approved_plan"]["current_direction"])
+        self.assertEqual(1, scope["available_sources"])
+        self.assertNotIn(source.ref, report.body["evidence"])
+        c = self.store.command(
+            "s",
+            "new-purpose",
+            self.c.ref,
+            "steer",
+            {"request": "Write an evidence review, not a recommendation"},
+        )
+        work = self.store.work("s", c.ref, "researcher", "Continue")
+        self.store.close()
+        self.store = Store(self.path)
+        request = Harness(self.store, Model())._request("s", work)
+        self.assertFalse(
+            request["research_scope"]["approved_plan"]["current_direction"]
+        )
+        self.assertEqual(c.plan, request["research_scope"]["approved_plan"]["ref"])
+        self.assertIn("evidence review", request["direction"]["request"])
+
+    async def test_correct_paragraphs_cannot_override_whole_report_defects(self):
+        report = self.store.put(
+            "s", "report", {"text": "Accurate but incomplete", "evidence": []}
+        )
+        work = self.store.work(
+            "s", self.c.ref, "reviewer", "Check", (report.ref,), self.work.ref
+        )
+        model = Model(
+            (
+                Call(
+                    "record_review",
+                    {
+                        "checks": [
+                            {
+                                "unit": 0,
+                                "evidence": [],
+                                "assessment": "No false statement",
+                                "defects": [],
+                            }
+                        ]
+                    },
+                ),
+                Call(
+                    "submit_review",
+                    {
+                        "reason": "Requested comparison is absent",
+                        "defects": ["Does not answer the comparative question"],
+                    },
+                ),
+            )
+        )
+        await Harness(self.store, model).step("s", work.ref)
+        review = self.store.list("s", "review")[-1]
+        self.assertFalse(review.body["accepted"])
+        self.assertEqual([], review.body["checks"][0]["defects"])
+        self.assertTrue(review.body["defects"])
+
     async def test_planner_can_discover_authorized_inventory_before_approval(self):
         root = Path(self.folder.name) / "documents"
         root.mkdir()
@@ -79,7 +177,7 @@ class BoundaryTests(unittest.IsolatedAsyncioTestCase):
         model = Model(
             (
                 Call("record_review", {"checks": [check]}),
-                Call("submit_review", {"reason": "Accept"}),
+                Call("submit_review", {"reason": "Accept", "defects": []}),
             )
         )
         harness = Harness(self.store, model)
@@ -109,7 +207,7 @@ class BoundaryTests(unittest.IsolatedAsyncioTestCase):
                     ]
                 },
             ),
-            Call("submit_review", {"reason": "Overall direction fine"}),
+            Call("submit_review", {"reason": "Overall direction fine", "defects": []}),
         )
         await harness.step("s", reviewer.ref)
         review = self.store.list("s", "review")[-1]

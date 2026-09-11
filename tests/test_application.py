@@ -104,7 +104,7 @@ class WorkflowTests(unittest.IsolatedAsyncioTestCase):
                         call.arguments["report"] = report_ref
                 return Reply(
                     "",
-                    (call, Call("submit_review", {"reason": "Checked"}))
+                    (call, Call("submit_review", {"reason": "Checked", "defects": []}))
                     if call.name == "record_review"
                     else (call,),
                 ).to_json()
@@ -174,7 +174,7 @@ class WorkflowTests(unittest.IsolatedAsyncioTestCase):
                     )
                 return Reply(
                     "",
-                    (call, Call("submit_review", {"reason": "Checked"}))
+                    (call, Call("submit_review", {"reason": "Checked", "defects": []}))
                     if call.name == "record_review"
                     else (call,),
                 ).to_json()

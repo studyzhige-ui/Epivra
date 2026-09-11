@@ -164,7 +164,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             "Bearer replacement-fixture-key", self.requests[-1].headers["Authorization"]
         )
-        self.assertEqual("deepseek-v4-flash", wire["payload"]["model"])
+        self.assertEqual("deepseek-flash", wire["payload"]["model"])
         self.assertNotEqual(
             before, DeepSeek(self.api, model="different-model").identity
         )
