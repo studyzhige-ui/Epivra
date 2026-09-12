@@ -20,12 +20,14 @@ from deep_research_agent.storage import Store
 
 def load_case(root: Path, case_id: str) -> dict:
     """Load authorized texts separately from the evaluation-only contract."""
-    if case_id != "service_planning":
+    if not re.fullmatch(r"[a-zA-Z0-9_-]+", case_id):
+        raise ValueError("invalid case ID")
+    scenario = root / "evals/research_scenarios" / case_id
+    if not (scenario / "task.json").is_file():
         cases = json.loads(
             (root / "evals/closed_loop_cases.json").read_text(encoding="utf-8")
         )
         return next(c for c in cases if c["id"] == case_id)
-    scenario = root / "evals/research_scenarios/service_planning"
     config = json.loads((scenario / "task.json").read_text(encoding="utf-8"))
     allowed = (scenario / "corpus").resolve()
     paths = [(scenario / name).resolve() for name in config["materials"]]
@@ -260,7 +262,14 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--case",
-        choices=["decision", "archive", "measurement", "training", "service_planning"],
+        choices=[
+            "decision",
+            "archive",
+            "measurement",
+            "training",
+            "service_planning",
+            "archive_history",
+        ],
         required=True,
     )
     parser.add_argument("--run-id", required=True)

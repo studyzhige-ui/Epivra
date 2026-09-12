@@ -79,15 +79,18 @@ BUILTINS = {
     ),
     "record_evidence": (
         "investigator",
-        object_schema(
-            {
-                "text": STRING,
-                "source": STRING,
-                "offset": {"type": "integer"},
-                "quote": STRING,
-                "limits": {"type": "string"},
-            }
-        ),
+        {
+            **object_schema(
+                {
+                    "text": STRING,
+                    "source": STRING,
+                    "offset": {"type": "integer"},
+                    "quote": STRING,
+                    "limits": {"type": "string"},
+                }
+            ),
+            "required": ["text", "source", "quote", "limits"],
+        },
     ),
     "calculate": ("all", object_schema({"expression": STRING})),
     "measure_text": ("writer", object_schema({"text": STRING})),
@@ -458,13 +461,17 @@ class Harness:
             for ref in self._handoff_inputs(study, work)
             if self.store.get(study, ref).kind
             in {"work_result", "plan", "note", "clarification_answer"}
+            and not (
+                work.body["role"] == "reviewer"
+                and self.store.get(study, ref).kind == "work_result"
+            )
         )
         # Related inputs remain original artifacts, never an intermediate summary.
         if work.body["role"] == "reviewer":
             candidates.extend(
                 self.store.get(study, x["ref"])
                 for x in self._relations(study, report)
-                if x["kind"] in {"work_result", "clarification_answer"}
+                if x["kind"] == "clarification_answer"
             )
         questions = (
             self.store.clarifications(study, owner=work.ref)
@@ -1127,16 +1134,31 @@ class Harness:
             return calculate(args["expression"])
         if call.name == "record_evidence":
             source = self.store.get(study, args["source"])
-            start = args["offset"]
-            if (
-                source.kind != "source"
-                or start < 0
-                or source.body["text"][start : start + len(args["quote"])]
-                != args["quote"]
-            ):
-                raise ValueError("evidence quote does not match source position")
+            if source.kind != "source":
+                raise ValueError("expected source snapshot")
+            text, quote = source.body["text"], args["quote"]
+            if not quote.strip():
+                raise ValueError("evidence requires a nonempty original quote")
+            start = args.get("offset")
+            if start is None or start < 0 or text[start : start + len(quote)] != quote:
+                candidates = []
+                position = text.find(quote)
+                while position != -1 and len(candidates) < 20:
+                    candidates.append(position)
+                    position = text.find(quote, position + 1)
+                if start is None and len(candidates) == 1 and position == -1:
+                    start = candidates[0]
+                else:
+                    return {
+                        "error": "Quote must match an original passage; omit offset for a unique match, or select a candidate offset after checking its context.",
+                        "candidate_offsets": candidates,
+                        "more_candidates": position != -1,
+                    }
             item = self.store.put(
-                study, "note", {**args, "producer": work.ref}, (*parents, source.ref)
+                study,
+                "note",
+                {**args, "offset": start, "producer": work.ref},
+                (*parents, source.ref),
             )
         elif call.name == "save_note":
             item = self.store.put(

@@ -115,15 +115,12 @@ class RoleHandoffTests(unittest.IsolatedAsyncioTestCase):
         request = await self.execute(
             reviewer, "read_report", {"offset": 0, "limit": 20}
         )
-        self.assert_original_bodies(
-            request,
-            old,
-            updated,
-            answer,
-            self.store.get("s", updated.body["producer"]),
-        )
-        relations = {i["ref"] for i in request["review_progress"]["inputs"]}
-        self.assertTrue({updated.ref, answer.ref} <= relations)
+        self.assert_original_bodies(request, answer)
+        for finding in (old, updated):
+            self.assertNotIn(finding.body["text"], str(request["context"]))
+        relations = {i["ref"]: i for i in request["review_progress"]["inputs"]}
+        self.assertTrue({old.ref, updated.ref, answer.ref} <= relations.keys())
+        self.assertEqual(updated.body["producer"], relations[updated.ref]["producer"])
         observation = self.harness._steps("s", "observation", reviewer.ref)[-1]
         result = observation.body["result"]
         self.assertEqual(report.ref, result["report"])
@@ -131,6 +128,21 @@ class RoleHandoffTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(
             {updated.ref, answer.ref} <= {i["ref"] for i in result["inputs"]}
         )
+
+        await self.execute(reviewer, "read_artifact", {"ref": updated.ref})
+        original = self.harness._steps("s", "observation", reviewer.ref)[-1].body[
+            "result"
+        ]
+        self.assertEqual(updated.body, original["body"])
+        producer_ref = original["body"]["producer"]
+        self.assertEqual(updated.body["producer"], producer_ref)
+        self.assertIn(producer_ref, {i["ref"] for i in original["parents"]})
+        await self.execute(reviewer, "read_artifact", {"ref": producer_ref})
+        producer = self.harness._steps("s", "observation", reviewer.ref)[-1].body[
+            "result"
+        ]
+        self.assertEqual(self.store.get("s", producer_ref).body, producer["body"])
+        self.assertEqual("核对登记口径", producer["body"]["task"])
 
     async def test_completed_research_preserves_clarification_dependencies(self):
         for role in ("investigator", "synthesizer"):
@@ -184,3 +196,36 @@ class RoleHandoffTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.source.body["text"], result["text"])
         self.assertEqual(self.source.body["origin"], result["origin"])
         self.assertEqual(self.source.ref, result["ref"])
+
+    async def test_explicit_reviewer_finding_input_is_navigable_without_default_judgment_body(
+        self,
+    ):
+        finding = await self.finding(
+            "原判断：登记人群17人与到会12人应分别报告。", "核对两种口径"
+        )
+        writer = self.child("writer", "Write findings", [finding.ref])
+        writer_request = await self.execute(
+            writer,
+            "draft_report",
+            {"text": "登记17人，其中12人到会。", "evidence": [self.source.ref]},
+        )
+        self.assert_original_bodies(writer_request, finding)
+        report = self.store.list("s", "report")[-1]
+        reviewer = self.child("reviewer", "Review report", [report.ref, finding.ref])
+        request = self.harness._request("s", reviewer)
+        self.assertIn(finding.ref, {i["ref"] for i in request["inputs"]})
+        self.assertNotIn(finding.body["text"], str(request["context"]))
+        relation = next(
+            i for i in request["review_progress"]["inputs"] if i["ref"] == finding.ref
+        )
+        self.assertEqual(finding.body["producer"], relation["producer"])
+        await self.execute(reviewer, "read_artifact", {"ref": finding.ref})
+        observed = self.harness._steps("s", "observation", reviewer.ref)[-1].body[
+            "result"
+        ]
+        self.assertEqual(finding.body, observed["body"])
+        await self.execute(reviewer, "read_artifact", {"ref": finding.body["producer"]})
+        producer = self.harness._steps("s", "observation", reviewer.ref)[-1].body[
+            "result"
+        ]
+        self.assertEqual("核对两种口径", producer["body"]["task"])
