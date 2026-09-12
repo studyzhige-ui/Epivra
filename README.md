@@ -12,3 +12,5 @@
 - [开发与验证](docs/GETTING-STARTED.md)
 
 历史学习、面试和复盘文档描述旧实现，仅作为背景材料；不指导本分支的新架构。开发规则见 [AGENTS.md](AGENTS.md)。
+
+可选 Docker 通用分析已接入现有角色与成果链：数据处理、统计和绘图共用 run_analysis，使用来源引用传入原始文件。部署与恢复边界见[通用分析执行](docs/product-redesign/ANALYSIS_EXECUTION.md)。

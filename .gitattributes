@@ -1,2 +1,4 @@
 * text=auto eol=lf
 
+# Preserve the public dataset snapshot verbatim, including its terminal blank line.
+evals/analysis/iris.csv -text whitespace=-blank-at-eof

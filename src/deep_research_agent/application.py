@@ -181,6 +181,7 @@ class ResearchService:
             "unsettled_operations": self.store.unsettled(study),
             "provider_queue": self.harness.scheduler.snapshot(),
             "usage": summarize(self.store.usage_records(study)),
+            "analyses": [a.body for a in self.store.list(study, "analysis_result")],
             "clarifications": [
                 {
                     "ref": q.ref,

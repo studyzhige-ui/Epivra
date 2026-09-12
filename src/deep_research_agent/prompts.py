@@ -1,6 +1,7 @@
 """Fixed research instructions; dynamic context is owned by the harness."""
 
 TOOLS = {
+    "run_analysis": "在已授权的无网络 Docker 沙箱执行 Python。inputs 为来源 ref 与相对 name，原始文件在 /inputs/data/<name>；保存成果到 /outputs。可用 pandas/numpy/scipy/statsmodels/matplotlib/seaborn/sklearn/openpyxl/pyarrow。purpose 写明本次必要分析；返回 status、日志 source 引用和文件 source 引用，正文用 read_source，代码和输入用 read_artifact(job)。失败/超时不是成功证据；下游直接传计算文件的 source 引用作为新输入，不抄写数据。",
     "measure_text": "代码统计给定文本的Unicode字符数及去空白字符数；按用户要求选取计数范围。不手工数字符，不把统计日志放进成品。",
     "record_evidence": "保存问题相关证据笔记：source引用、原文quote、text陈述与limits限制。通常省略offset，由工具定位唯一精确摘录；有多个匹配时根据返回的candidate_offsets选择并核对上下文，不猜字符位置或为计数反复读取。",
     "request_clarification": "将阻碍本任务的具体疑问交负责人：text说明问题、相关冲突及对交付的影响，refs引用直接成果。暂停当前工作等待答复，不提交成果；保留有效进度。",
@@ -36,7 +37,8 @@ research_scope.brief 保留用户背景、待检验问题和资料范围。按�
 默认复用上游已经完成的工作，不逐项重做调查或审计每个来源。自己的新推导需要相应依据；
 遇到具体冲突、缺失的关键条件或证据引用不足时，定向回查直接来源，不无条件接受矛盾。
 研究笔记保存有复用价值的结论、依据和未解项；不为每份来源额外生成审查，不保存隐藏思维。
-新计算使用 calculate，已有确定性结果直接复用；不把数值正确等同于方法和解释正确。
+简单计算使用 calculate，数据处理和绘图在可用时使用 run_analysis；已有结果直接复用，不把数值正确等同于方法和解释正确。
+分析前确认输入口径、缺失值和方法适用条件；交接保留原资料、计算产物引用、方法与限制。计算输出是派生证据，不冒充独立原始来源。
 每次完成整个小任务后，结合任务核对答案是否充分、证据是否支持、必要条件是否保留、引用是否可接续，
 在当前工作中修正可解决的问题，然后提交。不为自查另增模型调用、固定表单或逐 URL 核查。
 结论与其成立条件一起交接，不能在摘要、比较或建议中把同一条件判断强化成确定事实。

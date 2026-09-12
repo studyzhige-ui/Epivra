@@ -26,14 +26,17 @@ LAYERS = (
                 "materials",
                 "review",
                 "calculation",
+                "analysis",
             }
         ),
     ),
-    ("execution", frozenset({"harness"})),
+    ("execution", frozenset({"harness", "analysis_runtime"})),
     ("application", frozenset({"application", "host"})),
 )
 ALLOWED = {
     "host": {
+        "analysis_runtime",
+        "analysis",
         "web_providers",
         "application",
         "adapters",
@@ -59,8 +62,11 @@ ALLOWED = {
     "context": {"domain"},
     "review": {"domain"},
     "calculation": set(),
-    "workspace": {"domain", "storage", "materials"},
+    "workspace": {"domain", "storage", "materials", "analysis"},
+    "analysis": set(),
+    "analysis_runtime": {"analysis", "domain", "storage", "workspace", "scheduling"},
     "harness": {
+        "analysis_runtime",
         "calculation",
         "domain",
         "prompts",

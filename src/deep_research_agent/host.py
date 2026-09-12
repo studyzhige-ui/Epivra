@@ -12,6 +12,8 @@ import uuid
 from pathlib import Path
 
 from .adapters import credentials
+from .analysis import settings as analysis_settings
+from .analysis_runtime import AnalysisRuntime
 from .application import online_service
 from .model_catalog import OFFICIAL_PROVIDERS
 from .models import freeze_model_settings
@@ -52,6 +54,27 @@ class Host:
         self.clients = {}
         self.token = secrets.token_urlsafe(32)
         self.stopping = asyncio.Event()
+        self.analysis_errors = {}
+
+    async def maintain_analyses(self):
+        while not self.stopping.is_set():
+            for row in self.store.db.execute(
+                "SELECT DISTINCT study FROM artifacts WHERE kind='analysis_job'"
+            ).fetchall():
+                study = row[0]
+                service = self.services.get(study)
+                task = service.tasks.get(study) if service else None
+                if task and not task.done():
+                    continue
+                try:
+                    await AnalysisRuntime(self.store).reconcile(study)
+                    self.analysis_errors.pop(study, None)
+                except (ValueError, OSError, TimeoutError) as exc:
+                    self.analysis_errors[study] = str(exc)
+            try:
+                await asyncio.wait_for(self.stopping.wait(), 5)
+            except TimeoutError:
+                pass
 
     def service(self, study):
         if study not in self.services:
@@ -115,6 +138,14 @@ class Host:
                 },
             }
             policy = freeze_model_settings(policy)
+            if request.get("analysis"):
+                path = self.root / "analysis-settings.json"
+                overrides = (
+                    json.loads(path.read_text(encoding="utf-8"))
+                    if path.exists()
+                    else {}
+                )
+                policy["analysis"] = await analysis_settings(overrides)
             if policy["network"]:
                 keys = credentials(self.root / ".env")
                 available = [
@@ -169,6 +200,12 @@ class Host:
         if action == "usage":
             self.store.control(study)
             return {"calls": self.store.usage_records(study)}
+        if action == "export":
+            raw = Workspace(self.store).original(study, request["source"])
+            target = Path(request["destination"]).expanduser().resolve()
+            with target.open("xb") as stream:
+                stream.write(raw)
+            return {"path": str(target), "bytes": len(raw)}
         if action == "upload":
             control = self.store.control(study)
             service = self.services.get(study)
@@ -247,7 +284,10 @@ class Host:
                     "error": self.failures[study],
                     "unsettled_operations": self.store.unsettled(study),
                 }
-            return self.service(study).status(study)
+            return {
+                **self.service(study).status(study),
+                "analysis_cleanup_error": self.analysis_errors.get(study),
+            }
         if action == "report":
             direction = self.store.control(study).direction
             pubs = [
@@ -289,6 +329,7 @@ class Host:
     async def serve(self):
         pointer = self.state / "host.json"
         server = None
+        maintenance = None
         temporary = pointer.with_suffix(".tmp")
         try:
             server = await asyncio.start_server(
@@ -299,6 +340,7 @@ class Host:
                 json.dumps({"port": port, "token": self.token}), encoding="utf-8"
             )
             temporary.replace(pointer)
+            maintenance = asyncio.create_task(self.maintain_analyses())
             for row in self.store.db.execute(
                 "SELECT DISTINCT study FROM artifacts WHERE kind='control'"
             ):
@@ -309,6 +351,9 @@ class Host:
             async with server:
                 await self.stopping.wait()
         finally:
+            if maintenance:
+                maintenance.cancel()
+                await asyncio.gather(maintenance, return_exceptions=True)
             if server:
                 server.close()
                 await server.wait_closed()
@@ -411,6 +456,11 @@ def main():
     )
     create.add_argument("--docling-models")
     create.add_argument("--parse-timeout", type=float, default=300)
+    create.add_argument("--analysis", action="store_true")
+    export = sub.add_parser("export")
+    export.add_argument("study")
+    export.add_argument("source")
+    export.add_argument("destination", type=Path)
     for action in ("status", "report", "reload", "usage"):
         sub.add_parser(action).add_argument("study")
     control = sub.add_parser("control")
@@ -480,6 +530,7 @@ def main():
                         "parser",
                         "docling_models",
                         "parse_timeout",
+                        "analysis",
                     )
                     if getattr(args, name) is not None
                 }
@@ -492,8 +543,13 @@ def main():
             "usage",
             "reconcile",
             "upload",
+            "export",
         ):
             request["study"] = args.study
+        if args.action == "export":
+            request.update(
+                source=args.source, destination=str(args.destination.resolve())
+            )
         if args.action == "upload":
             raw = args.file.read_bytes()
             if len(raw) > 3 * 1024 * 1024 - 8192:

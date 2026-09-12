@@ -9,6 +9,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+from .analysis_runtime import AnalysisRuntime
 from .calculation import calculate
 from .context import assemble, source_ranges
 from .domain import (
@@ -76,6 +77,19 @@ def object_schema(properties: dict[str, Any]) -> dict[str, Any]:
 STRING = {"type": "string", "minLength": 1}
 STRINGS = {"type": "array", "items": STRING}
 BUILTINS = {
+    "run_analysis": (
+        "all",
+        object_schema(
+            {
+                "purpose": STRING,
+                "code": STRING,
+                "inputs": {
+                    "type": "array",
+                    "items": object_schema({"name": STRING, "ref": STRING}),
+                },
+            }
+        ),
+    ),
     "request_clarification": ("all", object_schema({"text": STRING, "refs": STRINGS})),
     "answer_clarification": (
         "lead",
@@ -314,11 +328,13 @@ class Harness:
         tools: dict[str, Tool] | None = None,
         context_chars: int = 48000,
         scheduler: Scheduler | None = None,
+        sandbox=None,
     ):
         self.store, self.model = store, model
         self.scheduler = scheduler or Scheduler(history=store.admissions())
         self.tools = tools or {}
         self.workspace = Workspace(store)
+        self.analysis = AnalysisRuntime(store, self.scheduler, sandbox)
         if set(self.tools) & set(BUILTINS):
             raise ValueError("external tools may not replace runtime tools")
         if context_chars < 4000:
@@ -344,6 +360,8 @@ class Harness:
                 "description": TOOLS["finish_work"],
                 "parameters": BUILTINS["finish_work"][1],
             }
+        if not policy.get("analysis") or role == "lead":
+            result.pop("run_analysis", None)
         if role == "lead" and policy.get("_approved"):
             result = {
                 k: v
@@ -891,6 +909,15 @@ class Harness:
                                     "coverage": source.body["coverage"],
                                     "issues": source.body["issues"],
                                 }
+                            elif call.name == "run_analysis":
+                                result = await self._analysis(
+                                    study,
+                                    work,
+                                    control.epoch,
+                                    step.ref,
+                                    index,
+                                    call.arguments,
+                                )
                             else:
                                 result = self._builtin(
                                     study,
@@ -1032,6 +1059,9 @@ class Harness:
 
     def _done(self, study: str, work: str, step: str) -> None:
         self.store.put(study, "step_done", {"step": step}, (work, step))
+
+    async def _analysis(self, study, work, epoch, step, index, args):
+        return await self.analysis.run(study, work, epoch, step, index, args)
 
     def _builtin(
         self, study: str, work: Artifact, epoch: int, step: str, index: int, call: Call
@@ -1199,6 +1229,8 @@ class Harness:
                 "text": text[offset : offset + limit],
                 "origin": source.body.get("origin"),
                 "coverage": source.body.get("coverage"),
+                "analysis": source.body.get("analysis"),
+                "execution_status": source.body.get("execution_status"),
                 "issues": source.body.get("issues", []),
                 "segments": [
                     s

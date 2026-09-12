@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import shutil
 from pathlib import Path
 from typing import Any
 
+from .analysis import filename
 from .domain import Artifact, NotAllowed
 from .materials import SUPPORTED_SUFFIXES, parse, parse_isolated
 from .storage import Store
@@ -22,6 +24,137 @@ class Workspace:
         return (
             self.store.get(study, control.direction).body["policy"].get("parsing", {})
         )
+
+    def analysis_inputs(self, study, inputs, limit):
+        files, total = {}, 0
+        for name, ref in inputs.items():
+            filename(name)
+            if name.casefold() in {n.casefold() for n in files}:
+                raise ValueError("duplicate analysis input name")
+            source = self.store.get(study, ref)
+            if source.kind != "source":
+                raise ValueError("analysis input must name a source snapshot")
+            raw = self.original(study, ref)
+            total += len(raw)
+            if total > limit:
+                raise ValueError("analysis input size exceeds configured limit")
+            files[name] = raw
+        names = {name.casefold() for name in files}
+        if any(
+            "/".join(name.split("/")[:i]) in names
+            for name in names
+            for i in range(1, len(name.split("/")))
+        ):
+            raise ValueError("input file and directory names conflict")
+        return files
+
+    def stage_analysis(self, job, files):
+        folder = self.store.path.parent / "analysis" / job.ref
+        if folder.is_symlink():
+            raise ValueError("invalid staging directory")
+        folder.mkdir(parents=True, exist_ok=True)
+        for name, raw in files.items():
+            target = folder / "data" / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(raw)
+        (folder / "analysis.py").write_text(job.body["code"], encoding="utf-8")
+        return folder
+
+    def clear_analysis_staging(self, job):
+        root = (self.store.path.parent / "analysis").resolve()
+        folder = root / job.ref
+        if folder.exists():
+            if folder.is_symlink() or folder.resolve().parent != root:
+                raise ValueError("invalid staging directory")
+            shutil.rmtree(folder)
+
+    def original(self, study, ref):
+        source = self.store.get(study, ref)
+        if source.kind != "source":
+            raise ValueError("expected source snapshot")
+        original = source.body.get("original_ref")
+        if original:
+            return base64.b64decode(
+                self.store.get(study, original).body["data"], validate=True
+            )
+        return source.body["text"].encode("utf-8")
+
+    def save_analysis(self, study, job, result, limit):
+        files, total, names = [], 0, set()
+        output = result.get("files", [])
+        if len(output) > 100:
+            raise ValueError("too many analysis outputs")
+        decoded = []
+        issues = list(result.get("issues", []))
+        for item in output:
+            try:
+                name = filename(item["name"])
+            except ValueError:
+                issues.append(
+                    "Output name is not portable; file omitted: "
+                    + str(item["name"])[:220]
+                )
+                continue
+            if name.casefold() in names:
+                raise ValueError("duplicate output name")
+            names.add(name.casefold())
+            raw = base64.b64decode(item["data"], validate=True)
+            total += len(raw)
+            if total > limit:
+                raise ValueError("analysis output exceeds configured limit")
+            decoded.append((name, raw))
+        log = result.get("log", "")
+        if not isinstance(log, str) or len(log) > 512 * 1024:
+            raise ValueError("invalid analysis log")
+        parents = (job.ref, *job.body["inputs"].values())
+        status = result["status"]
+
+        def parsed(text):
+            return {
+                "text": text,
+                "segments": [
+                    {
+                        "start": 0,
+                        "end": len(text),
+                        "locator": {"analysis": job.ref},
+                        "status": "computed_not_reviewed",
+                    }
+                ],
+                "parser": "python-analysis-v1",
+                "coverage": "computed_not_reviewed",
+                "issues": issues,
+                "analysis": job.ref,
+                "execution_status": status,
+            }
+
+        with self.store.transaction():
+            for name, raw in decoded:
+                text = f"Computed file: {name}; {len(raw)} bytes. Use this source as a run_analysis input to inspect binary or large data."
+                if len(raw) < 1024 * 1024:
+                    try:
+                        text = raw.decode("utf-8")
+                    except UnicodeError:
+                        pass
+                source = self._save_material(study, name, raw, parsed(text), parents)
+                files.append({"ref": source.ref, "name": name, "bytes": len(raw)})
+            text = f"Analysis purpose: {job.body['purpose']}\nExecution status: {status}\nExit code: {result.get('exit_code')}\n\n{log}"
+            log_source = self.store._put(
+                study,
+                "source",
+                {**parsed(text), "origin": "analysis:" + job.ref},
+                parents,
+            )
+            return self.store._put(
+                study,
+                "analysis_result",
+                {
+                    "job": job.ref,
+                    "status": status,
+                    "log": log_source.ref,
+                    "files": files,
+                },
+                (job.ref, log_source.ref, *(f["ref"] for f in files)),
+            )
 
     async def _parse(self, study, name, raw):
         digest = hashlib.sha256(raw).hexdigest()
@@ -247,30 +380,33 @@ class Workspace:
         parsed: dict,
         parents: tuple[str, ...] = (),
     ) -> Artifact:
-        digest = hashlib.sha256(raw).hexdigest()
         with self.store.transaction():
-            original = self.store._put(
-                study,
-                "material_bytes",
-                {
-                    "sha256": digest,
-                    "encoding": "base64",
-                    "data": base64.b64encode(raw).decode("ascii"),
-                },
-                (),
-            )
-            return self.store._put(
-                study,
-                "source",
-                {
-                    **parsed,
-                    "origin": name,
-                    "format": Path(name).suffix.lower(),
-                    "sha256": digest,
-                    "original_ref": original.ref,
-                },
-                (*parents, original.ref),
-            )
+            return self._save_material(study, name, raw, parsed, parents)
+
+    def _save_material(self, study, name, raw, parsed, parents):
+        digest = hashlib.sha256(raw).hexdigest()
+        original = self.store._put(
+            study,
+            "material_bytes",
+            {
+                "sha256": digest,
+                "encoding": "base64",
+                "data": base64.b64encode(raw).decode("ascii"),
+            },
+            (),
+        )
+        return self.store._put(
+            study,
+            "source",
+            {
+                **parsed,
+                "origin": name,
+                "format": Path(name).suffix.lower(),
+                "sha256": digest,
+                "original_ref": original.ref,
+            },
+            (*parents, original.ref),
+        )
 
     def upload(self, study: str, name: str, raw: bytes) -> Artifact:
         """Host-only import: user-selected bytes, never a model-supplied host path."""
