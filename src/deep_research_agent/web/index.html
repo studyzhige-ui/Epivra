@@ -1,0 +1,367 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Deep Research · 本地研究工作台</title>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/style.css" />
+    <script src="/markdown-it.min.js" defer></script>
+    <script src="/app.js" defer></script>
+  </head>
+  <body>
+    <div class="shell">
+      <aside class="sidebar">
+        <a class="brand" href="#"
+          ><span class="brand-icon">dr<span>·</span></span
+          ><span>Deep Research<small>本地研究工作台</small></span></a
+        >
+        <button id="new-study" class="primary wide">＋ 新建研究</button>
+        <div class="nav-heading">
+          我的研究
+          <button id="refresh-list" class="icon" aria-label="刷新研究列表">
+            ↻
+          </button>
+        </div>
+        <nav id="studies" aria-label="研究列表">
+          <p class="muted">正在连接本地宿主…</p>
+        </nav>
+        <div class="sidebar-bottom">
+          <button id="open-settings" class="wide secondary">连接与设置</button>
+          <p><span class="dot"></span> 数据保存在本机</p>
+        </div>
+      </aside>
+      <main>
+        <header>
+          <span id="breadcrumb">工作台 / 新建研究</span
+          ><span class="local-badge">LOCAL WORKSPACE</span>
+        </header>
+        <div id="notice" role="status" hidden></div>
+        <section id="welcome" class="view">
+          <div class="eyebrow">从一个值得追问的问题开始</div>
+          <h1>你希望深入研究什么？</h1>
+          <p class="intro">
+            给出问题与用途，让研究从明确的方向出发。<br />先阅读策略，再决定开始。
+          </p>
+          <form id="create-form" class="card compose">
+            <label for="request">研究需求</label>
+            <textarea
+              id="request"
+              required
+              rows="5"
+              placeholder="例如：比较三种方案的适用条件、成本与风险，为下季度的选型提供建议。&#10;你也可以指定时间范围、受众和希望得到的文档形式。"
+            ></textarea>
+            <div class="form-row">
+              <label
+                >资料范围<select id="scope">
+                  <option value="web">公开网络</option>
+                  <option value="both">网络与本地资料</option>
+                  <option value="local">仅本地资料与已选 MCP</option>
+                </select></label
+              >
+              <div class="model-summary">
+                <span class="muted">研究模型</span
+                ><strong id="model-summary">尚未配置</strong
+                ><button type="button" id="change-model" class="text-button">
+                  更改设置 ↗
+                </button>
+              </div>
+            </div>
+            <div id="material-panel" hidden>
+              <div class="section-label">
+                研究资料
+                <span class="muted">单份文件导入 · 文件夹按需检索</span>
+              </div>
+              <div class="button-row">
+                <button type="button" id="pick-file">选择本地文件</button
+                ><button type="button" id="pick-folder">授权文件夹</button
+                ><label class="button"
+                  >上传文件<input id="upload-files" type="file" multiple hidden
+                /></label>
+              </div>
+              <div class="path-row">
+                <input
+                  id="material-path"
+                  aria-label="本地资料路径"
+                  placeholder="或粘贴本地文件 / 文件夹路径"
+                /><select id="path-kind" aria-label="路径类型">
+                  <option value="file">文件</option>
+                  <option value="folder">文件夹</option></select
+                ><button type="button" id="add-path">添加</button>
+              </div>
+              <ul id="selected-materials" class="material-list"></ul>
+            </div>
+            <div class="compose-footer">
+              <span id="creation-hint" class="muted"
+                >生成策略会调用模型；正式研究需另行审批。</span
+              ><button type="submit" id="create-button" class="primary">
+                生成研究策略 <span>→</span>
+              </button>
+            </div>
+          </form>
+          <div class="principles">
+            <div>
+              <span>01</span><strong>明确策略</strong>
+              <p>问题、范围与方法，由你先确认。</p>
+            </div>
+            <div>
+              <span>02</span><strong>持续研究</strong>
+              <p>自主搜集、分析与核查，可随时暂停。</p>
+            </div>
+            <div>
+              <span>03</span><strong>交付成果</strong>
+              <p>报告与引用、资料和计算文件一处保存。</p>
+            </div>
+          </div>
+        </section>
+        <section id="study-view" class="view" hidden>
+          <div class="study-heading">
+            <div>
+              <div class="eyebrow">研究工作区</div>
+              <h1 id="study-title"></h1>
+            </div>
+            <span id="study-stage" class="badge"></span>
+          </div>
+          <p id="study-meta" class="muted"></p>
+          <div id="blocker" class="alert" hidden></div>
+          <div class="button-row controls">
+            <button id="approve" class="primary" hidden>阅读并审批策略</button
+            ><button id="pause-resume"></button
+            ><button id="steer">调整方向</button
+            ><button id="supplement" hidden>补充资料</button
+            ><button id="reload-keys" hidden>重新载入密钥</button
+            ><button id="cancel" class="danger">取消研究</button>
+          </div>
+          <div class="tabs" role="tablist" aria-label="研究内容">
+            <button
+              role="tab"
+              id="tab-progress"
+              aria-selected="true"
+              data-tab="progress"
+            >
+              研究进度</button
+            ><button
+              role="tab"
+              id="tab-report"
+              aria-selected="false"
+              data-tab="report"
+            >
+              报告与成果</button
+            ><button
+              role="tab"
+              id="tab-materials"
+              aria-selected="false"
+              data-tab="materials"
+            >
+              资料</button
+            ><button
+              role="tab"
+              id="tab-usage"
+              aria-selected="false"
+              data-tab="usage"
+            >
+              用量
+            </button>
+          </div>
+          <div
+            id="progress-panel"
+            class="panel"
+            role="tabpanel"
+            aria-labelledby="tab-progress"
+          >
+            <div id="progress-summary" class="card"></div>
+            <div id="work-list"></div>
+          </div>
+          <div
+            id="report-panel"
+            class="panel"
+            role="tabpanel"
+            aria-labelledby="tab-report"
+            hidden
+          >
+            <div class="report-actions">
+              <span class="muted">当前方向的已发布成果</span
+              ><button id="download-report" hidden>下载 Markdown ↓</button>
+            </div>
+            <article id="report-text" class="card markdown"></article>
+            <div id="report-sources"></div>
+            <div id="analysis-files"></div>
+          </div>
+          <div
+            id="materials-panel"
+            class="panel"
+            role="tabpanel"
+            aria-labelledby="tab-materials"
+            hidden
+          >
+            <div id="source-list" class="card"></div>
+          </div>
+          <div
+            id="usage-panel"
+            class="panel"
+            role="tabpanel"
+            aria-labelledby="tab-usage"
+            hidden
+          >
+            <p class="muted">
+              供应商报告的真实用量，不是金额估算。缓存等子项不重复计入总量。
+            </p>
+            <div id="usage-list"></div>
+          </div>
+        </section>
+      </main>
+    </div>
+    <dialog id="settings-dialog">
+      <form id="settings-form">
+        <div class="dialog-heading">
+          <div>
+            <div class="eyebrow">本机默认设置</div>
+            <h2>连接与设置</h2>
+          </div>
+          <button type="button" class="icon close-dialog" aria-label="关闭设置">
+            ×
+          </button>
+        </div>
+        <p class="muted">
+          与 CLI 共用配置，仅影响新研究。密钥留空则保留已有值。
+        </p>
+        <div id="settings-feedback" role="status"></div>
+        <h3>研究模型</h3>
+        <div class="form-row">
+          <label>厂商<select id="provider"></select></label
+          ><label>账户地区<select id="region"></select></label>
+        </div>
+        <label>模型名称<input id="model" required /></label>
+        <div id="custom-capacity" class="form-row" hidden>
+          <label
+            >上下文容量 tokens<input
+              id="context-tokens"
+              type="number"
+              min="1" /></label
+          ><label
+            >输出额度 tokens<input id="max-tokens" type="number" min="1"
+          /></label>
+        </div>
+        <label
+          ><span id="model-key-label">API Key</span
+          ><input
+            id="model-key"
+            type="password"
+            autocomplete="new-password"
+            placeholder="输入新密钥；不会回显已有密钥"
+        /></label>
+        <h3>搜索与网页读取</h3>
+        <div class="form-row">
+          <label>默认搜索<select id="search-provider"></select></label
+          ><label>默认网页读取<select id="reader-provider"></select></label>
+        </div>
+        <div class="form-row">
+          <label>配置连接密钥<select id="connection-provider"></select></label
+          ><label
+            ><span id="connection-key-label">API Key</span
+            ><input
+              id="connection-key"
+              type="password"
+              autocomplete="new-password"
+              placeholder="留空不修改"
+          /></label>
+        </div>
+        <h3>资料与工具</h3>
+        <div class="form-row">
+          <label
+            >解析方式<select id="parser">
+              <option value="auto">自动</option>
+              <option value="light">轻量解析</option>
+              <option value="docling">Docling 本地解析</option>
+            </select></label
+          ><label
+            >Docling 模型文件夹<input
+              id="docling-models"
+              placeholder="例如 D:\Models\dr-docling-models"
+          /></label>
+        </div>
+        <label class="checkbox"
+          ><input id="analysis" type="checkbox" />启用 Docker
+          数据分析（需要已构建的本地镜像）</label
+        >
+        <details>
+          <summary>MCP 外部连接</summary>
+          <p class="muted">
+            连接在本地 mcp-servers.json
+            中配置。勾选即允许启动指定程序或连接服务，仅使用配置中授权的工具和资源。
+          </p>
+          <div id="mcp-options"></div>
+        </details>
+        <div class="dialog-footer">
+          <button type="button" class="close-dialog">返回</button
+          ><button type="submit" class="primary">保存设置</button>
+        </div>
+      </form>
+    </dialog>
+    <dialog id="approval-dialog">
+      <div class="dialog-heading">
+        <div>
+          <div class="eyebrow">开始前的最后确认</div>
+          <h2>初始研究策略</h2>
+        </div>
+        <button class="icon close-dialog" aria-label="关闭策略">×</button>
+      </div>
+      <article id="approval-text" class="markdown"></article>
+      <p id="approval-hint" class="muted">
+        确认后将按此策略自主研究并交付成果；你仍可主动暂停或改向。
+      </p>
+      <div class="dialog-footer">
+        <button class="close-dialog">稍后决定</button
+        ><button id="confirm-approval" class="primary">批准这份策略</button>
+      </div>
+    </dialog>
+    <dialog id="steer-dialog">
+      <form id="steer-form">
+        <div class="dialog-heading">
+          <h2>调整研究方向</h2>
+          <button type="button" class="icon close-dialog" aria-label="关闭改向">
+            ×
+          </button>
+        </div>
+        <p class="muted">
+          写出新的完整需求，保留仍需满足的约束。已审批的研究沿用已有授权；未暂停时会立即按新需求继续。若希望稍后执行，请先暂停。
+        </p>
+        <label
+          >新的研究需求<textarea
+            id="steer-request"
+            rows="7"
+            required
+          ></textarea>
+        </label>
+        <div class="dialog-footer">
+          <button type="button" class="close-dialog">返回</button
+          ><button type="submit" class="primary">提交新方向</button>
+        </div>
+      </form>
+    </dialog>
+    <dialog id="supplement-dialog">
+      <div class="dialog-heading">
+        <h2>补充研究资料</h2>
+        <button class="icon close-dialog" aria-label="关闭资料窗口">×</button>
+      </div>
+      <p class="muted">资料导入期间保持暂停；导入完成后由你决定继续。</p>
+      <div class="button-row">
+        <button id="supplement-native">选择本地文件</button
+        ><label class="button"
+          >上传文件<input id="supplement-upload" type="file" multiple hidden
+        /></label>
+      </div>
+      <div class="path-row">
+        <input
+          id="supplement-path"
+          placeholder="粘贴本地文件路径"
+          aria-label="补充文件路径"
+        /><button id="supplement-import">导入</button>
+      </div>
+      <div id="supplement-feedback" role="status"></div>
+      <div class="dialog-footer">
+        <button class="close-dialog">完成</button>
+      </div>
+    </dialog>
+  </body>
+</html>

@@ -17,6 +17,10 @@ mcp = ["mcp>=2.2,<3"]
 [project.scripts]
 deep-research = "deep_research_agent.cli:main"
 deep-research-mcp = "deep_research_agent.mcp_server:main"
+deep-research-web = "deep_research_agent.webui:main"
+
+[tool.setuptools.package-data]
+deep_research_agent = ["web/*"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -551,9 +551,14 @@ def main():
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--root", type=Path, default=Path.cwd())
     args, remaining = parser.parse_known_args()
+    if remaining and remaining[0] == "web":
+        from . import webui
+
+        webui.main(["--root", str(args.root), *remaining[1:]])
+        return
     if remaining and remaining != ["ui"]:
         if "--help" in remaining:
-            print("无参数或 ui：打开交互工作台。以下子命令保留 JSON 自动化接口。\n")
+            print("无参数或 ui：终端工作台；web：本地浏览器工作台。以下子命令保留 JSON 自动化接口。\n")
         host.main()
         return
     if not sys.stdin.isatty():

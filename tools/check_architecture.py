@@ -43,15 +43,24 @@ LAYERS = (
                 "cli_settings",
                 "mcp_server",
                 "mcp_tools",
+                "webui",
             }
         ),
     ),
 )
 ALLOWED = {
+    "webui": {"host", "cli_settings", "model_catalog", "models", "web_providers"},
     "mcp_client": {"domain"},
     "mcp_tools": {"domain", "harness", "workspace", "mcp_client"},
     "mcp_server": {"host"},
-    "cli": {"host", "terminal", "cli_settings", "model_catalog", "web_providers"},
+    "cli": {
+        "host",
+        "terminal",
+        "cli_settings",
+        "model_catalog",
+        "web_providers",
+        "webui",
+    },
     "terminal": set(),
     "cli_settings": {"adapters", "model_catalog", "web_providers"},
     "host": {

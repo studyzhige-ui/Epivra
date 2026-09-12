@@ -16,3 +16,6 @@ dist/
 .claude/settings.local.json
 artifacts/
 runs/
+
+.playwright-cli/
+output/playwright/

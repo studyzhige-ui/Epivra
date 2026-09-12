@@ -4,7 +4,7 @@
 
 **当前可通过本地 CLI 完成真实在线研究，尚未达到完整产品验收标准。** 已适配12家官方模型、5家搜索 API + DuckDuckGo、Jina/Tavily/Exa 正文读取（其他模型本轮为离线协议验证），具备统一 Agent 循环、策略审批、暂停/恢复/改向、持久调用回放、独立调查与核查、版本化发布。研究在常驻宿主中运行，关闭客户端不会结束任务。
 
-已实现授权资料目录与 CLI/宿主上传、PDF 文本层与 CSV/TSV/XLSX 解析、按范围读取、显式记忆与固定证据引用、并发调查、安全工具并发、供应商共享容量及限流冷却、流式完整性校验、凭据重载、明确拒绝恢复和未知调用人工对账。后续新任务默认使用 deepseek-flash。真实在线技术研究已经过策略审批、搜索、原文提取、写作和独立核查并发布；Flash 流式工具协议另有真实联调。可选 Docling 提供本地 Office 文档、PDF 结构与 OCR 解析；交互 CLI 和 [MCP 双向接入](docs/product-redesign/MCP.md)已实现；图表语义理解、云端解析、Web UI 和规模化研究质量评测仍待完成。安装与验证见[搜索与资料接入](docs/product-redesign/SEARCH_MATERIALS.md)。未知付费调用不自动重发。
+已实现授权资料目录与 CLI/宿主上传、PDF 文本层与 CSV/TSV/XLSX 解析、按范围读取、显式记忆与固定证据引用、并发调查、安全工具并发、供应商共享容量及限流冷却、流式完整性校验、凭据重载、明确拒绝恢复和未知调用人工对账。后续新任务默认使用 deepseek-flash。真实在线技术研究已经过策略审批、搜索、原文提取、写作和独立核查并发布；Flash 流式工具协议另有真实联调。可选 Docling 提供本地 Office 文档、PDF 结构与 OCR 解析；交互 CLI、[MCP 双向接入](docs/product-redesign/MCP.md)和[本地 Web 工作台](docs/product-redesign/WEB_UI.md)已实现；图表语义理解、云端解析和规模化研究质量评测仍待完成。安装与验证见[搜索与资料接入](docs/product-redesign/SEARCH_MATERIALS.md)。未知付费调用不自动重发。
 
 - [唯一现行架构](docs/ARCHITECTURE.md)
 - [研究与产品设计](docs/product-redesign/README.md)
