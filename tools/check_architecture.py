@@ -49,7 +49,7 @@ ALLOWED = {
         "scheduling",
         "review",
     },
-    "application": {"domain", "harness", "storage", "adapters"},
+    "application": {"domain", "harness", "storage", "adapters", "workspace"},
 }
 FORBIDDEN = {"claude_agent_sdk", "codex_sdk", "langgraph"}
 IO_MODULES = {"os", "pathlib", "sqlite3", "httpx", "aiohttp", "socket", "subprocess"}

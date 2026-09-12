@@ -1,10 +1,8 @@
-"""Version-bound manuscript coverage, separate from semantic judgment."""
+"""Deterministic manuscript navigation and text metrics."""
 
 from __future__ import annotations
 
 import re
-
-from .domain import Artifact
 
 
 def text_metrics(text: str) -> dict[str, int]:
@@ -21,11 +19,3 @@ def units(text: str) -> list[dict]:
         for index, part in enumerate(re.split(r"\n\s*\n", text.strip()))
         if part.strip()
     ]
-
-
-def checked(records: list[Artifact]) -> dict[int, dict]:
-    result = {}
-    for record in sorted(records, key=lambda a: a.seq):
-        for check in record.body["checks"]:
-            result[check["unit"]] = check
-    return result

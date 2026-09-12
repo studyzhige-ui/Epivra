@@ -2,8 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from deep_research_agent.domain import Artifact
-from deep_research_agent.review import checked, units
+from deep_research_agent.review import text_metrics, units
 from evals.review_cases import CASES
 
 
@@ -15,19 +14,11 @@ class ReviewTests(unittest.TestCase):
         self.assertEqual("| 值 |\n|---|\n| 17 |", parts[2]["text"])
         self.assertEqual("最后的建议。", parts[-1]["text"])
 
-    def test_latest_check_replaces_judgment_without_losing_other_units(self):
-        def record(seq, values):
-            return Artifact(str(seq), "s", "review_check", {"checks": values}, (), seq)
-
-        old = {"unit": 0, "defects": ["Unsupported assertion"], "assessment": "Initial"}
-        corrected = {
-            **old,
-            "defects": [],
-            "assessment": "Rechecked source",
-        }
-        other = {"unit": 1, "defects": ["Unsupported assertion"]}
-        result = checked([record(2, [corrected]), record(1, [old, other])])
-        self.assertEqual({0: corrected, 1: other}, result)
+    def test_metrics_count_original_unicode_without_normalizing_whitespace(self):
+        self.assertEqual(
+            {"characters": 6, "non_whitespace_characters": 3},
+            text_metrics("中 a\n😀\t"),
+        )
 
     def test_suite_has_positive_controls_and_full_coverage_transfer_pair(self):
         self.assertEqual(5, sum(c["accept"] for c in CASES))

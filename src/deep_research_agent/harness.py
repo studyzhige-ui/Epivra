@@ -21,7 +21,7 @@ from .domain import (
     identity,
 )
 from .prompts import ROLES, TOOLS
-from .review import checked, text_metrics, units
+from .review import text_metrics, units
 from .scheduling import Scheduler
 from .storage import Store
 from .workspace import Workspace
@@ -41,7 +41,7 @@ class Tool:
     roles: tuple[str, ...] = ("reviewer", "investigator")
     identity: str = "v1"
     permission: str | None = None
-    observe: Callable[[Any], Any] | None = None
+    observe: Callable[[Any, dict[str, str]], Any] | None = None
     check: Callable[[dict[str, Any]], None] | None = None
     retry_delay: Callable[[Any, int], float | None] | None = None
     retry_on_resume: Callable[[Any], bool] | None = None
@@ -72,7 +72,11 @@ def object_schema(properties: dict[str, Any]) -> dict[str, Any]:
 STRING = {"type": "string", "minLength": 1}
 STRINGS = {"type": "array", "items": STRING}
 BUILTINS = {
-    "request_revision": ("writer", object_schema({"text": STRING, "refs": STRINGS})),
+    "request_clarification": ("all", object_schema({"text": STRING, "refs": STRINGS})),
+    "answer_clarification": (
+        "lead",
+        object_schema({"question": STRING, "text": STRING, "refs": STRINGS}),
+    ),
     "record_evidence": (
         "investigator",
         object_schema(
@@ -197,25 +201,12 @@ BUILTINS = {
     ),
     "submit_review": (
         "reviewer",
-        object_schema({"reason": STRING, "defects": STRINGS}),
-    ),
-    "record_review": (
-        "reviewer",
-        object_schema(
-            {
-                "checks": {
-                    "type": "array",
-                    "items": object_schema(
-                        {
-                            "unit": {"type": "integer"},
-                            "evidence": STRINGS,
-                            "assessment": STRING,
-                            "defects": STRINGS,
-                        }
-                    ),
-                },
-            }
-        ),
+        {
+            **object_schema(
+                {"reason": STRING, "defects": STRINGS, "comments": STRINGS}
+            ),
+            "required": ["reason", "defects"],
+        },
     ),
     "publish_report": (
         "lead",
@@ -238,7 +229,8 @@ BUILTINS = {
                         "note",
                         "report",
                         "review",
-                        "review_check",
+                        "clarification",
+                        "clarification_answer",
                         "plan",
                         "observation",
                         "catalog",
@@ -342,6 +334,7 @@ class Harness:
                 if k
                 in {
                     "delegate_work",
+                    "answer_clarification",
                     "wait_for_work",
                     "save_memory",
                     "save_note",
@@ -389,7 +382,6 @@ class Harness:
         return (
             reports[0],
             units(reports[0].body["text"]),
-            checked(self._steps(study, "review_check", work.ref)),
         )
 
     def _request(self, study: str, work: Artifact) -> dict[str, Any]:
@@ -426,13 +418,17 @@ class Harness:
             },
             "inputs": [
                 {"ref": ref, "kind": self.store.get(study, ref).kind}
-                for ref in work.body["inputs"]
+                for ref in self._handoff_inputs(study, work)
             ],
             "catalogs": list(catalogs.values()),
             "delegated_work": [
                 {
                     "ref": child.ref,
                     "task": child.body["task"],
+                    "role": child.body["role"],
+                    "results": [
+                        a.ref for a in self._steps(study, "work_result", child.ref)
+                    ],
                     "finished": self.finished(study, child.ref),
                 }
                 for child in self.store.list(study, "work")
@@ -446,15 +442,12 @@ class Harness:
             "tool_versions": {name: tool.binding for name, tool in self.tools.items()},
         }
         if work.body["role"] == "reviewer":
-            report, parts, checks = self._review(study, work)
+            report, parts = self._review(study, work)
             mandatory["review_progress"] = {
                 "report": report.ref,
                 "evidence": report.body["evidence"],
                 "total_units": len(parts),
-                "checked_units": sorted(checks),
-                "revision_units": sorted(
-                    i for i, check in checks.items() if check["defects"]
-                ),
+                "inputs": self._relations(study, report),
             }
         candidates = [
             x for x in self.store.list(study, "observation") if work.ref in x.parents
@@ -462,9 +455,51 @@ class Harness:
         candidates.extend(self._steps(study, "note", work.ref))
         candidates.extend(
             self.store.get(study, ref)
-            for ref in work.body["inputs"]
-            if self.store.get(study, ref).kind in {"work_result", "plan"}
+            for ref in self._handoff_inputs(study, work)
+            if self.store.get(study, ref).kind
+            in {"work_result", "plan", "note", "clarification_answer"}
         )
+        # Related inputs remain original artifacts, never an intermediate summary.
+        if work.body["role"] == "reviewer":
+            candidates.extend(
+                self.store.get(study, x["ref"])
+                for x in self._relations(study, report)
+                if x["kind"] in {"work_result", "clarification_answer"}
+            )
+        questions = (
+            self.store.clarifications(study, owner=work.ref)
+            if work.body["role"] == "lead"
+            else self.store.clarifications(study, work=work.ref)
+        )
+        answers = {
+            a.body["question"]: a
+            for a in self.store.list(study, "clarification_answer")
+        }
+        mandatory["clarifications"] = [
+            {
+                "question": q.ref,
+                "work": q.body["work"],
+                "answer": answers[q.ref].ref if q.ref in answers else None,
+            }
+            for q in questions
+        ]
+        for q in questions:
+            candidates.append(q)
+            if q.ref in answers:
+                answer = answers[q.ref]
+                candidates.append(answer)
+                candidates.extend(
+                    self.store.get(study, ref)
+                    for ref in answer.body["refs"]
+                    if self.store.get(study, ref).kind in {"work_result", "note"}
+                )
+        # Preserve the producer's original task boundary beside its answer.
+        candidates.extend(
+            self.store.get(study, item.body["producer"])
+            for item in tuple(candidates)
+            if item.kind == "work_result" and item.body.get("producer")
+        )
+        candidates = list({a.ref: a for a in candidates}.values())
         memories = self._steps(study, "memory", work.ref)
         request = assemble(
             mandatory,
@@ -591,6 +626,37 @@ class Harness:
             )
         ]
 
+    def _handoff_inputs(self, study: str, work: Artifact) -> tuple[str, ...]:
+        questions = {q.ref for q in self.store.clarifications(study, work=work.ref)}
+        refs = list(work.body["inputs"])
+        for answer in self.store.list(study, "clarification_answer"):
+            if answer.body["question"] in questions:
+                refs.extend((answer.ref, *answer.body["refs"]))
+        return tuple(dict.fromkeys(refs))
+
+    def _relations(self, study: str, item: Artifact) -> list[dict]:
+        visible = {
+            "source",
+            "work",
+            "work_result",
+            "report",
+            "review",
+            "plan",
+            "note",
+            "memory",
+            "catalog",
+            "clarification",
+            "clarification_answer",
+        }
+        return [
+            {"ref": a.ref, "kind": a.kind, "producer": a.body.get("producer")}
+            for ref in item.parents
+            if (a := self.store.get(study, ref)).kind in visible
+        ]
+
+    def waiting(self, study: str, work: str) -> bool:
+        return bool(self.store.clarifications(study, work=work, open_only=True))
+
     def finished(self, study: str, work: str) -> bool:
         return bool(self._steps(study, "work_result", work))
 
@@ -606,6 +672,8 @@ class Harness:
             steps = self._steps(study, "step", work_ref)
             done = {a.body["step"] for a in self._steps(study, "step_done", work_ref)}
             pending = [s for s in steps if s.ref not in done]
+            if self.waiting(study, work_ref) and not pending:
+                return "waiting"
             if pending:
                 step = pending[-1]
             else:
@@ -657,7 +725,7 @@ class Harness:
                 if not reply.complete:
                     raise ValueError(
                         "incomplete response; no tool was executed. "
-                        "Commit a small tool call next, split long text or review checks "
+                        "Commit a small tool call next, split long text "
                         "into smaller batches; do not repeat the whole response."
                     )
             except (KeyError, TypeError, ValueError) as exc:
@@ -728,6 +796,14 @@ class Harness:
                     if a.body.get("step") == step.ref and a.body.get("index") == index
                 ]
                 if previous:
+                    if (
+                        call.name == "request_clarification"
+                        and "error" not in previous[-1].body["result"]
+                    ):
+                        self._defer_remaining(
+                            study, work_ref, control.epoch, step.ref, reply.calls, index
+                        )
+                        break
                     continue
                 self.store.require_work(study, work_ref, control.epoch)
                 try:
@@ -770,7 +846,18 @@ class Harness:
                             study, work_ref, control.epoch, step.ref, index, call
                         )
                         observe = self.tools[call.name].observe
-                        result = observe(envelope["value"]) if observe else envelope
+                        operation = identity("tool", step.ref, index)
+                        retry = self._attempt(study, operation)
+                        acquisition = {
+                            "work": work_ref,
+                            "step": step.ref,
+                            "operation": retry.body["next"] if retry else operation,
+                        }
+                        result = (
+                            observe(envelope["value"], acquisition)
+                            if observe
+                            else envelope
+                        )
                 self.store.observation(
                     study,
                     work_ref,
@@ -783,6 +870,11 @@ class Harness:
                     },
                     (step.ref,),
                 )
+                if call.name == "request_clarification" and "error" not in result:
+                    self._defer_remaining(
+                        study, work_ref, control.epoch, step.ref, reply.calls, index
+                    )
+                    break
                 if self.finished(study, work_ref):
                     break
             if not reply.calls:
@@ -799,6 +891,24 @@ class Harness:
                 )
             self._done(study, work_ref, step.ref)
             return "finished" if self.finished(study, work_ref) else "continue"
+
+    def _defer_remaining(self, study, work, epoch, step, calls, index):
+        """Pair every call after a persistent wait, including crash replay."""
+        for skipped in range(index + 1, len(calls)):
+            self.store.observation(
+                study,
+                work,
+                epoch,
+                {
+                    "step": step,
+                    "index": skipped,
+                    "tool": calls[skipped].name,
+                    "result": {
+                        "not_executed": "clarification requested; reconsider after answer"
+                    },
+                },
+                (step,),
+            )
 
     async def _external(self, study, work, epoch, step, index, call):
         tool = self.tools[call.name]
@@ -853,6 +963,10 @@ class Harness:
                 child = self.store.get(study, ref)
                 if child.kind != "work" or child.body["owner"] != work.ref:
                     raise ValueError("can only wait for own delegated work")
+                if self.waiting(study, child.ref):
+                    raise ValueError(
+                        "answer this work's clarification before waiting for it"
+                    )
             item = self.store.put(
                 study,
                 "work_wait",
@@ -870,12 +984,25 @@ class Harness:
                 work.ref,
             )
             return {"work": child.ref}
-        if call.name in {"finish_work", "request_revision"}:
+        if call.name == "request_clarification":
+            item = self.store.ask(
+                study, work.ref, epoch, args["text"], args["refs"], step
+            )
+            return {"ref": item.ref, "waiting": True}
+        if call.name == "answer_clarification":
+            item = self.store.answer(
+                study, work.ref, epoch, args["question"], args["text"], args["refs"]
+            )
+            return {
+                "ref": item.ref,
+                "resumed_work": self.store.get(study, args["question"]).body["work"],
+            }
+        if call.name == "finish_work":
             item = self.store.put(
                 study,
                 "work_result",
                 {**args, "producer": work.ref},
-                (*parents, *work.body["inputs"], *args["refs"]),
+                (*parents, *self._handoff_inputs(study, work), *args["refs"]),
             )
             return {"ref": item.ref}
         if call.name == "save_memory":
@@ -907,6 +1034,7 @@ class Harness:
             return {
                 "ref": artifact.ref,
                 "kind": artifact.kind,
+                "parents": self._relations(study, artifact),
                 "encoding": "canonical-json",
                 "text": body[offset : offset + limit],
                 "offset": offset,
@@ -965,6 +1093,7 @@ class Harness:
                 "end": min(len(text), offset + limit),
                 "total": len(text),
                 "text": text[offset : offset + limit],
+                "origin": source.body.get("origin"),
                 "coverage": source.body.get("coverage"),
                 "issues": source.body.get("issues", []),
                 "segments": [
@@ -988,7 +1117,12 @@ class Harness:
                     "error": "use read_artifact_range to retrieve this body",
                     "ref": artifact.ref,
                 }
-            return {"kind": artifact.kind, "body": artifact.body}
+            return {
+                "ref": artifact.ref,
+                "kind": artifact.kind,
+                "body": artifact.body,
+                "parents": self._relations(study, artifact),
+            }
         if call.name == "calculate":
             return calculate(args["expression"])
         if call.name == "record_evidence":
@@ -1030,7 +1164,7 @@ class Harness:
                     "evidence": args["evidence"],
                     "producer": work.ref,
                 },
-                (*parents, *work.body["inputs"], *args["evidence"]),
+                (*parents, *self._handoff_inputs(study, work), *args["evidence"]),
             )
             self.store.put(
                 study,
@@ -1043,7 +1177,7 @@ class Harness:
                 (work.ref, item.ref),
             )
         elif call.name == "read_report":
-            report, parts, checks = self._review(study, work)
+            report, parts = self._review(study, work)
             offset, limit = args["offset"], args["limit"]
             if offset < 0 or not 1 <= limit <= 20:
                 raise ValueError("invalid report page")
@@ -1051,6 +1185,7 @@ class Harness:
                 "report": report.ref,
                 "units": parts[offset : offset + limit],
                 "evidence": report.body["evidence"],
+                "inputs": self._relations(study, report),
                 "total": len(parts),
                 "text_metrics": text_metrics(report.body["text"]),
                 "displayed_units_metrics": text_metrics(
@@ -1062,35 +1197,17 @@ class Harness:
                 },
                 "next_offset": offset + limit if offset + limit < len(parts) else None,
             }
-        elif call.name == "record_review":
-            report, parts, checks = self._review(study, work)
-            if not args["checks"]:
-                raise ValueError("review requires unit checks")
-            seen = set()
-            for check in args["checks"]:
-                if not 0 <= check["unit"] < len(parts) or check["unit"] in seen:
-                    raise ValueError("review unit is invalid or duplicated")
-                seen.add(check["unit"])
-                for ref in check["evidence"]:
-                    if self.store.get(study, ref).kind != "source":
-                        raise ValueError("review evidence must name source snapshots")
-            item = self.store.put(study, "review_check", args, (*parents, report.ref))
         elif call.name == "submit_review":
-            report, parts, checks = self._review(study, work)
-            missing = [part["unit"] for part in parts if part["unit"] not in checks]
-            if missing:
-                raise ValueError(f"unchecked report units: {missing}")
+            report, _ = self._review(study, work)
             item = self.store.put(
                 study,
                 "review",
                 {
                     **args,
+                    "report": report.ref,
+                    "comments": args.get("comments", []),
                     "work": work.ref,
-                    "accepted": not args["defects"]
-                    and not any(c["defects"] for c in checks.values()),
-                    "checks": [
-                        {**checks[p["unit"]], "claim": p["text"]} for p in parts
-                    ],
+                    "accepted": not args["defects"],
                 },
                 (*parents, report.ref),
             )

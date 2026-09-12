@@ -1,4 +1,4 @@
-"""Small opt-in real research runs; hidden criteria never enter model context."""
+"""Opt-in closed research runs; hidden criteria never enter model context."""
 
 from __future__ import annotations
 
@@ -18,6 +18,60 @@ from deep_research_agent.domain import identity
 from deep_research_agent.storage import Store
 
 
+def load_case(root: Path, case_id: str) -> dict:
+    """Load authorized texts separately from the evaluation-only contract."""
+    if case_id != "service_planning":
+        cases = json.loads(
+            (root / "evals/closed_loop_cases.json").read_text(encoding="utf-8")
+        )
+        return next(c for c in cases if c["id"] == case_id)
+    scenario = root / "evals/research_scenarios/service_planning"
+    config = json.loads((scenario / "task.json").read_text(encoding="utf-8"))
+    allowed = (scenario / "corpus").resolve()
+    paths = [(scenario / name).resolve() for name in config["materials"]]
+    assessment = (scenario / config["assessment"]).resolve()
+    if (
+        not paths
+        or len({p.name for p in paths}) != len(paths)
+        or any(not p.is_relative_to(allowed) for p in paths)
+        or not assessment.is_relative_to(scenario.resolve())
+        or assessment.is_relative_to(allowed)
+    ):
+        raise ValueError("scenario must separate authorized corpus and assessment")
+    return {
+        "id": case_id,
+        "task": config["task"],
+        "sources": [p.read_text(encoding="utf-8") for p in paths],
+        "material_names": [p.name for p in paths],
+        "assessment": assessment.read_text(encoding="utf-8"),
+        "scenario_config": config,
+    }
+
+
+def prepare_corpus(corpus: Path, case: dict) -> None:
+    """Copy only approved originals; reject drift instead of rewriting a run."""
+    names = case.get("material_names") or [
+        f"material-{i}.txt" for i in range(len(case["sources"]))
+    ]
+    expected = dict(zip(names, case["sources"], strict=True))
+    if len(expected) != len(names) or any(Path(n).name != n for n in names):
+        raise ValueError("invalid material filenames")
+    if corpus.exists():
+        for path in corpus.iterdir():
+            if (
+                path.name not in expected
+                or not path.is_file()
+                or path.is_symlink()
+                or path.read_text(encoding="utf-8") != expected[path.name]
+            ):
+                raise ValueError("run corpus changed; use a new run ID")
+    corpus.mkdir(parents=True, exist_ok=True)
+    for name, text in expected.items():
+        path = corpus / name
+        if not path.exists():
+            path.write_text(text, encoding="utf-8")
+
+
 def export(store, study, folder, errors, running=False):
     """Export reviewable domain facts, excluding provider-private step bodies."""
     kinds = (
@@ -25,6 +79,8 @@ def export(store, study, folder, errors, running=False):
         "work",
         "work_result",
         "work_wait",
+        "clarification",
+        "clarification_answer",
         "source",
         "evidence_anchor",
         "note",
@@ -92,10 +148,7 @@ def export(store, study, folder, errors, running=False):
 async def run(root, case_id, run_id, assess_only=False, plan_only=False):
     if not re.fullmatch(r"[a-zA-Z0-9_-]+", run_id):
         raise ValueError("invalid run ID")
-    cases = json.loads(
-        (root / "evals/closed_loop_cases.json").read_text(encoding="utf-8")
-    )
-    case = next(c for c in cases if c["id"] == case_id)
+    case = load_case(root, case_id)
     folder = root / ".deep-research-agent" / f"closed-{case_id}-{run_id}"
     if assess_only and not (folder / "research.db").exists():
         raise ValueError("no existing run")
@@ -114,20 +167,23 @@ async def run(root, case_id, run_id, assess_only=False, plan_only=False):
     ):
         raise ValueError("fixture or model changed; use a new run ID")
     if not assess_only:
-        corpus.mkdir(parents=True, exist_ok=True)
-        manifest.write_text(
-            json.dumps(
-                {
-                    "binding": binding,
-                    "case": case_id,
-                    "model": DEFAULT_MODEL,
-                    "implementation": implementation,
-                }
-            ),
-            encoding="utf-8",
-        )
-        for i, source in enumerate(case["sources"]):
-            (corpus / f"material-{i}.txt").write_text(source, encoding="utf-8")
+        prepare_corpus(corpus, case)
+        if not manifest.exists():
+            manifest.write_text(
+                json.dumps(
+                    {
+                        "binding": binding,
+                        "case": case_id,
+                        "model": DEFAULT_MODEL,
+                        "implementation": implementation,
+                        "assessment": case.get("assessment", case.get("criteria")),
+                        "scenario_config": case.get("scenario_config"),
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
     store = Store(folder / "research.db")
     service, clients = None, []
     prior = folder / "result.json"
@@ -204,7 +260,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--case",
-        choices=["decision", "archive", "measurement", "training"],
+        choices=["decision", "archive", "measurement", "training", "service_planning"],
         required=True,
     )
     parser.add_argument("--run-id", required=True)

@@ -353,7 +353,9 @@ class DeepSeek:
             "max_tokens": self.max_tokens,
             "stream": self.stream,
         }
-        estimated = self._input_tokens(payload, previous if mode == "continued" else None)
+        estimated = self._input_tokens(
+            payload, previous if mode == "continued" else None
+        )
         if estimated + self.max_tokens > self.context_tokens:
             payload["messages"] = [
                 {"role": "system", "content": context["system"]},
@@ -479,3 +481,72 @@ class Tavily:
         return await self.api.post(
             "/extract", {"urls": [args["url"]], "format": "markdown"}
         )
+
+    @staticmethod
+    def _data(raw: dict) -> dict:
+        if raw.get("http_status") != 200:
+            raise ProviderFailure("tavily", raw.get("http_status", 0))
+        data = raw.get("data")
+        if not isinstance(data, dict) or not isinstance(data.get("results"), list):
+            raise ValueError("invalid Tavily response: expected results array")
+        return data
+
+    @classmethod
+    def decode_search(cls, raw: dict) -> dict:
+        results = []
+        for item in cls._data(raw)["results"]:
+            if not isinstance(item, dict) or not isinstance(item.get("url"), str):
+                raise ValueError("invalid Tavily search result URL")
+            if any(not isinstance(item.get(k, ""), str) for k in ("title", "content")):
+                raise ValueError("invalid Tavily search title or content")
+            results.append(
+                {
+                    "url": item["url"],
+                    "title": item.get("title", ""),
+                    "snippet": item.get("content", ""),
+                    "content_type": "search_snippet",
+                }
+            )
+        return {"results": results}
+
+    @classmethod
+    def decode_extract(cls, raw: dict) -> dict:
+        data = cls._data(raw)
+        failed = data.get("failed_results", [])
+        if not isinstance(failed, list):
+            raise ValueError("invalid Tavily extraction failures")
+        sources, failures = [], []
+        for item in failed:
+            if not isinstance(item, dict):
+                raise ValueError("invalid Tavily extraction failure")
+            failures.append(
+                {
+                    "url": item.get("url", ""),
+                    "reason": str(
+                        item.get("error") or "Provider could not extract this URL"
+                    ),
+                    "action": "Check the URL or obtain an accessible original; no source was saved.",
+                }
+            )
+        for item in data["results"]:
+            if not isinstance(item, dict) or not isinstance(item.get("url"), str):
+                raise ValueError("invalid Tavily extraction result URL")
+            text = item.get("raw_content")
+            if not isinstance(text, str) or not text.strip():
+                failures.append(
+                    {
+                        "url": item["url"],
+                        "reason": "Extraction returned no readable text",
+                        "action": "Use another accessible original or an uploaded copy.",
+                    }
+                )
+                continue
+            sources.append(
+                {
+                    "origin": item["url"],
+                    "text": text,
+                    "parser": "tavily-extract-v1",
+                    "coverage": "extracted_not_reviewed",
+                }
+            )
+        return {"sources": sources, "failures": failures}

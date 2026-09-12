@@ -17,6 +17,44 @@ class Workspace:
         self.store = store
         self.parse_timeout = parse_timeout
 
+    def web_snapshot(self, study: str, decoded: dict, acquisition: dict) -> dict:
+        """Persist extracted text with its successful acquisition, never raw envelopes."""
+        work, step = acquisition["work"], acquisition["step"]
+        producer = self.store.get(study, work)
+        event = self.store.get(study, step)
+        operation = self.store.db.execute(
+            "SELECT work,status FROM operations WHERE study=? AND id=?",
+            (study, acquisition["operation"]),
+        ).fetchone()
+        if (
+            producer.kind != "work"
+            or event.kind != "step"
+            or work not in event.parents
+            or operation is None
+            or operation["work"] != work
+            or operation["status"] != "succeeded"
+        ):
+            raise ValueError("web source requires its successful work acquisition")
+        sources = []
+        with self.store.transaction():
+            for item in decoded["sources"]:
+                if not isinstance(item["text"], str) or not item["text"].strip():
+                    raise ValueError("web source requires readable extracted text")
+                source = self.store._put(
+                    study,
+                    "source",
+                    {**item, "acquisition": dict(acquisition)},
+                    (work, step),
+                )
+                sources.append(
+                    {
+                        "ref": source.ref,
+                        "url": item["origin"],
+                        "characters": len(item["text"]),
+                    }
+                )
+        return {"sources": sources, "failures": decoded["failures"]}
+
     def _root(self, study: str, root: str) -> Path:
         direction = self.store.get(study, self.store.control(study).direction)
         allowed = direction.body["policy"].get("local_roots", [])

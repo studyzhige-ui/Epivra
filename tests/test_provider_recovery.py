@@ -39,7 +39,7 @@ class RecoveryTests(unittest.IsolatedAsyncioTestCase):
             calls += 1
             return {"http_status": 432 if calls == 1 else 200}
 
-        def observe(raw):
+        def observe(raw, acquisition):
             if raw["http_status"] != 200:
                 raise ProviderFailure("tavily", raw["http_status"])
             return {"recovered": True}

@@ -185,7 +185,14 @@ class Store:
     def put(
         self, study: str, kind: str, body: Any, parents: tuple[str, ...] = ()
     ) -> Artifact:
-        if kind in {"control", "direction", "publication", "work"}:
+        if kind in {
+            "control",
+            "direction",
+            "publication",
+            "work",
+            "clarification",
+            "clarification_answer",
+        }:
             raise NotAllowed("reserved artifact requires its transaction entry point")
         with self.transaction():
             return self._put(study, kind, body, parents)
@@ -201,7 +208,7 @@ class Store:
                 "direction",
                 {
                     "request": request,
-                    "runtime": "research-mainline-v1",
+                    "runtime": "research-mainline-v2",
                     "policy": policy,
                 },
             )
@@ -321,7 +328,7 @@ class Store:
             return result
 
     def require_runtime(self, study: str, direction: str) -> None:
-        if self.get(study, direction).body.get("runtime") != "research-mainline-v1":
+        if self.get(study, direction).body.get("runtime") != "research-mainline-v2":
             raise RuntimeMismatch(
                 "Archived research runtime: read-only audit; start a new study"
             )
@@ -359,11 +366,7 @@ class Store:
                 if parent.body["direction"] != current.direction:
                     raise Conflict("delegating work belongs to a superseded direction")
             if role in {"synthesizer", "writer"}:
-                expected_roles = (
-                    {"investigator"}
-                    if role == "synthesizer"
-                    else {"investigator", "synthesizer"}
-                )
+                expected_roles = {"investigator", "synthesizer"}
                 results = [self.get(study, ref) for ref in inputs]
                 valid = set()
                 for result in results:
@@ -377,9 +380,9 @@ class Store:
                         and producer.body["direction"] == current.direction
                     ):
                         valid.add(result.ref)
-                if not valid or (role == "writer" and len(valid) != 1):
+                if not valid:
                     raise NotAllowed(
-                        f"{role} requires {'one answer' if role == 'writer' else 'an investigation'} result from current research"
+                        f"{role} requires research results from current research"
                     )
             if role == "reviewer":
                 reports = [
@@ -416,9 +419,110 @@ class Store:
             raise NotAllowed("strategy approval required")
         return item
 
+    def clarifications(
+        self,
+        study: str,
+        *,
+        work: str | None = None,
+        owner: str | None = None,
+        open_only: bool = False,
+    ) -> list[Artifact]:
+        direction = self.control(study).direction
+        answered = {
+            a.body["question"] for a in self.list(study, "clarification_answer")
+        }
+        return [
+            q
+            for q in self.list(study, "clarification")
+            if q.body["direction"] == direction
+            and (work is None or q.body["work"] == work)
+            and (owner is None or q.body["owner"] == owner)
+            and (not open_only or q.ref not in answered)
+        ]
+
+    def ask(
+        self, study: str, work: str, epoch: int, text: str, refs: list[str], step: str
+    ) -> Artifact:
+        with self.transaction():
+            item = self.require_work(study, work, epoch)
+            if item.body["role"] == "lead" or not item.body["owner"]:
+                raise NotAllowed("only delegated research work may ask its owner")
+            self._step_request(study, work, step)
+            if not text.strip():
+                raise ValueError("clarification requires a concrete question")
+            body = {
+                "text": text,
+                "refs": list(dict.fromkeys(refs)),
+                "work": work,
+                "owner": item.body["owner"],
+                "direction": item.body["direction"],
+            }
+            for old in self.clarifications(study, work=work):
+                if step in old.parents and old.body == body:
+                    return old
+            if self.clarifications(study, work=work, open_only=True):
+                raise Conflict("work is already waiting for clarification")
+            if any(
+                a.body.get("producer") == work for a in self.list(study, "work_result")
+            ):
+                raise Conflict("completed work cannot ask for clarification")
+            return self._put(
+                study,
+                "clarification",
+                body,
+                (work, item.body["direction"], step, *refs),
+            )
+
+    def answer(
+        self,
+        study: str,
+        work: str,
+        epoch: int,
+        question: str,
+        text: str,
+        refs: list[str],
+    ) -> Artifact:
+        with self.transaction():
+            owner = self.require_work(study, work, epoch)
+            q = self.get(study, question)
+            if (
+                owner.body["role"] != "lead"
+                or q.kind != "clarification"
+                or q.body["owner"] != work
+                or q.body["direction"] != owner.body["direction"]
+            ):
+                raise NotAllowed("only the current question owner may answer")
+            if not text.strip():
+                raise ValueError("answer requires a decision or explanation")
+            body = {
+                "question": question,
+                "text": text,
+                "refs": list(dict.fromkeys(refs)),
+                "producer": work,
+            }
+            old = [
+                a
+                for a in self.list(study, "clarification_answer")
+                if a.body["question"] == question
+            ]
+            if old:
+                if old[0].body != body:
+                    raise Conflict("cannot replace a submitted clarification answer")
+                return old[0]
+            return self._put(
+                study,
+                "clarification_answer",
+                body,
+                (work, owner.body["direction"], question, *refs),
+            )
+
     def _step_request(self, study: str, work: str, ref: str) -> Any:
         step = self.get(study, ref)
-        if step.kind != "step" or work not in step.parents or "request" not in step.body:
+        if (
+            step.kind != "step"
+            or work not in step.parents
+            or "request" not in step.body
+        ):
             raise Conflict("request step must belong to the operation work")
         return step.body["request"]
 
@@ -438,9 +542,10 @@ class Store:
         serialized = encode(request)
         with self.transaction():
             self.require_work(study, work, epoch)
-            if request_step is not None and encode(
-                self._step_request(study, work, request_step)
-            ) != serialized:
+            if (
+                request_step is not None
+                and encode(self._step_request(study, work, request_step)) != serialized
+            ):
                 raise Conflict("request differs from its frozen step")
             row = self.db.execute(
                 "SELECT * FROM operations WHERE id=?", (operation_id,)

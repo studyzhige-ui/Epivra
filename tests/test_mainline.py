@@ -67,8 +67,10 @@ class MainlineTests(unittest.IsolatedAsyncioTestCase):
         forged = h._steps("s", "work_result", other.ref)[0]
         self.assertEqual(other.ref, forged.body["producer"])
         self.assertEqual([], h._steps("s", "work_result", syn.ref))
-        with self.assertRaises(NotAllowed):
-            self.child("writer", "Uncombined answers", (result.ref, forged.ref))
+        writer = self.child(
+            "writer", "Use complementary answers", (result.ref, forged.ref)
+        )
+        self.assertEqual([result.ref, forged.ref], writer.body["inputs"])
         self.assertFalse(h.finished("s", syn.ref))
 
     async def test_brief_is_shared_but_superseded_on_steer(self):
@@ -247,22 +249,6 @@ class MainlineTests(unittest.IsolatedAsyncioTestCase):
         )
         report = self.store.list("s", "report")[0]
         reviewer = self.child("reviewer", "Review", (report.ref,))
-        await self.execute(
-            reviewer,
-            Call(
-                "record_review",
-                {
-                    "checks": [
-                        {
-                            "unit": 0,
-                            "evidence": [],
-                            "assessment": "Checked",
-                            "defects": [],
-                        }
-                    ]
-                },
-            ),
-        )
         await self.execute(
             reviewer, Call("submit_review", {"reason": "Checked", "defects": []})
         )

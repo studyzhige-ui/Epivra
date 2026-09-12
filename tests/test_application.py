@@ -277,21 +277,15 @@ class WorkflowTests(unittest.IsolatedAsyncioTestCase):
                     reject = reject_once and not store.list("s", "review")
                     calls = [
                         Call(
-                            "record_review",
+                            "submit_review",
                             {
-                                "checks": [
-                                    {
-                                        "unit": 0,
-                                        "evidence": [source_ref],
-                                        "assessment": "Bounded observation",
-                                        "defects": ["Clarify wording"]
-                                        if reject
-                                        else [],
-                                    }
-                                ]
+                                "reason": "Checked task and evidence",
+                                "defects": ["Missing required interpretation"]
+                                if reject
+                                else [],
+                                "comments": ["Optional presentation improvement"],
                             },
                         ),
-                        Call("submit_review", {"reason": "Checked", "defects": []}),
                     ]
                 return Reply("", tuple(calls)).to_json()
 

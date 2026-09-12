@@ -126,7 +126,7 @@ class BoundaryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(c.plan, request["research_scope"]["approved_plan"]["ref"])
         self.assertIn("evidence review", request["direction"]["request"])
 
-    async def test_correct_paragraphs_cannot_override_whole_report_defects(self):
+    async def test_whole_report_defect_rejects_without_paragraph_check_records(self):
         report = self.store.put(
             "s", "report", {"text": "Accurate but incomplete", "evidence": []}
         )
@@ -135,19 +135,6 @@ class BoundaryTests(unittest.IsolatedAsyncioTestCase):
         )
         model = Model(
             (
-                Call(
-                    "record_review",
-                    {
-                        "checks": [
-                            {
-                                "unit": 0,
-                                "evidence": [],
-                                "assessment": "No false statement",
-                                "defects": [],
-                            }
-                        ]
-                    },
-                ),
                 Call(
                     "submit_review",
                     {
@@ -160,8 +147,10 @@ class BoundaryTests(unittest.IsolatedAsyncioTestCase):
         await Harness(self.store, model).step("s", work.ref)
         review = self.store.list("s", "review")[-1]
         self.assertFalse(review.body["accepted"])
-        self.assertEqual([], review.body["checks"][0]["defects"])
         self.assertTrue(review.body["defects"])
+        self.assertNotIn("checks", review.body)
+        with self.assertRaises(Conflict):
+            self.store.publish("s", self.work.ref, self.c.epoch, report.ref, review.ref)
 
     async def test_planner_can_discover_authorized_inventory_before_approval(self):
         root = Path(self.folder.name) / "documents"
@@ -196,13 +185,13 @@ class BoundaryTests(unittest.IsolatedAsyncioTestCase):
                 await harness.step("s", self.work.ref)
         self.assertEqual(0, model.count)
 
-    async def test_review_requires_complete_coverage_and_derives_rejection(self):
+    async def test_nonblocking_comments_accept_and_review_remains_version_bound(self):
         source = self.store.put("s", "source", {"text": "Uncertain effect"})
         report = self.store.put(
             "s",
             "report",
             {
-                "text": "Effect is uncertain.\n\nTherefore certainly deploy.",
+                "text": "Effect is uncertain.\n\nMore evidence is needed.",
                 "evidence": [source.ref],
             },
             (self.c.direction, self.work.ref),
@@ -210,63 +199,43 @@ class BoundaryTests(unittest.IsolatedAsyncioTestCase):
         reviewer = self.store.work(
             "s", self.c.ref, "reviewer", "Check", (report.ref,), self.work.ref
         )
-        check = {
-            "unit": 0,
-            "evidence": [source.ref],
-            "assessment": "Matches source",
-            "defects": [],
-        }
         model = Model(
             (
-                Call("record_review", {"checks": [check]}),
-                Call("submit_review", {"reason": "Accept", "defects": []}),
+                Call(
+                    "submit_review",
+                    {
+                        "reason": "Answers the task within the evidence limits",
+                        "defects": [],
+                        "comments": ["A shorter heading would be easier to scan"],
+                    },
+                ),
             )
         )
         harness = Harness(self.store, model)
-        await harness.step("s", reviewer.ref)
-        self.assertEqual([], self.store.list("s", "review"))
-        self.assertIn(
-            "unchecked report units",
-            self.store.list("s", "observation")[-1].body["result"]["error"],
-        )
-        self.store.close()
-        self.store = Store(self.path)
-        harness = Harness(self.store, model)
-        self.assertEqual(
-            [0], harness._request("s", reviewer)["review_progress"]["checked_units"]
-        )
-        model.calls = (
-            Call(
-                "record_review",
-                {
-                    "checks": [
-                        {
-                            **check,
-                            "unit": 1,
-                            "assessment": "Unjustified action",
-                            "defects": ["Unsupported assertion"],
-                        }
-                    ]
-                },
-            ),
-            Call("submit_review", {"reason": "Overall direction fine", "defects": []}),
-        )
+        progress = harness._request("s", reviewer)["review_progress"]
+        self.assertEqual(report.ref, progress["report"])
+        self.assertEqual(2, progress["total_units"])
+        self.assertNotIn("checked_units", progress)
         await harness.step("s", reviewer.ref)
         review = self.store.list("s", "review")[-1]
-        self.assertFalse(review.body["accepted"])
-        self.assertEqual(2, len(review.body["checks"]))
+        self.assertTrue(review.body["accepted"])
+        self.assertEqual(
+            ["A shorter heading would be easier to scan"], review.body["comments"]
+        )
+        self.assertNotIn("checks", review.body)
         new_report = self.store.put(
             "s",
             "report",
             {"text": "Revised version", "evidence": [source.ref]},
             (self.c.direction, self.work.ref),
         )
-        new_work = self.store.work(
-            "s", self.c.ref, "reviewer", "Check", (new_report.ref,), self.work.ref
-        )
-        self.assertEqual(
-            [], harness._request("s", new_work)["review_progress"]["checked_units"]
-        )
+        self.store.close()
+        self.store = Store(self.path)
+        with self.assertRaises(Conflict):
+            self.store.publish(
+                "s", self.work.ref, self.c.epoch, new_report.ref, review.ref
+            )
+        self.assertEqual(report.ref, self.store.get("s", review.ref).body["report"])
 
     async def test_reading_progress_survives_restart_but_is_work_local(self):
         self.work = self.store.work(

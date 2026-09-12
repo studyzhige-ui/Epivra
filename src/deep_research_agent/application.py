@@ -119,7 +119,16 @@ class ResearchService:
                     waiting = bool(
                         waits and any(w.ref in waits[-1].body["refs"] for w in pending)
                     )
-                    ready = pending + ([] if waiting else [root])
+                    questions = self.store.clarifications(
+                        study, owner=root.ref, open_only=True
+                    )
+                    if questions and (
+                        not waits or any(q.seq > waits[-1].seq for q in questions)
+                    ):
+                        waiting = False
+                    ready = [
+                        w for w in pending if not self.harness.waiting(study, w.ref)
+                    ] + ([] if waiting else [root])
 
                     def last_step(w):
                         steps = self.harness._steps(study, "step", w.ref)
@@ -170,6 +179,16 @@ class ResearchService:
             "error": self.errors.get(study),
             "unsettled_operations": self.store.unsettled(study),
             "provider_queue": self.harness.scheduler.snapshot(),
+            "clarifications": [
+                {
+                    "ref": q.ref,
+                    "work": q.body["work"],
+                    "owner": q.body["owner"],
+                    "text": q.body["text"],
+                    "refs": q.body["refs"],
+                }
+                for q in self.store.clarifications(study, open_only=True)
+            ],
             "work_errors": {
                 w.ref: self.work_errors[w.ref]
                 for w in self.store.list(study, "work")
@@ -202,8 +221,9 @@ def online_service(
     scheduler=None,
 ) -> tuple[ResearchService, list]:
     """Compose explicit providers without giving adapters access to Agent control."""
-    from .adapters import DeepSeek, JsonAPI, ProviderFailure, Tavily
+    from .adapters import DeepSeek, JsonAPI, Tavily
     from .harness import STRING, Tool, object_schema
+    from .workspace import Workspace
 
     model_key, search_key = keys["DEEPSEEK_API_KEY"], keys["TAVILY_API_KEY"]
     if not model_key.strip() or not search_key.strip():
@@ -212,49 +232,7 @@ def online_service(
     search_api = JsonAPI("https://api.tavily.com", search_key)
     search = Tavily(search_api)
 
-    def response_data(raw):
-        status = raw.get("http_status", 0)
-        if status != 200:
-            raise ProviderFailure("tavily", status)
-        if "data" not in raw:
-            raise ValueError("invalid search response")
-        return raw["data"]
-
-    def search_observation(raw):
-        data = response_data(raw)
-        return {
-            "results": [
-                {
-                    "url": r["url"],
-                    "title": r.get("title", ""),
-                    "snippet": r.get("content", ""),
-                    "content_type": "search_snippet",
-                }
-                for r in data.get("results", [])
-            ]
-        }
-
-    def extract_observation(raw):
-        data = response_data(raw)
-        sources = []
-        for result in data.get("results", []):
-            text = result.get("raw_content")
-            if not isinstance(text, str) or not text.strip():
-                continue
-            source = store.put(
-                study,
-                "source",
-                {
-                    "text": text,
-                    "origin": result["url"],
-                    "parser": "tavily-extract-v1",
-                    "coverage": "extracted_not_reviewed",
-                },
-            )
-            sources.append(
-                {"ref": source.ref, "url": result["url"], "characters": len(text)}
-            )
-        return {"sources": sources, "failed_count": len(data.get("failed_results", []))}
+    workspace = Workspace(store)
 
     tools = {
         "web_search": Tool(
@@ -264,7 +242,7 @@ def online_service(
             identity=search.identity + ":search",
             permission="network",
             roles=("investigator", "reviewer"),
-            observe=search_observation,
+            observe=lambda raw, acquisition: search.decode_search(raw),
             retry_delay=search.retry_delay,
             retry_on_resume=search.retry_on_resume,
             parallel_safe=True,
@@ -277,7 +255,9 @@ def online_service(
             identity=search.identity + ":extract",
             permission="network",
             roles=("investigator", "reviewer"),
-            observe=extract_observation,
+            observe=lambda raw, acquisition: workspace.web_snapshot(
+                study, search.decode_extract(raw), acquisition
+            ),
             check=search.validate_extract,
             retry_delay=search.retry_delay,
             retry_on_resume=search.retry_on_resume,
