@@ -9,6 +9,7 @@ from .adapters import ProviderFailure
 from .domain import Conflict
 from .harness import Harness
 from .storage import Store
+from .usage import summarize
 
 
 class ResearchService:
@@ -179,6 +180,7 @@ class ResearchService:
             "error": self.errors.get(study),
             "unsettled_operations": self.store.unsettled(study),
             "provider_queue": self.harness.scheduler.snapshot(),
+            "usage": summarize(self.store.usage_records(study)),
             "clarifications": [
                 {
                     "ref": q.ref,

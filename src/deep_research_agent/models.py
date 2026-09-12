@@ -111,6 +111,10 @@ def create_model(policy, keys, *, client=None):
             thinking_budget=thinking.get("thinkingBudget"),
             stream=policy.get("stream_model", False),
         )
+    region = policy.get("region") or provider.default_region
+    adapter.quota_resource = provider.id + (
+        ":" + region if region != provider.default_region else ""
+    )
     return adapter, api
 
 

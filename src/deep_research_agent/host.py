@@ -25,8 +25,14 @@ class Host:
         self.root = root.resolve()
         self.state = self.root / ".deep-research-agent"
         self.store = Store(self.state / "research.db")
-        self.scheduler = Scheduler()
         try:
+            limits_path = self.root / "provider-limits.json"
+            limits = (
+                json.loads(limits_path.read_text(encoding="utf-8"))
+                if limits_path.exists()
+                else {}
+            )
+            self.scheduler = Scheduler(limits=limits, history=self.store.admissions())
             for row in self.store.db.execute(
                 "SELECT DISTINCT study FROM artifacts WHERE kind='retry'"
             ):
@@ -116,6 +122,9 @@ class Host:
         study = request["study"]
         if not isinstance(study, str):
             raise ValueError("study must be text")
+        if action == "usage":
+            self.store.control(study)
+            return {"calls": self.store.usage_records(study)}
         if action == "upload":
             control = self.store.control(study)
             service = self.services.get(study)
@@ -347,7 +356,7 @@ def main():
     create.add_argument("--region")
     create.add_argument("--context-tokens", type=int)
     create.add_argument("--max-tokens", type=int)
-    for action in ("status", "report", "reload"):
+    for action in ("status", "report", "reload", "usage"):
         sub.add_parser(action).add_argument("study")
     control = sub.add_parser("control")
     control.add_argument("study")
@@ -420,6 +429,7 @@ def main():
             "report",
             "control",
             "reload",
+            "usage",
             "reconcile",
             "upload",
         ):

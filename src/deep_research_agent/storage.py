@@ -50,7 +50,7 @@ class Store:
             existing = self.db.execute(
                 "SELECT name FROM sqlite_master WHERE type='table'"
             ).fetchall()
-            if version not in (0, 2001, 2002) or (version == 0 and existing):
+            if version not in (0, 2001, 2002, 2003) or (version == 0 and existing):
                 raise ValueError("incompatible database; use a new redesign workspace")
             self.db.execute("PRAGMA foreign_keys=ON")
             self.db.execute("PRAGMA journal_mode=WAL")
@@ -95,7 +95,9 @@ class Store:
                         "ALTER TABLE operations ADD COLUMN request_step TEXT "
                         "REFERENCES artifacts(ref)"
                     )
-                self.db.execute("PRAGMA user_version=2002")
+                if "admission" not in columns:
+                    self.db.execute("ALTER TABLE operations ADD COLUMN admission TEXT")
+                self.db.execute("PRAGMA user_version=2003")
         except BaseException:
             if hasattr(self, "db"):
                 self.db.close()
@@ -548,6 +550,7 @@ class Store:
         request: Any,
         *,
         request_step: str | None = None,
+        admission: dict | None = None,
     ) -> Any | None:
         """None means newly admitted. Existing completed result is replayed."""
         import json
@@ -579,8 +582,8 @@ class Store:
             direction = self.control(study).direction
             self.db.execute(
                 "INSERT INTO operations"
-                "(id,study,work,direction,epoch,request,status,result,request_step) "
-                "VALUES(?,?,?,?,?,?,?,?,?)",
+                "(id,study,work,direction,epoch,request,status,result,request_step,admission) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?)",
                 (
                     operation_id,
                     study,
@@ -591,9 +594,56 @@ class Store:
                     "unknown",
                     None,
                     request_step,
+                    encode(admission) if admission is not None else None,
                 ),
             )
             return None
+
+    def admissions(self):
+        import json
+
+        return [
+            json.loads(row[0])
+            for row in self.db.execute(
+                "SELECT admission FROM operations WHERE admission IS NOT NULL"
+            )
+        ]
+
+    def usage_records(self, study):
+        import json
+
+        from .usage import counters
+
+        records = []
+        for row in self.db.execute(
+            "SELECT * FROM operations WHERE study=? ORDER BY rowid", (study,)
+        ):
+            admission = json.loads(row["admission"]) if row["admission"] else {}
+            request = (
+                self._step_request(study, row["work"], row["request_step"])
+                if row["request_step"]
+                else json.loads(row["request"])
+            )
+            raw = json.loads(row["result"]) if row["result"] else {}
+            if "tool" in request:
+                raw = raw.get("value", {})
+            records.append(
+                {
+                    "operation": row["id"],
+                    "work": row["work"],
+                    "resource": admission.get("resource", "legacy"),
+                    "model": admission.get("model")
+                    or request.get("wire", {}).get("payload", {}).get("model"),
+                    "tool": request.get("tool"),
+                    "status": row["status"],
+                    "http_status": raw.get("http_status")
+                    if isinstance(raw, dict)
+                    else None,
+                    "admitted_at": admission.get("at"),
+                    "usage": counters(raw),
+                }
+            )
+        return records
 
     def reconcile(
         self,

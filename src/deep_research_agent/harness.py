@@ -312,7 +312,7 @@ class Harness:
         scheduler: Scheduler | None = None,
     ):
         self.store, self.model = store, model
-        self.scheduler = scheduler or Scheduler()
+        self.scheduler = scheduler or Scheduler(history=store.admissions())
         self.tools = tools or {}
         self.workspace = Workspace(store)
         if set(self.tools) & set(BUILTINS):
@@ -597,11 +597,32 @@ class Harness:
                         min(0.25, retry.body["not_before"] - time.time())
                     )
             if self.store.operation_status(study, key) is None:
+                tokens = (
+                    request.get("wire", {}).get("estimated_input_tokens", 0)
+                    + getattr(self.model, "max_tokens", 0)
+                    if request_step is not None
+                    else 0
+                )
                 async with self.scheduler.slot(
-                    resource, lambda: self.store.require_work(study, work, epoch)
-                ):
+                    resource,
+                    lambda: self.store.require_work(study, work, epoch),
+                    tokens,
+                ) as admitted:
                     raw = self.store.admit(
-                        study, work, epoch, key, request, request_step=request_step
+                        study,
+                        work,
+                        epoch,
+                        key,
+                        request,
+                        request_step=request_step,
+                        admission={
+                            "at": admitted,
+                            "resource": resource,
+                            "tokens": tokens,
+                            "model": getattr(self.model, "model", None)
+                            if request_step
+                            else None,
+                        },
                     )
                     if raw is None:
                         raw = await invoke()
@@ -746,7 +767,11 @@ class Harness:
                 lambda: self.model.complete(step.body["request"]),
                 getattr(self.model, "retry_delay", None),
                 getattr(self.model, "retry_on_resume", None),
-                getattr(self.model, "resource", "model"),
+                getattr(
+                    self.model,
+                    "quota_resource",
+                    getattr(self.model, "resource", "model"),
+                ),
                 request_step=step.ref,
             )
             # Always save the external result; only then check the admission fence.

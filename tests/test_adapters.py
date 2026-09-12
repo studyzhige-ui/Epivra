@@ -103,11 +103,12 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
                         "max_results": 10,
                         "include_answer": False,
                         "include_raw_content": False,
+                        "include_usage": True,
                     },
                 ),
                 (
                     "/extract",
-                    {"urls": ["https://example.com/paper"], "format": "markdown"},
+                    {"urls": ["https://example.com/paper"], "format": "markdown", "include_usage": True},
                 ),
             ],
         )

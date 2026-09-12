@@ -597,6 +597,7 @@ class Tavily:
                 "max_results": 10,
                 "include_answer": False,
                 "include_raw_content": False,
+                "include_usage": True,
             },
         )
 
@@ -620,7 +621,8 @@ class Tavily:
     async def extract(self, args: dict[str, Any]) -> dict:
         self.validate_extract(args)
         return await self.api.post(
-            "/extract", {"urls": [args["url"]], "format": "markdown"}
+            "/extract",
+            {"urls": [args["url"]], "format": "markdown", "include_usage": True},
         )
 
     @staticmethod

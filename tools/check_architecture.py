@@ -20,6 +20,7 @@ LAYERS = (
                 "models",
                 "native_models",
                 "scheduling",
+                "usage",
                 "materials",
                 "review",
                 "calculation",
@@ -48,7 +49,8 @@ ALLOWED = {
     "__init__": set(),
     "domain": set(),
     "prompts": set(),
-    "storage": {"domain"},
+    "storage": {"domain", "usage"},
+    "usage": set(),
     "context": {"domain"},
     "review": {"domain"},
     "calculation": set(),
@@ -63,7 +65,15 @@ ALLOWED = {
         "scheduling",
         "review",
     },
-    "application": {"domain", "harness", "storage", "adapters", "workspace", "models"},
+    "application": {
+        "domain",
+        "harness",
+        "storage",
+        "adapters",
+        "workspace",
+        "models",
+        "usage",
+    },
 }
 FORBIDDEN = {"claude_agent_sdk", "codex_sdk", "langgraph"}
 IO_MODULES = {"os", "pathlib", "sqlite3", "httpx", "aiohttp", "socket", "subprocess"}

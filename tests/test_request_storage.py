@@ -44,7 +44,7 @@ class RequestStorageTests(Fixture, unittest.IsolatedAsyncioTestCase):
         )
         self.restart(legacy=True)
         self.assertEqual(
-            2002, self.store.db.execute("PRAGMA user_version").fetchone()[0]
+            2003, self.store.db.execute("PRAGMA user_version").fetchone()[0]
         )
         await Harness(self.store, model).step("s", self.work.ref)
         self.assertEqual(0, model.calls)
