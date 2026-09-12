@@ -262,15 +262,8 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--case",
-        choices=[
-            "decision",
-            "archive",
-            "measurement",
-            "training",
-            "service_planning",
-            "archive_history",
-        ],
         required=True,
+        help="Case ID from research_scenarios or the built-in fixture corpus",
     )
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--assess-only", action="store_true")

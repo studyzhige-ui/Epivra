@@ -98,16 +98,20 @@ BUILTINS = {
     "pin_evidence": ("all", object_schema({"refs": STRINGS})),
     "delegate_work": (
         "lead",
-        object_schema(
-            {
-                "role": {
-                    **STRING,
-                    "enum": ["investigator", "synthesizer", "writer", "reviewer"],
-                },
-                "task": STRING,
-                "refs": STRINGS,
-            }
-        ),
+        {
+            **object_schema(
+                {
+                    "role": {
+                        **STRING,
+                        "enum": ["investigator", "synthesizer", "writer", "reviewer"],
+                    },
+                    "task": STRING,
+                    "refs": STRINGS,
+                    "review_mode": {"type": "string", "enum": ["final", "check"]},
+                }
+            ),
+            "required": ["role", "task", "refs"],
+        },
     ),
     "finish_work": (
         "investigator",
@@ -330,6 +334,12 @@ class Harness:
                 and name in {"save_note", "discover_local", "snapshot_local"}
             )
         }
+        if role == "reviewer" and policy.get("_review_mode") == "check":
+            result.pop("submit_review")
+            result["finish_work"] = {
+                "description": TOOLS["finish_work"],
+                "parameters": BUILTINS["finish_work"][1],
+            }
         if role == "lead" and policy.get("_approved"):
             result = {
                 k: v
@@ -429,6 +439,11 @@ class Harness:
                     "ref": child.ref,
                     "task": child.body["task"],
                     "role": child.body["role"],
+                    **(
+                        {"review_mode": child.body.get("review_mode", "final")}
+                        if child.body["role"] == "reviewer"
+                        else {}
+                    ),
                     "results": [
                         a.ref for a in self._steps(study, "work_result", child.ref)
                     ],
@@ -440,12 +455,17 @@ class Harness:
             "pinned_evidence": anchors[-1].body["refs"] if anchors else [],
             "tools": self._schema(
                 work.body["role"],
-                {**direction.body["policy"], "_approved": control.approved},
+                {
+                    **direction.body["policy"],
+                    "_approved": control.approved,
+                    "_review_mode": work.body.get("review_mode", "final"),
+                },
             ),
             "tool_versions": {name: tool.binding for name, tool in self.tools.items()},
         }
         if work.body["role"] == "reviewer":
             report, parts = self._review(study, work)
+            mandatory["review_mode"] = work.body.get("review_mode", "final")
             mandatory["review_progress"] = {
                 "report": report.ref,
                 "evidence": report.body["evidence"],
@@ -464,6 +484,7 @@ class Harness:
             and not (
                 work.body["role"] == "reviewer"
                 and self.store.get(study, ref).kind == "work_result"
+                and self.store.get(study, ref).body.get("report") != report.ref
             )
         )
         # Related inputs remain original artifacts, never an intermediate summary.
@@ -708,7 +729,11 @@ class Harness:
             direction = self.store.get(study, work.body["direction"])
             if step.body["request"]["tools"] != self._schema(
                 work.body["role"],
-                {**direction.body["policy"], "_approved": control.approved},
+                {
+                    **direction.body["policy"],
+                    "_approved": control.approved,
+                    "_review_mode": work.body.get("review_mode", "final"),
+                },
             ):
                 raise NotAllowed("pending work requires its original tool contracts")
             raw = await self._invoke(
@@ -989,6 +1014,7 @@ class Harness:
                 args["task"],
                 tuple(args["refs"]),
                 work.ref,
+                review_mode=args.get("review_mode", "final"),
             )
             return {"work": child.ref}
         if call.name == "request_clarification":
@@ -1005,10 +1031,16 @@ class Harness:
                 "resumed_work": self.store.get(study, args["question"]).body["work"],
             }
         if call.name == "finish_work":
+            binding = {}
+            if work.body["role"] == "reviewer":
+                if work.body.get("review_mode", "final") != "check":
+                    raise NotAllowed("final reviewer must submit a whole-report review")
+                report, _ = self._review(study, work)
+                binding = {"report": report.ref}
             item = self.store.put(
                 study,
                 "work_result",
-                {**args, "producer": work.ref},
+                {**args, "producer": work.ref, **binding},
                 (*parents, *self._handoff_inputs(study, work), *args["refs"]),
             )
             return {"ref": item.ref}
@@ -1220,6 +1252,10 @@ class Harness:
                 "next_offset": offset + limit if offset + limit < len(parts) else None,
             }
         elif call.name == "submit_review":
+            if work.body.get("review_mode", "final") == "check":
+                raise NotAllowed(
+                    "argument check cannot accept or reject the whole report"
+                )
             report, _ = self._review(study, work)
             item = self.store.put(
                 study,

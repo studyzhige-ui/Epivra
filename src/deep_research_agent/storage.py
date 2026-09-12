@@ -341,6 +341,7 @@ class Store:
         task: str,
         inputs: tuple[str, ...] = (),
         owner: str | None = None,
+        review_mode: str = "final",
     ) -> Artifact:
         with self.transaction():
             current = self.control(study)
@@ -351,6 +352,10 @@ class Store:
             if not current.approved and role != "lead":
                 raise NotAllowed("strategy approval required")
             self.require_runtime(study, current.direction)
+            if review_mode not in {"final", "check"} or (
+                review_mode == "check" and role != "reviewer"
+            ):
+                raise ValueError("review mode applies only to reviewer work")
             if role not in {
                 "lead",
                 "reviewer",
@@ -392,6 +397,13 @@ class Store:
                 ]
                 if len(reports) != 1:
                     raise NotAllowed("review requires one report")
+                for ref in inputs:
+                    result = self.get(study, ref)
+                    if result.kind == "work_result" and result.body.get("report"):
+                        if result.body["report"] != reports[0].ref:
+                            raise Conflict(
+                                "argument check belongs to another report version"
+                            )
             return self._put(
                 study,
                 "work",
@@ -401,6 +413,7 @@ class Store:
                     "task": task,
                     "inputs": inputs,
                     "owner": owner,
+                    **({"review_mode": "check"} if review_mode == "check" else {}),
                 },
                 (current.direction, *inputs, *((owner,) if owner else ())),
             )
@@ -724,6 +737,7 @@ class Store:
             if (
                 reviewer.kind != "work"
                 or reviewer.body["role"] != "reviewer"
+                or reviewer.body.get("review_mode", "final") != "final"
                 or reviewer.body["direction"] != direction
                 or report.ref not in reviewer.body["inputs"]
             ):
