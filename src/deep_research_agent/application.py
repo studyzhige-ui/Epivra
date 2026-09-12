@@ -223,60 +223,123 @@ def online_service(
     scheduler=None,
 ) -> tuple[ResearchService, list]:
     """Compose explicit providers without giving adapters access to Agent control."""
-    from .adapters import JsonAPI, Tavily
     from .harness import STRING, Tool, object_schema
     from .models import create_model
+    from .web_providers import connect
     from .workspace import Workspace
 
     policy = store.get(study, store.control(study).direction).body["policy"]
     if model_name:
         policy = {**policy, "model": model_name}
-    search_key = keys.get("TAVILY_API_KEY", "")
-    if policy.get("network") and not search_key.strip():
-        raise ValueError("TAVILY_API_KEY required for web research")
-    model, model_api = create_model(policy, keys)
-    search_api = JsonAPI(
-        "https://api.tavily.com", search_key, credential_env="TAVILY_API_KEY"
-    )
-    search = Tavily(search_api)
-
     workspace = Workspace(store)
-
-    tools = {
-        "web_search": Tool(
-            "Find web sources; snippets are leads, not verified original evidence.",
-            object_schema({"query": STRING}),
-            search.search,
-            identity=search.identity + ":search",
-            permission="network",
-            roles=("investigator", "reviewer"),
-            observe=lambda raw, acquisition: search.decode_search(raw),
-            retry_delay=search.retry_delay,
-            retry_on_resume=search.retry_on_resume,
-            parallel_safe=True,
-            resource=search.resource,
-        ),
-        "fetch_web": Tool(
-            "Extract source text through Tavily; returns a persistent source reference.",
-            object_schema({"url": STRING}),
-            search.extract,
-            identity=search.identity + ":extract",
-            permission="network",
-            roles=("investigator", "reviewer"),
-            observe=lambda raw, acquisition: workspace.web_snapshot(
-                study, search.decode_extract(raw), acquisition
-            ),
-            check=search.validate_extract,
-            retry_delay=search.retry_delay,
-            retry_on_resume=search.retry_on_resume,
-            parallel_safe=True,
-            resource=search.resource,
-        ),
-    }
-    harness = Harness(
-        store,
-        model,
-        tools,
-        scheduler=scheduler,
+    searches = policy.get(
+        "search_providers", ["tavily"] if policy.get("network") else []
     )
-    return ResearchService(store, harness), [model_api, search_api]
+    readers = policy.get(
+        "reader_providers", ["tavily"] if policy.get("network") else []
+    )
+    providers = {
+        name: connect(name, keys) for name in dict.fromkeys([*searches, *readers])
+    }
+    model, model_api = create_model(policy, keys)
+
+    def select(args, names):
+        name = args.get("provider", names[0] if names else None)
+        if name not in names:
+            raise ValueError("provider is not enabled for this research")
+        return providers[name]
+
+    def schema(field, names):
+        value = object_schema({field: STRING})
+        value["properties"]["provider"] = {"type": "string", "enum": names}
+        if field == "url":
+            value["properties"]["force_refresh"] = {"type": "boolean"}
+        return value
+
+    async def search(args):
+        return await select(args, searches).search(args)
+
+    async def extract(args):
+        return await select(args, readers).extract(args)
+
+    def reuse(args):
+        if args.get("force_refresh"):
+            return None
+        for source in reversed(store.list(study, "source")):
+            if (
+                args["url"]
+                in (source.body.get("origin"), source.body.get("requested_url"))
+                and source.body.get("text", "").strip()
+            ):
+                return {
+                    "reused": {
+                        "sources": [
+                            {
+                                "ref": source.ref,
+                                "url": source.body["origin"],
+                                "characters": len(source.body["text"]),
+                            }
+                        ],
+                        "failures": [],
+                    }
+                }
+        return None
+
+    def observe(raw, acquisition, names, reading=False):
+        if "reused" in raw:
+            return raw["reused"]
+        provider = providers[raw["provider"]]
+        try:
+            decoded = (
+                provider.decode_extract(raw) if reading else provider.decode_search(raw)
+            )
+        except (ProviderFailure, ValueError, KeyError, TypeError):
+            return {
+                "error": "source_provider_failed",
+                "provider": provider.resource,
+                "http_status": raw.get("http_status"),
+                "alternatives": [name for name in names if name != provider.resource],
+                "instruction": "Try an available alternative or revise the query/URL; no evidence was obtained.",
+            }
+        return (
+            workspace.web_snapshot(study, decoded, acquisition) if reading else decoded
+        )
+
+    tools = {}
+    for name, names, field, invoke, reading in (
+        ("web_search", searches, "query", search, False),
+        ("fetch_web", readers, "url", extract, True),
+    ):
+        if not names:
+            continue
+        tools[name] = Tool(
+            (
+                "Find source URLs. Snippets are leads, not original evidence. "
+                if not reading
+                else "Read a public URL into a citable source; saved text is reused unless force_refresh. "
+            )
+            + "Choose provider only when needed; default: "
+            + names[0],
+            schema(field, names),
+            invoke,
+            identity="web-selection-v1:"
+            + ":".join(providers[n].identity for n in names),
+            permission="network",
+            roles=("investigator", "reviewer"),
+            observe=lambda raw, acq, choices=names, read=reading: observe(
+                raw, acq, choices, read
+            ),
+            check=(lambda args: select(args, readers).validate_extract(args))
+            if reading
+            else None,
+            parallel_safe=True,
+            resource=names[0],
+            resource_map={n: n for n in names},
+            cooldown=lambda raw: providers[raw["provider"]].retry_delay(raw, 0),
+            reuse=reuse if reading else None,
+        )
+    harness = Harness(store, model, tools, scheduler=scheduler)
+    return ResearchService(store, harness), [
+        model_api,
+        *(p.api for p in providers.values()),
+    ]

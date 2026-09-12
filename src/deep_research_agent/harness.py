@@ -44,9 +44,12 @@ class Tool:
     observe: Callable[[Any, dict[str, str]], Any] | None = None
     check: Callable[[dict[str, Any]], None] | None = None
     retry_delay: Callable[[Any, int], float | None] | None = None
+    cooldown: Callable[[Any], float | None] | None = None
     retry_on_resume: Callable[[Any], bool] | None = None
     parallel_safe: bool = False
     resource: str = "external"
+    resource_map: dict[str, str] | None = None
+    reuse: Callable[[dict[str, Any]], dict | None] | None = None
 
     @property
     def binding(self) -> str:
@@ -57,6 +60,7 @@ class Tool:
             self.schema,
             self.parallel_safe,
             self.resource,
+            *([self.resource_map] if self.resource_map is not None else []),
         )
 
 
@@ -969,11 +973,24 @@ class Harness:
 
     async def _external(self, study, work, epoch, step, index, call):
         tool = self.tools[call.name]
+        if (
+            tool.reuse
+            and self.store.operation_status(study, identity("tool", step, index))
+            is None
+        ):
+            reused = tool.reuse(call.arguments)
+            if reused is not None:
+                return {"value": reused}
 
         async def invoke():
             return {"value": await tool.invoke(call.arguments)}
 
-        return await self._invoke(
+        resource = (
+            tool.resource_map.get(call.arguments.get("provider", ""), tool.resource)
+            if tool.resource_map
+            else tool.resource
+        )
+        raw = await self._invoke(
             study,
             work,
             epoch,
@@ -987,8 +1004,31 @@ class Harness:
             (lambda raw: tool.retry_on_resume(raw["value"]))
             if tool.retry_on_resume
             else None,
-            tool.resource,
+            resource,
         )
+        delay = tool.cooldown(raw["value"]) if tool.cooldown else None
+        if delay is not None:
+            previous = [
+                a
+                for a in self.store.list(study, "cooldown")
+                if a.body["operation"] == identity("tool", step, index)
+            ]
+            event = (
+                previous[0]
+                if previous
+                else self.store.put(
+                    study,
+                    "cooldown",
+                    {
+                        "operation": identity("tool", step, index),
+                        "resource": resource,
+                        "not_before": time.time() + delay,
+                    },
+                    (work, step),
+                )
+            )
+            self.scheduler.defer(resource, event.body["not_before"])
+        return raw
 
     def _done(self, study: str, work: str, step: str) -> None:
         self.store.put(study, "step_done", {"step": step}, (work, step))

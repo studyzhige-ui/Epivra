@@ -12,24 +12,43 @@ import sys
 from datetime import date, datetime, time
 from pathlib import Path
 
+from .document_parser import FORMATS
 from .domain import encode
 
 TEXT_SUFFIXES = {".txt", ".md", ".json", ".yaml", ".yml", ".html"}
-SUPPORTED_SUFFIXES = TEXT_SUFFIXES | {".csv", ".tsv", ".pdf", ".xlsx"}
+SUPPORTED_SUFFIXES = TEXT_SUFFIXES | {".csv", ".tsv", ".pdf", ".xlsx"} | FORMATS
 
 
-async def parse_isolated(name: str, raw: bytes, timeout: float = 60) -> dict:
+async def parse_isolated(
+    name: str, raw: bytes, timeout: float = 60, options=None
+) -> dict:
     """Run native parsers outside the host; cancellation always reaps the child."""
     if timeout <= 0:
         raise ValueError("positive parse timeout required")
     # Only OS/runtime bootstrap settings; provider credentials are not inherited.
-    allowed = {"SYSTEMROOT", "WINDIR", "PATH", "TEMP", "TMP", "LANG", "LC_ALL"}
+    allowed = {
+        "SYSTEMROOT",
+        "WINDIR",
+        "PATH",
+        "TEMP",
+        "TMP",
+        "LANG",
+        "LC_ALL",
+        "HOME",
+        "USERPROFILE",
+        "HOMEDRIVE",
+        "HOMEPATH",
+    }
     environment = {k: v for k, v in os.environ.items() if k.upper() in allowed}
+    environment.update(
+        HF_HUB_OFFLINE="1", TRANSFORMERS_OFFLINE="1", HF_HUB_DISABLE_TELEMETRY="1"
+    )
     process = await asyncio.create_subprocess_exec(
         sys.executable,
         "-m",
         "deep_research_agent.materials",
         Path(name).name,
+        encode(options or {}),
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.DEVNULL,
@@ -59,10 +78,18 @@ async def parse_isolated(name: str, raw: bytes, timeout: float = 60) -> dict:
         await process.wait()
 
 
-def parse(name: str, raw: bytes) -> dict:
+def parse(name: str, raw: bytes, options=None) -> dict:
+    options = options or {}
+    mode = options.get("parser", "auto")
     suffix = Path(name).suffix.lower()
     if suffix not in SUPPORTED_SUFFIXES:
         raise ValueError("unsupported material format")
+    if mode == "light" and suffix in FORMATS:
+        raise ValueError("this format needs Docling; select auto or docling parsing")
+    if (mode == "docling" and suffix == ".pdf") or suffix in FORMATS:
+        from .document_parser import convert
+
+        return convert(name, raw, options)
     parts, segments, issues = [], [], []
     position = 0
 
@@ -130,6 +157,19 @@ def parse(name: str, raw: bytes) -> dict:
         except Exception as exc:
             raise ValueError("PDF extraction failed: " + type(exc).__name__) from None
         parser = "pypdf-" + __version__
+        if (
+            mode == "auto"
+            and options.get("artifacts_path")
+            and any(i.get("reason") == "needs_ocr_or_visual_review" for i in issues)
+        ):
+            from .document_parser import convert
+
+            try:
+                return convert(name, raw, options)
+            except (ValueError, RuntimeError, ImportError):
+                issues.append(
+                    {"reason": "docling_unavailable; retained_partial_text_layer"}
+                )
         issues.append(
             {"reason": "text_layer_only; layout_images_and_tables_not_verified"}
         )
@@ -191,8 +231,23 @@ def parse(name: str, raw: bytes) -> dict:
 
 
 if __name__ == "__main__":
+    import socket
+
+    def deny_network(*args, **kwargs):
+        raise OSError("material parser network access is disabled")
+
+    socket.socket.connect = deny_network
+    socket.create_connection = deny_network
     try:
-        result = {"result": parse(sys.argv[1], sys.stdin.buffer.read())}
+        result = {
+            "result": parse(
+                sys.argv[1],
+                sys.stdin.buffer.read(),
+                json.loads(sys.argv[2]) if len(sys.argv) > 2 else {},
+            )
+        }
+    except ValueError as exc:
+        result = {"error": str(exc)}
     except Exception as exc:
         result = {"error": "material extraction failed: " + type(exc).__name__}
     sys.stdout.buffer.write(json.dumps(result, ensure_ascii=False).encode("utf-8"))

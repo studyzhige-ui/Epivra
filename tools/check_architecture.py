@@ -21,6 +21,8 @@ LAYERS = (
                 "native_models",
                 "scheduling",
                 "usage",
+                "web_providers",
+                "document_parser",
                 "materials",
                 "review",
                 "calculation",
@@ -32,6 +34,7 @@ LAYERS = (
 )
 ALLOWED = {
     "host": {
+        "web_providers",
         "application",
         "adapters",
         "storage",
@@ -43,7 +46,9 @@ ALLOWED = {
     "model_catalog": set(),
     "models": {"adapters", "model_catalog", "native_models"},
     "native_models": {"adapters", "domain"},
-    "materials": {"domain"},
+    "materials": {"domain", "document_parser"},
+    "document_parser": set(),
+    "web_providers": {"adapters", "domain"},
     "scheduling": set(),
     "adapters": {"domain"},
     "__init__": set(),
@@ -66,6 +71,7 @@ ALLOWED = {
         "review",
     },
     "application": {
+        "web_providers",
         "domain",
         "harness",
         "storage",

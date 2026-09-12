@@ -17,6 +17,7 @@ from .model_catalog import OFFICIAL_PROVIDERS
 from .models import freeze_model_settings
 from .scheduling import Scheduler
 from .storage import Store
+from .web_providers import CONNECTIONS, READERS, SEARCH
 from .workspace import Workspace
 
 
@@ -34,9 +35,11 @@ class Host:
             )
             self.scheduler = Scheduler(limits=limits, history=self.store.admissions())
             for row in self.store.db.execute(
-                "SELECT DISTINCT study FROM artifacts WHERE kind='retry'"
+                "SELECT DISTINCT study FROM artifacts WHERE kind IN ('retry', 'cooldown')"
             ):
-                for artifact in self.store.list(row[0], "retry"):
+                for artifact in self.store.list(row[0], "retry") + self.store.list(
+                    row[0], "cooldown"
+                ):
                     retry = artifact.body
                     if "resource" in retry:
                         self.scheduler.defer(retry["resource"], retry["not_before"])
@@ -112,6 +115,47 @@ class Host:
                 },
             }
             policy = freeze_model_settings(policy)
+            if policy["network"]:
+                keys = credentials(self.root / ".env")
+                available = [
+                    n
+                    for n in SEARCH
+                    if n == "duckduckgo" or keys.get(CONNECTIONS[n][1])
+                ]
+                readable = [
+                    n for n in READERS if n == "jina" or keys.get(CONNECTIONS[n][1])
+                ]
+                primary = request.get("search_provider") or (
+                    "tavily" if "tavily" in available else "duckduckgo"
+                )
+                reader = request.get("reader_provider") or "jina"
+                if primary not in available or reader not in readable:
+                    raise ValueError(
+                        "selected search/reader provider requires its credential"
+                    )
+                policy.update(
+                    search_providers=[primary, *[n for n in available if n != primary]],
+                    reader_providers=[reader, *[n for n in readable if n != reader]],
+                )
+            else:
+                policy.update(search_providers=[], reader_providers=[])
+            policy["parsing"] = {
+                "parser": request.get("parser", "auto"),
+                "artifacts_path": request.get("docling_models"),
+                "timeout": request.get("parse_timeout", 300),
+            }
+            if policy["parsing"]["parser"] not in {"auto", "light", "docling"}:
+                raise ValueError("unknown parser mode")
+            if policy["parsing"]["artifacts_path"] is not None:
+                models = Path(policy["parsing"]["artifacts_path"])
+                models = (self.root / models).resolve()
+                if not models.is_dir():
+                    raise ValueError("Docling model directory does not exist")
+                policy["parsing"]["artifacts_path"] = str(models)
+            if type(policy["parsing"]["timeout"]) not in (int, float) or not 0 < policy[
+                "parsing"
+            ]["timeout"] < float("inf"):
+                raise ValueError("positive finite parse timeout required")
             self.store.create(
                 study,
                 text,
@@ -166,7 +210,11 @@ class Host:
             updates = [
                 (client, keys.get(client.credential_env, ""))
                 for client in self.clients.get(study, [])
-                if client.credential_env != "TAVILY_API_KEY" or policy.get("network")
+                if client.credential_env
+                and (client.credential_env != "TAVILY_API_KEY" or policy.get("network"))
+                and (
+                    client.credential_env != "JINA_API_KEY" or keys.get("JINA_API_KEY")
+                )
             ]
             if any(not key.strip() for _, key in updates):
                 raise ValueError("credential required")
@@ -356,6 +404,13 @@ def main():
     create.add_argument("--region")
     create.add_argument("--context-tokens", type=int)
     create.add_argument("--max-tokens", type=int)
+    create.add_argument("--search-provider", choices=SEARCH)
+    create.add_argument("--reader-provider", choices=READERS)
+    create.add_argument(
+        "--parser", choices=("auto", "light", "docling"), default="auto"
+    )
+    create.add_argument("--docling-models")
+    create.add_argument("--parse-timeout", type=float, default=300)
     for action in ("status", "report", "reload", "usage"):
         sub.add_parser(action).add_argument("study")
     control = sub.add_parser("control")
@@ -420,6 +475,11 @@ def main():
                         "region",
                         "context_tokens",
                         "max_tokens",
+                        "search_provider",
+                        "reader_provider",
+                        "parser",
+                        "docling_models",
+                        "parse_timeout",
                     )
                     if getattr(args, name) is not None
                 }

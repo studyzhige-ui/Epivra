@@ -17,6 +17,30 @@ class Workspace:
         self.store = store
         self.parse_timeout = parse_timeout
 
+    def _options(self, study):
+        control = self.store.control(study)
+        return (
+            self.store.get(study, control.direction).body["policy"].get("parsing", {})
+        )
+
+    async def _parse(self, study, name, raw):
+        digest = hashlib.sha256(raw).hexdigest()
+        for prior in self.store.list(study, "source"):
+            if (
+                prior.body.get("sha256") == digest
+                and prior.body.get("format") == Path(name).suffix.lower()
+            ):
+                return {
+                    key: prior.body[key]
+                    for key in ("text", "segments", "coverage", "issues", "parser")
+                }
+        options = self._options(study)
+        if options:
+            return await parse_isolated(
+                name, raw, options.get("timeout", self.parse_timeout), options
+            )
+        return await parse_isolated(name, raw, self.parse_timeout)
+
     def web_snapshot(self, study: str, decoded: dict, acquisition: dict) -> dict:
         """Persist extracted text with its successful acquisition, never raw envelopes."""
         work, step = acquisition["work"], acquisition["step"]
@@ -145,7 +169,11 @@ class Workspace:
             if isinstance(loaded, Artifact):
                 return loaded
             return self._save(
-                study, relative, loaded, parse(relative, loaded), (catalog_ref,)
+                study,
+                relative,
+                loaded,
+                parse(relative, loaded, self._options(study)),
+                (catalog_ref,),
             )
         except OSError as exc:
             # Local material failure is an observation, not a broken database.
@@ -208,7 +236,7 @@ class Workspace:
             raise ValueError("local source unavailable; refresh catalog") from None
         if isinstance(loaded, Artifact):
             return loaded
-        parsed = await parse_isolated(relative, loaded, self.parse_timeout)
+        parsed = await self._parse(study, relative, loaded)
         return self._save(study, relative, loaded, parsed, (catalog_ref,))
 
     def _save(
@@ -252,7 +280,7 @@ class Workspace:
         for prior in self.store.list(study, "source"):
             if prior.body.get("sha256") == digest and prior.body.get("origin") == name:
                 return prior
-        return self._save(study, name, raw, parse(name, raw))
+        return self._save(study, name, raw, parse(name, raw, self._options(study)))
 
     async def upload_async(
         self, study: str, expected: str, name: str, raw: bytes
@@ -264,7 +292,7 @@ class Workspace:
         for prior in self.store.list(study, "source"):
             if prior.body.get("sha256") == digest and prior.body.get("origin") == name:
                 return prior
-        parsed = await parse_isolated(name, raw, self.parse_timeout)
+        parsed = await self._parse(study, name, raw)
         if self.store.control(study).ref != expected:
             raise ValueError(
                 "control changed during upload; retry with current control"

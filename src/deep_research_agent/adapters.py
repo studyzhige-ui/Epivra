@@ -116,6 +116,11 @@ def credentials(path: Path) -> dict[str, str]:
         "HUNYUAN_API_KEY",
         "ERNIE_API_KEY",
         "TAVILY_API_KEY",
+        "EXA_API_KEY",
+        "BRAVE_API_KEY",
+        "PERPLEXITY_API_KEY",
+        "BOCHA_API_KEY",
+        "JINA_API_KEY",
     }
     result = {}
     for line in (
@@ -158,7 +163,10 @@ class JsonAPI:
         self._key = key
 
     def _headers(self):
-        return {**self.headers, self.auth_header: self.auth_prefix + self._key}
+        return {
+            **self.headers,
+            **({self.auth_header: self.auth_prefix + self._key} if self._key else {}),
+        }
 
     @staticmethod
     def _rejection(response: httpx.Response) -> dict:
@@ -196,14 +204,21 @@ class JsonAPI:
         return result
 
     async def post(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
-        response = await self._client.post(
+        return await self.request("POST", path, body=body)
+
+    async def request(self, method, path, *, body=None, params=None, text=False):
+        response = await self._client.request(
+            method,
             self.origin + path,
             json=body,
+            params=params,
             headers=self._headers(),
         )
         # Error bodies can echo request data. Keep only safe status metadata.
         if response.status_code != 200:
             return self._rejection(response)
+        if text:
+            return {"http_status": 200, "data": {"html": response.text}}
         try:
             return {"http_status": 200, "data": response.json()}
         except ValueError:
