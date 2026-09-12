@@ -16,6 +16,9 @@ LAYERS = (
                 "context",
                 "workspace",
                 "adapters",
+                "model_catalog",
+                "models",
+                "native_models",
                 "scheduling",
                 "materials",
                 "review",
@@ -27,7 +30,18 @@ LAYERS = (
     ("application", frozenset({"application", "host"})),
 )
 ALLOWED = {
-    "host": {"application", "adapters", "storage", "scheduling", "workspace"},
+    "host": {
+        "application",
+        "adapters",
+        "storage",
+        "scheduling",
+        "workspace",
+        "models",
+        "model_catalog",
+    },
+    "model_catalog": set(),
+    "models": {"adapters", "model_catalog", "native_models"},
+    "native_models": {"adapters", "domain"},
     "materials": {"domain"},
     "scheduling": set(),
     "adapters": {"domain"},
@@ -49,7 +63,7 @@ ALLOWED = {
         "scheduling",
         "review",
     },
-    "application": {"domain", "harness", "storage", "adapters", "workspace"},
+    "application": {"domain", "harness", "storage", "adapters", "workspace", "models"},
 }
 FORBIDDEN = {"claude_agent_sdk", "codex_sdk", "langgraph"}
 IO_MODULES = {"os", "pathlib", "sqlite3", "httpx", "aiohttp", "socket", "subprocess"}

@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-from .adapters import DEFAULT_MODEL, ProviderFailure
+from .adapters import ProviderFailure
 from .domain import Conflict
 from .harness import Harness
 from .storage import Store
@@ -221,15 +221,21 @@ def online_service(
     scheduler=None,
 ) -> tuple[ResearchService, list]:
     """Compose explicit providers without giving adapters access to Agent control."""
-    from .adapters import DeepSeek, JsonAPI, Tavily
+    from .adapters import JsonAPI, Tavily
     from .harness import STRING, Tool, object_schema
+    from .models import create_model
     from .workspace import Workspace
 
-    model_key, search_key = keys["DEEPSEEK_API_KEY"], keys["TAVILY_API_KEY"]
-    if not model_key.strip() or not search_key.strip():
-        raise ValueError("provider credentials required")
-    model_api = JsonAPI("https://api.deepseek.com", model_key)
-    search_api = JsonAPI("https://api.tavily.com", search_key)
+    policy = store.get(study, store.control(study).direction).body["policy"]
+    if model_name:
+        policy = {**policy, "model": model_name}
+    search_key = keys.get("TAVILY_API_KEY", "")
+    if policy.get("network") and not search_key.strip():
+        raise ValueError("TAVILY_API_KEY required for web research")
+    model, model_api = create_model(policy, keys)
+    search_api = JsonAPI(
+        "https://api.tavily.com", search_key, credential_env="TAVILY_API_KEY"
+    )
     search = Tavily(search_api)
 
     workspace = Workspace(store)
@@ -265,16 +271,9 @@ def online_service(
             resource=search.resource,
         ),
     }
-    policy = store.get(study, store.control(study).direction).body["policy"]
-    model_name = model_name or policy.get("model", DEFAULT_MODEL)
     harness = Harness(
         store,
-        DeepSeek(
-            model_api,
-            model=model_name,
-            stream=policy.get("stream_model", False),
-            reasoning_effort=policy.get("reasoning_effort", "high"),
-        ),
+        model,
         tools,
         scheduler=scheduler,
     )

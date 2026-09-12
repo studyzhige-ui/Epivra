@@ -11,8 +11,10 @@ import sys
 import uuid
 from pathlib import Path
 
-from .adapters import DEFAULT_MODEL, credentials
+from .adapters import credentials
 from .application import online_service
+from .model_catalog import OFFICIAL_PROVIDERS
+from .models import freeze_model_settings
 from .scheduling import Scheduler
 from .storage import Store
 from .workspace import Workspace
@@ -93,15 +95,21 @@ class Host:
                     raise ValueError("local root is not a directory")
                 resolved.append(str(directory))
             study = uuid.uuid4().hex
+            policy = {
+                "network": request.get("web") is True,
+                "local_roots": resolved,
+                "provider": request.get("provider", "deepseek"),
+                **{
+                    name: request[name]
+                    for name in ("model", "region", "context_tokens", "max_tokens")
+                    if request.get(name) is not None
+                },
+            }
+            policy = freeze_model_settings(policy)
             self.store.create(
                 study,
                 text,
-                {
-                    "network": request.get("web") is True,
-                    "local_roots": resolved,
-                    "stream_model": True,
-                    "model": DEFAULT_MODEL,
-                },
+                policy,
             )
             self.start_study(study)
             return {"study": study}
@@ -145,13 +153,11 @@ class Host:
                 )
                 return {"receipt": receipt.ref, "paused": True}
             keys = credentials(self.root / ".env")
-            mapping = {
-                "https://api.deepseek.com": "DEEPSEEK_API_KEY",
-                "https://api.tavily.com": "TAVILY_API_KEY",
-            }
+            policy = self.store.get(study, control.direction).body["policy"]
             updates = [
-                (client, keys[mapping[client.origin]])
+                (client, keys.get(client.credential_env, ""))
                 for client in self.clients.get(study, [])
+                if client.credential_env != "TAVILY_API_KEY" or policy.get("network")
             ]
             if any(not key.strip() for _, key in updates):
                 raise ValueError("credential required")
@@ -329,10 +335,18 @@ def main():
     sub.add_parser("start")
     sub.add_parser("shutdown")
     sub.add_parser("list")
+    sub.add_parser("providers")
     create = sub.add_parser("create")
     create.add_argument("request")
     create.add_argument("--web", action="store_true")
     create.add_argument("--local-root", action="append", default=[])
+    create.add_argument(
+        "--provider", choices=sorted(OFFICIAL_PROVIDERS), default="deepseek"
+    )
+    create.add_argument("--model")
+    create.add_argument("--region")
+    create.add_argument("--context-tokens", type=int)
+    create.add_argument("--max-tokens", type=int)
     for action in ("status", "report", "reload"):
         sub.add_parser(action).add_argument("study")
     control = sub.add_parser("control")
@@ -357,6 +371,26 @@ def main():
     args = parser.parse_args()
     root = args.root.resolve()
     try:
+        if args.action == "providers":
+            print(
+                json.dumps(
+                    [
+                        {
+                            "provider": spec.id,
+                            "credential_env": spec.credential_env,
+                            "model": spec.default_model.id,
+                            "protocol": spec.protocol,
+                            "regions": dict(spec.endpoints),
+                            "default_region": spec.default_region,
+                            "notes": spec.notes,
+                        }
+                        for spec in OFFICIAL_PROVIDERS.values()
+                    ],
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+            return
         if args.action == "serve":
             asyncio.run(Host(root).serve())
             return
@@ -367,6 +401,19 @@ def main():
         if args.action == "create":
             request.update(
                 request=args.request, web=args.web, local_roots=args.local_root
+            )
+            request.update(
+                {
+                    name: getattr(args, name)
+                    for name in (
+                        "provider",
+                        "model",
+                        "region",
+                        "context_tokens",
+                        "max_tokens",
+                    )
+                    if getattr(args, name) is not None
+                }
             )
         elif args.action in (
             "status",

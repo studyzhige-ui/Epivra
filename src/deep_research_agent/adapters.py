@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 from pathlib import Path
 from typing import Any
 
@@ -26,7 +27,7 @@ class IncompleteStream(RuntimeError):
 
 def rate_limit_delay(raw: dict, attempt: int) -> float | None:
     """Only an explicit rejection permits an automatic new attempt."""
-    if raw.get("http_status") == 429:
+    if raw.get("http_status") == 429 and raw.get("error_kind") != "quota":
         return max(float(2 ** min(attempt + 1, 6)), raw.get("retry_after", 0))
     return None
 
@@ -42,6 +43,9 @@ class _ChatStream:
         if not isinstance(chunk, dict) or "error" in chunk:
             raise ValueError("invalid stream chunk")
         choices = chunk["choices"]
+        if choices == [] and isinstance(chunk.get("usage"), dict):
+            self.usage = chunk["usage"]
+            return
         if not isinstance(choices, list) or len(choices) != 1:
             raise ValueError("expected one streamed choice")
         choice = choices[0]
@@ -98,18 +102,49 @@ class _ChatStream:
 
 def credentials(path: Path) -> dict[str, str]:
     """Read only named credentials; callers never log this mapping."""
+    names = {
+        "OPENAI_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "GEMINI_API_KEY",
+        "XAI_API_KEY",
+        "DEEPSEEK_API_KEY",
+        "QWEN_API_KEY",
+        "KIMI_API_KEY",
+        "GLM_API_KEY",
+        "DOUBAO_API_KEY",
+        "MINIMAX_API_KEY",
+        "HUNYUAN_API_KEY",
+        "ERNIE_API_KEY",
+        "TAVILY_API_KEY",
+    }
     result = {}
-    for line in path.read_text(encoding="utf-8").splitlines():
+    for line in (
+        path.read_text(encoding="utf-8") if path.exists() else ""
+    ).splitlines():
         if "=" in line and not line.lstrip().startswith("#"):
             key, value = line.split("=", 1)
-            if key in {"DEEPSEEK_API_KEY", "TAVILY_API_KEY"}:
-                result[key] = value.strip()
+            if key.strip() in names:
+                result[key.strip()] = value.strip().strip("\"'")
+    result.update({key: os.environ[key] for key in names if key in os.environ})
     return result
 
 
 class JsonAPI:
-    def __init__(self, origin: str, key: str, client: httpx.AsyncClient | None = None):
+    def __init__(
+        self,
+        origin: str,
+        key: str,
+        client: httpx.AsyncClient | None = None,
+        *,
+        auth_header: str = "Authorization",
+        auth_prefix: str = "Bearer ",
+        headers: dict | None = None,
+        credential_env: str | None = None,
+    ):
         self.origin, self._key = origin, key
+        self.auth_header, self.auth_prefix = auth_header, auth_prefix
+        self.headers = dict(headers or {})
+        self.credential_env = credential_env
         self._client = client or httpx.AsyncClient(
             timeout=httpx.Timeout(180, connect=20),
             follow_redirects=False,
@@ -122,9 +157,35 @@ class JsonAPI:
             raise ValueError("credential required")
         self._key = key
 
+    def _headers(self):
+        return {**self.headers, self.auth_header: self.auth_prefix + self._key}
+
     @staticmethod
     def _rejection(response: httpx.Response) -> dict:
         result = {"http_status": response.status_code}
+        # Keep only a known classification, never provider text that may echo secrets.
+        try:
+            error = response.json().get("error", {})
+            quota_codes = {
+                "insufficient_quota",
+                "credit_balance_exhausted",
+                "organization_spend_limit_exceeded",
+                "project_spend_limit_exceeded",
+                "billing_hard_limit_reached",
+            }
+            if isinstance(error, dict) and (
+                error.get("code") in quota_codes or error.get("type") in quota_codes
+            ):
+                result["error_kind"] = "quota"
+            if isinstance(error, dict) and any(
+                isinstance(detail, dict)
+                and detail.get("@type") == "type.googleapis.com/google.rpc.ErrorInfo"
+                and detail.get("reason") == "API_KEY_INVALID"
+                for detail in error.get("details", [])
+            ):
+                result["error_kind"] = "authentication"
+        except (ValueError, AttributeError, TypeError):
+            pass
         if response.status_code == 429:
             try:
                 seconds = float(response.headers.get("retry-after", ""))
@@ -138,7 +199,7 @@ class JsonAPI:
         response = await self._client.post(
             self.origin + path,
             json=body,
-            headers={"Authorization": "Bearer " + self._key},
+            headers=self._headers(),
         )
         # Error bodies can echo request data. Keep only safe status metadata.
         if response.status_code != 200:
@@ -157,7 +218,7 @@ class JsonAPI:
             "POST",
             self.origin + path,
             json=body,
-            headers={"Authorization": "Bearer " + self._key},
+            headers=self._headers(),
         ) as response:
             if response.status_code != 200:
                 return self._rejection(response)
@@ -183,50 +244,61 @@ class JsonAPI:
             raise IncompleteStream("provider stream ended before DONE; outcome unknown")
 
 
-class DeepSeek:
-    resource = "deepseek"
+class ChatCompletions:
+    """Shared wire protocol, with explicit vendor parameters and model capacity."""
+
     retry_delay = staticmethod(rate_limit_delay)
 
     @staticmethod
     def retry_on_resume(raw: dict) -> bool:
-        return raw.get("http_status") in {401, 402}
+        return (
+            raw.get("http_status") in {401, 402, 403}
+            or raw.get("error_kind") == "quota"
+        )
 
     def __init__(
         self,
-        api: JsonAPI,
-        model: str = DEFAULT_MODEL,
-        thinking: bool = True,
-        max_tokens: int | None = None,
-        context_tokens: int = 1000000,
-        stream: bool = False,
-        reasoning_effort: str = "high",
+        api,
+        model,
+        *,
+        provider,
+        max_tokens,
+        context_tokens,
+        output_parameter="max_tokens",
+        request_fields=None,
+        stream=False,
     ):
-        self.api, self.model = api, model
-        self.thinking = thinking
-        if reasoning_effort not in {"low", "high", "max"}:
-            raise ValueError("DeepSeek reasoning effort must be low, high or max")
-        self.reasoning_effort = reasoning_effort
-        self.max_tokens = (
-            max_tokens if max_tokens is not None else (65536 if thinking else 8192)
-        )
-        # DeepSeek Chat Completions contract, checked 2026-09-11; see ENGINEERING_REVIEW.md.
-        if type(self.max_tokens) is not int or not 1 <= self.max_tokens <= 393216:
-            raise ValueError("DeepSeek max_tokens must be an integer in 1..393216")
-        if type(context_tokens) is not int or context_tokens <= self.max_tokens:
+        if type(max_tokens) is not int or max_tokens < 1:
+            raise ValueError("positive output allowance required")
+        if type(context_tokens) is not int or context_tokens <= max_tokens:
             raise ValueError("context tokens must exceed the output allowance")
-        self.context_tokens = context_tokens
-        self.stream = stream
+        self.api, self.model = api, model
+        self.max_tokens, self.context_tokens = max_tokens, context_tokens
+        self.stream, self.resource = stream, provider
+        self.output_parameter = output_parameter
+        self.request_fields = dict(request_fields or {})
         self.identity = identity(
-            "deepseek-chat-v1",
+            "official-chat-v1",
             api.account,
+            provider,
             model,
-            thinking,
-            self.max_tokens,
+            max_tokens,
             context_tokens,
-            reasoning_effort,
+            output_parameter,
+            self.request_fields,
+            stream,
         )
-        if stream:
-            self.identity = identity(self.identity, "sse-v1")
+
+    def _payload(self, messages, tools):
+        return {
+            "model": self.model,
+            "messages": messages,
+            "tools": tools,
+            self.output_parameter: self.max_tokens,
+            "stream": self.stream,
+            **self.request_fields,
+            **({"stream_options": {"include_usage": True}} if self.stream else {}),
+        }
 
     def prepare(self, context: dict[str, Any], previous: dict | None) -> dict:
         state = {
@@ -238,8 +310,19 @@ class DeepSeek:
         messages = [{"role": "system", "content": context["system"]}, current]
         mode = "new"
         if previous:
+            try:
+                usable = self.decode(previous["response"])["complete"]
+            except (
+                ProviderFailure,
+                ValueError,
+                KeyError,
+                TypeError,
+                IndexError,
+                AttributeError,
+            ):
+                usable = False
             raw = previous["response"]
-            if raw.get("http_status") == 200 and "data" in raw:
+            if usable:
                 choice = raw["data"]["choices"][0]
                 if choice["finish_reason"] in {"stop", "tool_calls"}:
                     assistant = choice["message"]
@@ -344,15 +427,7 @@ class DeepSeek:
             }
             for name, spec in context["tools"].items()
         ]
-        payload = {
-            "model": self.model,
-            "messages": messages,
-            "tools": tools,
-            "thinking": {"type": "enabled" if self.thinking else "disabled"},
-            "reasoning_effort": self.reasoning_effort,
-            "max_tokens": self.max_tokens,
-            "stream": self.stream,
-        }
+        payload = self._payload(messages, tools)
         estimated = self._input_tokens(
             payload, previous if mode == "continued" else None
         )
@@ -403,7 +478,7 @@ class DeepSeek:
     def decode(self, raw: dict[str, Any]) -> dict[str, Any]:
         status = raw.get("http_status", 0)
         if status != 200:
-            raise ProviderFailure("deepseek", status)
+            raise ProviderFailure(self.resource, status)
         if "data" not in raw:
             raise ValueError("invalid model response JSON")
         data = raw["data"]
@@ -422,10 +497,19 @@ class DeepSeek:
         for call in message.get("tool_calls") or []:
             if not isinstance(call, dict) or not isinstance(call.get("function"), dict):
                 raise ValueError("invalid model tool call")
-            if not isinstance(call.get("id"), str) or call["id"] in ids:
+            if (
+                not isinstance(call.get("id"), str)
+                or not call["id"]
+                or call["id"] in ids
+            ):
                 raise ValueError("invalid or duplicate provider tool ID")
             ids.add(call["id"])
             arguments = json.loads(call["function"]["arguments"])
+            if (
+                not isinstance(call["function"].get("name"), str)
+                or not call["function"]["name"]
+            ):
+                raise ValueError("tool name required")
             if not isinstance(arguments, dict):
                 raise ValueError("tool arguments must be an object")
             calls.append({"name": call["function"]["name"], "arguments": arguments})
@@ -433,6 +517,63 @@ class DeepSeek:
             "text": message.get("content") or "",
             "calls": calls,
             "complete": choice["finish_reason"] in {"stop", "tool_calls"},
+        }
+
+
+class DeepSeek(ChatCompletions):
+    resource = "deepseek"
+    retry_delay = staticmethod(rate_limit_delay)
+
+    @staticmethod
+    def retry_on_resume(raw: dict) -> bool:
+        return raw.get("http_status") in {401, 402}
+
+    def __init__(
+        self,
+        api: JsonAPI,
+        model: str = DEFAULT_MODEL,
+        thinking: bool = True,
+        max_tokens: int | None = None,
+        context_tokens: int = 1000000,
+        stream: bool = False,
+        reasoning_effort: str = "high",
+    ):
+        self.api, self.model = api, model
+        self.thinking = thinking
+        if reasoning_effort not in {"low", "high", "max"}:
+            raise ValueError("DeepSeek reasoning effort must be low, high or max")
+        self.reasoning_effort = reasoning_effort
+        self.max_tokens = (
+            max_tokens if max_tokens is not None else (65536 if thinking else 8192)
+        )
+        # DeepSeek Chat Completions contract, checked 2026-09-11; see ENGINEERING_REVIEW.md.
+        if type(self.max_tokens) is not int or not 1 <= self.max_tokens <= 393216:
+            raise ValueError("DeepSeek max_tokens must be an integer in 1..393216")
+        if type(context_tokens) is not int or context_tokens <= self.max_tokens:
+            raise ValueError("context tokens must exceed the output allowance")
+        self.context_tokens = context_tokens
+        self.stream = stream
+        self.identity = identity(
+            "deepseek-chat-v1",
+            api.account,
+            model,
+            thinking,
+            self.max_tokens,
+            context_tokens,
+            reasoning_effort,
+        )
+        if stream:
+            self.identity = identity(self.identity, "sse-v1")
+
+    def _payload(self, messages, tools):
+        return {
+            "model": self.model,
+            "messages": messages,
+            "tools": tools,
+            "thinking": {"type": "enabled" if self.thinking else "disabled"},
+            "reasoning_effort": self.reasoning_effort,
+            "max_tokens": self.max_tokens,
+            "stream": self.stream,
         }
 
 

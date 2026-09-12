@@ -121,7 +121,12 @@ class HostTests(unittest.IsolatedAsyncioTestCase):
             async with httpx.AsyncClient(
                 transport=httpx.MockTransport(lambda r: httpx.Response(200, json={}))
             ) as transport:
-                api = JsonAPI("https://api.deepseek.com", "old-fixture-key", transport)
+                api = JsonAPI(
+                    "https://api.deepseek.com",
+                    "old-fixture-key",
+                    transport,
+                    credential_env="DEEPSEEK_API_KEY",
+                )
 
                 def factory(store, study):
                     return ResearchService(store, Harness(store, DeepSeek(api))), [api]
