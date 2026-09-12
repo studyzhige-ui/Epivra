@@ -19,6 +19,7 @@ from .model_catalog import OFFICIAL_PROVIDERS
 from .models import freeze_model_settings
 from .scheduling import Scheduler
 from .storage import Store
+from .usage import summarize
 from .web_providers import CONNECTIONS, READERS, SEARCH
 from .workspace import Workspace
 
@@ -111,6 +112,12 @@ class Host:
                 "SELECT DISTINCT study FROM artifacts WHERE kind='control' ORDER BY study"
             ).fetchall()
             return {"studies": [r[0] for r in studies]}
+        if action == "overview":
+            studies = self.store.db.execute(
+                "SELECT study, MAX(rowid) AS recent FROM artifacts "
+                "WHERE kind='control' GROUP BY study ORDER BY recent DESC"
+            ).fetchall()
+            return {"studies": [self.describe(row[0]) for row in studies]}
         if action == "create":
             text = request.get("request")
             if not isinstance(text, str) or not text.strip():
@@ -187,12 +194,15 @@ class Host:
                 "parsing"
             ]["timeout"] < float("inf"):
                 raise ValueError("positive finite parse timeout required")
-            self.store.create(
+            created = self.store.create(
                 study,
                 text,
                 policy,
             )
-            self.start_study(study)
+            if request.get("draft"):
+                self.store.command(study, "draft", created.ref, "pause")
+            else:
+                self.start_study(study)
             return {"study": study}
         study = request["study"]
         if not isinstance(study, str):
@@ -206,7 +216,7 @@ class Host:
             with target.open("xb") as stream:
                 stream.write(raw)
             return {"path": str(target), "bytes": len(raw)}
-        if action == "upload":
+        if action in {"upload", "import_file"}:
             control = self.store.control(study)
             service = self.services.get(study)
             task = service.tasks.get(study) if service else None
@@ -214,11 +224,19 @@ class Host:
                 control.approved and (not control.paused or (task and not task.done()))
             ):
                 raise ValueError("pause approved research and wait before uploading")
+            if action == "import_file":
+                path = Path(request["path"]).expanduser().resolve(strict=True)
+                if not path.is_file():
+                    raise ValueError("selected path is not a file")
+                name, raw = path.name, await asyncio.to_thread(path.read_bytes)
+            else:
+                name = request["name"]
+                raw = base64.b64decode(request["data"], validate=True)
             source = await Workspace(self.store).upload_async(
                 study,
                 request["expected"],
-                request["name"],
-                base64.b64decode(request["data"], validate=True),
+                name,
+                raw,
             )
             return {
                 "source": source.ref,
@@ -275,17 +293,13 @@ class Host:
                 "approved": result.approved,
             }
         if action == "status":
-            if study in self.failures:
-                c = self.store.control(study)
-                return {
-                    "control": c.ref,
-                    "paused": c.paused,
-                    "running": False,
-                    "error": self.failures[study],
-                    "unsettled_operations": self.store.unsettled(study),
-                }
+            service = self.services.get(study)
             return {
-                **self.service(study).status(study),
+                **(service.status(study) if service else {}),
+                **self.describe(study),
+                "unsettled_operations": self.store.unsettled(study),
+                "usage": summarize(self.store.usage_records(study)),
+                "analyses": [a.body for a in self.store.list(study, "analysis_result")],
                 "analysis_cleanup_error": self.analysis_errors.get(study),
             }
         if action == "report":
@@ -307,6 +321,36 @@ class Host:
                 ],
             }
         raise ValueError("unknown host command")
+
+    def describe(self, study):
+        c = self.store.control(study)
+        direction = self.store.get(study, c.direction)
+        service = self.services.get(study)
+        task = service.tasks.get(study) if service else None
+        plans = [a for a in self.store.list(study, "plan") if c.direction in a.parents]
+        published = any(
+            c.direction in a.parents for a in self.store.list(study, "publication")
+        )
+        return {
+            "study": study,
+            "request": direction.body["request"],
+            "control": c.ref,
+            "approved": c.approved,
+            "paused": c.paused,
+            "cancelled": c.cancelled,
+            "running": bool(task and not task.done()),
+            "published": published,
+            "error": self.failures.get(study)
+            or (service.errors.get(study) if service else None),
+            "plans": [{"ref": a.ref, "body": a.body} for a in plans],
+            "policy": direction.body["policy"],
+            "source_count": len(self.store.list(study, "source")),
+            "work": [
+                {"role": a.body["role"], "task": a.body["task"]}
+                for a in self.store.list(study, "work")
+                if a.body["direction"] == c.direction
+            ],
+        }
 
     async def connection(self, reader, writer):
         try:
@@ -379,7 +423,9 @@ async def send(root: Path, request: dict):
             (json.dumps({**request, "token": pointer["token"]}) + "\n").encode()
         )
         await writer.drain()
-        return json.loads(await asyncio.wait_for(reader.readline(), 30))
+        # Parsing has its own configured timeout. Losing a client must not imply failure.
+        timeout = 600 if request.get("action") in {"upload", "import_file"} else 30
+        return json.loads(await asyncio.wait_for(reader.readline(), timeout))
     finally:
         writer.close()
         await writer.wait_closed()

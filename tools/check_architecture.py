@@ -31,10 +31,17 @@ LAYERS = (
         ),
     ),
     ("execution", frozenset({"harness", "analysis_runtime"})),
-    ("application", frozenset({"application", "host"})),
+    (
+        "application",
+        frozenset({"application", "host", "cli", "terminal", "cli_settings"}),
+    ),
 )
 ALLOWED = {
+    "cli": {"host", "terminal", "cli_settings", "model_catalog", "web_providers"},
+    "terminal": set(),
+    "cli_settings": {"adapters", "model_catalog", "web_providers"},
     "host": {
+        "usage",
         "analysis_runtime",
         "analysis",
         "web_providers",

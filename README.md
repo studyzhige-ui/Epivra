@@ -11,6 +11,8 @@
 - [实施进度与待完成项](docs/product-redesign/IMPLEMENTATION.md)
 - [开发与验证](docs/GETTING-STARTED.md)
 
+日常使用：在此 worktree 安装后运行 `.venv/Scripts/deep-research.exe`，无参数进入交互工作台。支持系统文件/文件夹选择、策略审批、研究控制与成果导出；显式子命令保留 JSON 接口。
+
 历史学习、面试和复盘文档描述旧实现，仅作为背景材料；不指导本分支的新架构。开发规则见 [AGENTS.md](AGENTS.md)。
 
 可选 Docker 通用分析已接入现有角色与成果链：数据处理、统计和绘图共用 run_analysis，使用来源引用传入原始文件。部署与恢复边界见[通用分析执行](docs/product-redesign/ANALYSIS_EXECUTION.md)。
