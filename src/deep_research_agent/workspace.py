@@ -418,6 +418,62 @@ class Workspace:
                 return prior
         return self._save(study, name, raw, parse(name, raw, self._options(study)))
 
+    def mcp_snapshot(self, study, server, raw, acquisition):
+        import json
+
+        blocks = list(raw.get("contents", raw.get("content", [])))
+        structured = raw.get("structuredContent")
+        if structured is not None:
+            duplicate = False
+            for block in blocks:
+                try:
+                    duplicate |= json.loads(block.get("text", "")) == structured
+                except (ValueError, TypeError):
+                    pass
+            if not duplicate:
+                blocks.append(
+                    {"type": "text", "text": json.dumps(structured, ensure_ascii=False)}
+                )
+        sources, links = [], []
+        for index, block in enumerate(blocks):
+            if block.get("type") == "resource_link":
+                links.append(block)
+                continue
+            content = block.get("resource", block)
+            text = content.get("text", "")
+            binary = content.get("blob", content.get("data"))
+            data = (
+                base64.b64decode(binary, validate=True)
+                if binary is not None
+                else text.encode("utf-8")
+            )
+            origin = f"mcp://{server}/{acquisition['operation']}/{index}"
+            source = self._save(
+                study,
+                origin,
+                data,
+                {
+                    "text": text,
+                    "coverage": "mcp_output_not_reviewed",
+                    "issues": []
+                    if text
+                    else [
+                        "Binary MCP content retained; semantic interpretation not performed"
+                    ],
+                    "mime_type": content.get("mimeType"),
+                    "resource_uri": content.get("uri"),
+                    "acquisition": acquisition,
+                },
+            )
+            sources.append(
+                {"ref": source.ref, "characters": len(text), "preview": text[:1000]}
+            )
+        return {
+            "sources": sources,
+            "links": links,
+            "structured_available": raw.get("structuredContent") is not None,
+        }
+
     async def upload_async(
         self, study: str, expected: str, name: str, raw: bytes
     ) -> Artifact:

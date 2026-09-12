@@ -118,6 +118,7 @@ class Workbench:
                     ("search", "搜索与网页读取"),
                     ("parser", "本地解析"),
                     ("analysis", "数据分析沙箱"),
+                    ("mcp", "MCP 外部连接"),
                 ],
             )
             if choice is None:
@@ -195,6 +196,30 @@ class Workbench:
                     defaults["search_provider"] = provider
                 if provider in READERS:
                     defaults["reader_provider"] = provider
+            elif choice == "mcp":
+                names = (await self.call("mcp_connections"))["servers"]
+                if not names:
+                    self.ui.show(
+                        "请先在工作目录的 mcp-servers.json 配置连接和工具授权，格式见 docs/product-redesign/MCP.md。"
+                    )
+                    continue
+                enabled = defaults.get("mcp_servers", [])
+                name = await self.ui.choose(
+                    "MCP 连接（用于新研究）",
+                    [(n, n + (" · 已启用" if n in enabled else "")) for n in names],
+                )
+                if name is None:
+                    continue
+                if name in enabled:
+                    defaults["mcp_servers"] = [n for n in enabled if n != name]
+                elif await self.ui.confirm(
+                    "连接并启用该 MCP？将启动配置的本地程序或访问远端；工具权限以配置文件为准。"
+                ):
+                    catalog = await self.call("mcp_discover", name=name)
+                    self.ui.show(
+                        f"已连接 · 发现 {len(catalog['tools'])} 个工具、{len(catalog['resources'])} 个资源；仅配置中授权的能力会提供给研究角色。"
+                    )
+                    defaults["mcp_servers"] = [*enabled, name]
             elif choice == "parser":
                 mode = await self.ui.choose(
                     "解析方式",

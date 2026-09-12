@@ -27,20 +27,35 @@ LAYERS = (
                 "review",
                 "calculation",
                 "analysis",
+                "mcp_client",
             }
         ),
     ),
     ("execution", frozenset({"harness", "analysis_runtime"})),
     (
         "application",
-        frozenset({"application", "host", "cli", "terminal", "cli_settings"}),
+        frozenset(
+            {
+                "application",
+                "host",
+                "cli",
+                "terminal",
+                "cli_settings",
+                "mcp_server",
+                "mcp_tools",
+            }
+        ),
     ),
 )
 ALLOWED = {
+    "mcp_client": {"domain"},
+    "mcp_tools": {"domain", "harness", "workspace", "mcp_client"},
+    "mcp_server": {"host"},
     "cli": {"host", "terminal", "cli_settings", "model_catalog", "web_providers"},
     "terminal": set(),
     "cli_settings": {"adapters", "model_catalog", "web_providers"},
     "host": {
+        "mcp_client",
         "usage",
         "analysis_runtime",
         "analysis",
@@ -84,6 +99,7 @@ ALLOWED = {
         "review",
     },
     "application": {
+        "mcp_tools",
         "web_providers",
         "domain",
         "harness",

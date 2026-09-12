@@ -104,6 +104,14 @@ class Host:
         if not secrets.compare_digest(str(request.get("token", "")), self.token):
             return {"error": "unauthorized"}
         action = request.get("action")
+        if action in {"mcp_connections", "mcp_discover"}:
+            from .mcp_client import catalog, servers, validate
+
+            configured = servers(self.root)
+            if action == "mcp_connections":
+                return {"servers": list(configured)}
+            name = request["name"]
+            return await catalog(validate(name, configured[name]), self.root)
         if action == "shutdown":
             self.stopping.set()
             return {"stopping": True}
@@ -145,6 +153,10 @@ class Host:
                 },
             }
             policy = freeze_model_settings(policy)
+            if request.get("mcp_servers"):
+                from .mcp_client import freeze
+
+                policy["mcp"] = await freeze(self.root, request["mcp_servers"])
             if request.get("analysis"):
                 path = self.root / "analysis-settings.json"
                 overrides = (
@@ -210,6 +222,34 @@ class Host:
         if action == "usage":
             self.store.control(study)
             return {"calls": self.store.usage_records(study)}
+        if action == "sources":
+            self.store.control(study)
+            return {
+                "sources": [
+                    {
+                        "ref": s.ref,
+                        "origin": s.body.get("origin"),
+                        "coverage": s.body.get("coverage"),
+                    }
+                    for s in self.store.list(study, "source")
+                ]
+            }
+        if action == "download":
+            offset, length = request.get("offset", 0), request.get("length", 65536)
+            if (
+                type(offset) is not int
+                or offset < 0
+                or type(length) is not int
+                or not 0 < length <= 262144
+            ):
+                raise ValueError("invalid download range")
+            raw = Workspace(self.store).original(study, request["source"])
+            return {
+                "data": base64.b64encode(raw[offset : offset + length]).decode("ascii"),
+                "offset": offset,
+                "total": len(raw),
+                "next_offset": min(offset + length, len(raw)),
+            }
         if action == "export":
             raw = Workspace(self.store).original(study, request["source"])
             target = Path(request["destination"]).expanduser().resolve()
@@ -275,6 +315,11 @@ class Host:
                 raise ValueError("credential required")
             for client, key in updates:
                 client.replace_key(key)
+            from .mcp_client import MCPConnection
+
+            for client in self.clients.get(study, []):
+                if isinstance(client, MCPConnection):
+                    await client.close()
             return {"reloaded": True}
         if action == "control":
             result = self.store.command(
@@ -484,6 +529,8 @@ def main():
     sub.add_parser("shutdown")
     sub.add_parser("list")
     sub.add_parser("providers")
+    sub.add_parser("mcp-connections")
+    sub.add_parser("mcp-discover").add_argument("name")
     create = sub.add_parser("create")
     create.add_argument("request")
     create.add_argument("--web", action="store_true")
@@ -503,6 +550,7 @@ def main():
     create.add_argument("--docling-models")
     create.add_argument("--parse-timeout", type=float, default=300)
     create.add_argument("--analysis", action="store_true")
+    create.add_argument("--mcp-server", action="append", default=[])
     export = sub.add_parser("export")
     export.add_argument("study")
     export.add_argument("source")
@@ -558,10 +606,15 @@ def main():
             print(json.dumps(asyncio.run(start(root))))
             return
         request = {"action": args.action}
+        if args.action in {"mcp-connections", "mcp-discover"}:
+            request["action"] = args.action.replace("-", "_")
+            if args.action == "mcp-discover":
+                request["name"] = args.name
         if args.action == "create":
             request.update(
                 request=args.request, web=args.web, local_roots=args.local_root
             )
+            request["mcp_servers"] = args.mcp_server
             request.update(
                 {
                     name: getattr(args, name)

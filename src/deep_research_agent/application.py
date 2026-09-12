@@ -339,8 +339,15 @@ def online_service(
             cooldown=lambda raw: providers[raw["provider"]].retry_delay(raw, 0),
             reuse=reuse if reading else None,
         )
+    mcp_connections = []
+    if policy.get("mcp"):
+        from .mcp_tools import connect_tools
+
+        mcp_tools, mcp_connections = connect_tools(store, study, policy)
+        tools.update(mcp_tools)
     harness = Harness(store, model, tools, scheduler=scheduler)
     return ResearchService(store, harness), [
         model_api,
+        *mcp_connections,
         *(p.api for p in providers.values()),
     ]
