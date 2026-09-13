@@ -177,8 +177,7 @@ async function refreshList() {
   if ($("studies").dataset.signature === signature) return;
   $("studies").dataset.signature = signature;
   $("studies").replaceChildren();
-  if (!data.studies.length)
-    $("studies").append(node("p", "暂无研究", "muted"));
+  if (!data.studies.length) $("studies").append(node("p", "暂无研究", "muted"));
   for (const s of data.studies) {
     const button = node(
       "button",
@@ -534,8 +533,7 @@ $("create-form").onsubmit = (e) => {
       await refreshList();
       throw error;
     } finally {
-      $("creation-hint").textContent =
-        "生成策略会使用模型额度";
+      $("creation-hint").textContent = "生成策略会使用模型额度";
     }
   });
 };
@@ -704,13 +702,99 @@ async function loadConfig() {
   $("model-summary").textContent =
     `${labels[p.id]} / ${config.defaults.model || p.model}${p.configured ? "" : " · 未配置密钥"}`;
 }
+let modelCandidates = [],
+  modelListSerial = 0,
+  modelOptionIndex = -1;
+function closeModels() {
+  $("model-options").hidden = true;
+  $("model").setAttribute("aria-expanded", "false");
+  $("model").removeAttribute("aria-activedescendant");
+}
+function invalidateModels() {
+  modelListSerial++;
+  modelCandidates = [];
+  closeModels();
+  $("fetch-models").disabled = false;
+  $("model-list-status").textContent =
+    "填写密钥后获取模型列表，也可手动输入完整型号。";
+}
+const modelMatch = (value) =>
+  value.toLowerCase().replace(/[^\p{L}\p{N}]/gu, "");
+function renderModels(showAll = false) {
+  const query = showAll ? "" : modelMatch($("model").value);
+  const matches = modelCandidates.filter((m) =>
+    modelMatch(m.id).includes(query),
+  );
+  $("model-options").replaceChildren();
+  modelOptionIndex = -1;
+  $("model").removeAttribute("aria-activedescendant");
+  for (const [index, model] of matches.entries()) {
+    const option = node("button", model.id, "model-option");
+    option.type = "button";
+    option.id = `model-option-${index}`;
+    option.tabIndex = -1;
+    option.setAttribute("role", "option");
+    option.setAttribute("aria-selected", "false");
+    option.onmousedown = (e) => e.preventDefault();
+    option.onclick = () => {
+      $("model").value = model.id;
+      $("context-tokens").value = model.context_tokens || "";
+      $("max-tokens").value = model.max_tokens || "";
+      capacityFields();
+      closeModels();
+      $("model").focus();
+      closeModels();
+    };
+    $("model-options").append(option);
+  }
+  if (!matches.length)
+    $("model-options").append(
+      node("p", "没有匹配项，可输入完整型号。", "muted"),
+    );
+  $("model-options").hidden = false;
+  $("model").setAttribute("aria-expanded", "true");
+}
+async function fetchModels() {
+  const serial = ++modelListSerial;
+  modelCandidates = [];
+  closeModels();
+  $("fetch-models").disabled = true;
+  $("model-list-status").textContent = "正在获取模型列表…";
+  try {
+    const result = await api("/api/models", {
+      provider: $("provider").value,
+      region: $("region").value,
+      key: $("model-key").value.trim(),
+    });
+    if (serial !== modelListSerial || !$("settings-dialog").open) return;
+    modelCandidates = result.models;
+    $("model-list-status").textContent =
+      `${result.source === "account" ? "接口返回" : "本地预设"} ${result.models.length} 个模型。${result.message}`;
+    if (document.activeElement === $("model")) renderModels();
+  } catch (error) {
+    if (serial === modelListSerial)
+      $("model-list-status").textContent = error.message;
+  } finally {
+    if (serial === modelListSerial) $("fetch-models").disabled = false;
+  }
+}
 function capacityFields() {
   const p = config.providers.find((p) => p.id === $("provider").value);
   const custom = $("model").value.trim() !== p.model;
-  $("custom-capacity").hidden = !custom;
-  $("context-tokens").required = $("max-tokens").required = custom;
+  const discovered = modelCandidates.find(
+    (m) => m.id === $("model").value.trim(),
+  );
+  const supplied = discovered?.context_tokens && discovered?.max_tokens;
+  if (custom && supplied) {
+    $("context-tokens").value = discovered.context_tokens;
+    $("max-tokens").value = discovered.max_tokens;
+  }
+  $("custom-capacity").hidden = !custom || !!supplied;
+  $("model-capacity-note").hidden = !custom || !!supplied;
+  $("context-tokens").required = $("max-tokens").required = custom && !supplied;
 }
 function providerFields() {
+  invalidateModels();
   const p = config.providers.find((p) => p.id === $("provider").value);
   $("model").value = p.model;
   options("region", p.regions, p.region, {});
@@ -787,11 +871,70 @@ async function openSettings() {
     $("settings-feedback").textContent = e.message;
   }
   $("settings-dialog").showModal();
+  if (config.providers.find((p) => p.id === $("provider").value).configured)
+    fetchModels();
 }
 $("open-settings").onclick = $("change-model").onclick = () =>
   openSettings().catch((e) => notice(e.message));
-$("provider").onchange = providerFields;
-$("model").oninput = capacityFields;
+$("provider").onchange = () => {
+  providerFields();
+  if (config.providers.find((p) => p.id === $("provider").value).configured)
+    fetchModels();
+};
+$("region").onchange = () => {
+  invalidateModels();
+  if (
+    $("model-key").value ||
+    config.providers.find((p) => p.id === $("provider").value).configured
+  )
+    fetchModels();
+};
+$("model-key").oninput = invalidateModels;
+$("model-key").onchange = fetchModels;
+$("fetch-models").onclick = fetchModels;
+$("model").oninput = () => {
+  $("context-tokens").value = $("max-tokens").value = "";
+  capacityFields();
+  renderModels();
+};
+$("model").onfocus = () => renderModels(true);
+$("model").onblur = closeModels;
+$("model").onkeydown = (e) => {
+  if (e.key === "Escape" && !$("model-options").hidden) {
+    e.preventDefault();
+    e.stopPropagation();
+    closeModels();
+    return;
+  }
+  if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+    e.preventDefault();
+    if ($("model-options").hidden) renderModels();
+    const items = Array.from($("model-options").querySelectorAll("button"));
+    if (!items.length) return;
+    modelOptionIndex = Math.max(
+      0,
+      Math.min(
+        items.length - 1,
+        modelOptionIndex + (e.key === "ArrowDown" ? 1 : -1),
+      ),
+    );
+    items.forEach((item, i) =>
+      item.setAttribute("aria-selected", String(i === modelOptionIndex)),
+    );
+    $("model").setAttribute(
+      "aria-activedescendant",
+      items[modelOptionIndex].id,
+    );
+    items[modelOptionIndex].scrollIntoView({ block: "nearest" });
+  } else if (e.key === "Enter" && !$("model-options").hidden) {
+    e.preventDefault();
+    const items = $("model-options").querySelectorAll("button");
+    if (modelOptionIndex >= 0 && items[modelOptionIndex])
+      items[modelOptionIndex].click();
+    else closeModels();
+  }
+};
+$("settings-dialog").addEventListener("close", invalidateModels);
 $("connection-provider").onchange = connectionFields;
 $("settings-form").onsubmit = (e) => {
   e.preventDefault();

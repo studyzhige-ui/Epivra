@@ -277,9 +277,12 @@ label > textarea {
   margin-right: 5px;
 }
 main {
+  display: flex;
+  flex-direction: column;
   min-width: 0;
 }
 header {
+  flex-shrink: 0;
   height: 52px;
   border-bottom: 1px solid var(--line);
   display: flex;
@@ -297,13 +300,15 @@ header {
   border-radius: 5px;
 }
 .view {
+  width: 100%;
   max-width: 1100px;
   margin: auto;
   padding: 32px 40px;
 }
 #welcome {
+  margin-block: auto;
   max-width: 1000px;
-  padding-block: clamp(20px, 4vh, 36px);
+  padding-block: clamp(16px, 3vh, 32px);
 }
 .eyebrow {
   color: #637c66;
@@ -346,7 +351,7 @@ h3 {
   border: 0;
   background: #f8faf6;
   display: block;
-  min-height: 96px;
+  min-height: 125px;
   font-size: 16px;
   line-height: 1.65;
 }
@@ -721,9 +726,11 @@ summary {
     padding: 23px 15px;
   }
   .view {
+    width: 100%;
     padding: 36px 28px;
   }
   header {
+    flex-shrink: 0;
     padding: 0 28px;
   }
   .section-label {
@@ -793,10 +800,12 @@ summary {
     margin: 0;
   }
   header {
+    flex-shrink: 0;
     height: 50px;
     padding: 0 20px;
   }
   .view {
+    width: 100%;
     padding: 30px 18px;
   }
   h1 {
@@ -880,4 +889,42 @@ summary {
 }
 .markdown .align-center {
   text-align: center;
+}
+
+.model-picker-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 18px 0 8px;
+}
+.model-picker {
+  position: relative;
+}
+#model-options {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  z-index: 8;
+  max-height: 220px;
+  overflow-y: auto;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px #18291d18;
+  padding: 4px;
+}
+.model-option {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: 0;
+  overflow-wrap: anywhere;
+}
+.model-option[aria-selected="true"] {
+  background: var(--tint);
+}
+.model-summary {
+  justify-content: center;
 }

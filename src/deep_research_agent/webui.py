@@ -16,6 +16,7 @@ from urllib.parse import urlsplit
 
 from . import cli_settings, host
 from .model_catalog import OFFICIAL_PROVIDERS
+from .model_discovery import DiscoveryError, discover
 from .models import freeze_model_settings
 from .web_providers import CONNECTIONS, READERS, SEARCH
 
@@ -133,6 +134,20 @@ class App:
             "search": list(SEARCH),
             "readers": list(READERS),
         }
+
+    def discover_models(self, data):
+        if data.keys() - {"provider", "region", "key"}:
+            raise WebError("未知模型列表参数。")
+        provider = data["provider"]
+        with self.settings_lock:
+            try:
+                key = cli_settings.model_key(self.root, provider, data.get("key", ""))
+            except ValueError as exc:
+                raise WebError(str(exc)) from None
+        try:
+            return discover(provider, data.get("region"), key)
+        except DiscoveryError as exc:
+            raise WebError(str(exc)) from None
 
     def save_settings(self, data):
         if data.keys() - DEFAULT_FIELDS:
@@ -311,6 +326,7 @@ class Handler(BaseHTTPRequestHandler):
             if not post or path not in {
                 "/api/command",
                 "/api/settings",
+                "/api/models",
                 "/api/key",
                 "/api/pick",
                 "/api/file",
@@ -329,6 +345,8 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if path == "/api/command":
                 result = app.call(data)
+            elif path == "/api/models":
+                result = app.discover_models(data)
             elif path == "/api/settings":
                 result = app.save_settings(data)
             elif path == "/api/pick":

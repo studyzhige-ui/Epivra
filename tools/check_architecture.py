@@ -17,6 +17,7 @@ LAYERS = (
                 "workspace",
                 "adapters",
                 "model_catalog",
+                "model_discovery",
                 "models",
                 "native_models",
                 "scheduling",
@@ -49,7 +50,14 @@ LAYERS = (
     ),
 )
 ALLOWED = {
-    "webui": {"host", "cli_settings", "model_catalog", "models", "web_providers"},
+    "webui": {
+        "host",
+        "cli_settings",
+        "model_catalog",
+        "model_discovery",
+        "models",
+        "web_providers",
+    },
     "mcp_client": {"domain"},
     "mcp_tools": {"domain", "harness", "workspace", "mcp_client"},
     "mcp_server": {"host"},
@@ -78,6 +86,7 @@ ALLOWED = {
         "model_catalog",
     },
     "model_catalog": set(),
+    "model_discovery": {"model_catalog"},
     "models": {"adapters", "model_catalog", "native_models"},
     "native_models": {"adapters", "domain"},
     "materials": {"domain", "document_parser"},

@@ -314,7 +314,41 @@
           <label>厂商<select id="provider"></select></label
           ><label>账户地区<select id="region"></select></label>
         </div>
-        <label>模型名称<input id="model" required /></label>
+        <label
+          ><span id="model-key-label">API Key</span
+          ><input
+            id="model-key"
+            type="password"
+            autocomplete="new-password"
+            placeholder="输入新密钥；不会回显已有密钥"
+        /></label>
+        <div class="model-picker-heading">
+          <label for="model">选择模型</label
+          ><button type="button" id="fetch-models" class="text-button">
+            获取模型列表
+          </button>
+        </div>
+        <div class="model-picker">
+          <input
+            id="model"
+            required
+            role="combobox"
+            aria-autocomplete="list"
+            aria-expanded="false"
+            aria-controls="model-options"
+            autocomplete="off"
+            placeholder="输入字符筛选，或填写完整模型名称"
+          />
+          <div
+            id="model-options"
+            role="listbox"
+            aria-label="模型候选"
+            hidden
+          ></div>
+        </div>
+        <p id="model-list-status" class="muted" role="status">
+          先填写密钥，再获取模型列表。
+        </p>
         <div id="custom-capacity" class="form-row" hidden>
           <label
             >上下文容量 tokens<input
@@ -325,14 +359,9 @@
             >输出额度 tokens<input id="max-tokens" type="number" min="1"
           /></label>
         </div>
-        <label
-          ><span id="model-key-label">API Key</span
-          ><input
-            id="model-key"
-            type="password"
-            autocomplete="new-password"
-            placeholder="输入新密钥；不会回显已有密钥"
-        /></label>
+        <p id="model-capacity-note" class="muted" hidden>
+          此型号尚无完整容量预设，请按官方参数填写；列表可见不代表已验证研究工具能力。
+        </p>
         <h3>搜索与网页读取</h3>
         <div class="form-row">
           <label>默认搜索<select id="search-provider"></select></label

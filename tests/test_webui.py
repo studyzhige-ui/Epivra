@@ -70,6 +70,35 @@ class WebTests(unittest.IsolatedAsyncioTestCase):
         study = reply.json()["study"]
         return study, self.host.store.control(study)
 
+    async def test_model_discovery_route_is_authenticated_and_ephemeral(self):
+        result = {"models": [{"id": "example"}], "source": "account"}
+        with patch(
+            "deep_research_agent.webui.discover", return_value=result
+        ) as discover:
+            reply = await self.http.post(
+                "/api/models", json={"provider": "deepseek", "key": "temporary-key"}
+            )
+            self.assertEqual(200, reply.status_code)
+            self.assertEqual(result, reply.json())
+            self.assertEqual("temporary-key", discover.call_args.args[2])
+            self.assertFalse((self.root / ".env").exists())
+            reply = await self.http.post(
+                "/api/models",
+                json={
+                    "provider": "deepseek",
+                    "url": "https://invalid.example",
+                    "key": "temporary-key",
+                },
+            )
+            self.assertEqual(400, reply.status_code)
+            reply = await self.http.post(
+                "/api/models",
+                json={"provider": "deepseek"},
+                headers={"X-Research-Token": "wrong"},
+            )
+            self.assertEqual(401, reply.status_code)
+            self.assertEqual(1, discover.call_count)
+
     async def test_loopback_guard_csrf_and_assets(self):
         reply = await self.http.get("/")
         self.assertEqual(200, reply.status_code)

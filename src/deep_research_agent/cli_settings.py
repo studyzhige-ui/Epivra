@@ -48,3 +48,10 @@ def save_key(root, name, value):
     lines = [line for line in lines if line.split("=", 1)[0].strip() != name]
     write(path, "\n".join([*lines, f"{name}={value}"]) + "\n")
     return name in os.environ
+
+
+def model_key(root, provider, entered=""):
+    name = OFFICIAL_PROVIDERS[provider].credential_env
+    if entered and name in os.environ and entered != os.environ[name]:
+        raise ValueError("环境变量密钥优先，请先更新环境变量再获取模型。")
+    return entered or credentials(root / ".env").get(name, "")
