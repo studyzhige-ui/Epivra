@@ -1,33 +1,80 @@
-# Epivra
+<p align="center"><img src="src/epivra/web/favicon.svg" width="72" alt="Epivra" /></p>
+<h1 align="center">Epivra</h1>
+<p align="center">From questions to insight · Autonomous research on your desktop</p>
+<p align="center"><strong>English</strong> · <a href="README.zh-CN.md">简体中文</a></p>
 
-**自主研究工作台 · 从问题到洞见。**
+![Epivra English workbench](docs/images/home-en.png)
 
-Epivra 根据你的问题和用途，结合公开网络、上传文件或授权资料文件夹开展研究。你先确认初始策略，随后由研究 Agent 自主调查、分析、综合、写作与核查，交付带来源依据、适用条件和不确定性说明的成果。研究过程中可以暂停、补充资料或调整方向。
+Epivra researches questions using the public web and your materials. Approve the initial strategy, then let the agents investigate, analyze, synthesize, write, and review findings with traceable sources. Pause, add materials, or change direction as needed.
 
-提供用户本地运行的 CLI、轻量 Web UI 与双向 MCP 接入。研究记录和成果保存在本机；在线模型、搜索及外部工具会接收完成任务所需的查询与资料内容。关闭客户端不会结束后台研究，本机和研究服务需保持运行。
+## What you can do
 
-已接入12家官方模型、5家搜索 API 与 DuckDuckGo，以及 Jina/Tavily/Exa 网页读取；支持本地文档解析、可选 Docling OCR 和 Docker 数据分析。底层使用自研、供应商无关的 Agent Runtime / Harness，提供上下文管理、角色协作、持久恢复与用量记录。默认模型为 deepseek-flash。
+- **Set the direction** — approve a strategy before research starts; pause or redirect it later.
+- **Combine web and local materials** — search the web, upload files, or authorize folders and MCP resources.
+- **Choose your providers** — use 12 official model providers and multiple search and reading services.
+- **Work through Web, CLI, or MCP** — English and Simplified Chinese interfaces share the same local research records.
+- **Keep the evidence** — retain sources, research artifacts, and usage records; export Markdown and run optional data analysis.
 
-**当前状态：工程能力已集成，跨题材、真实长文档及规模化研究质量验收仍待完成。** 供应商适配并非全部经过真实账户联调；图表语义理解与云端解析尚未实现。不能把工程测试通过视为研究结论必然正确。
+## Quick start
 
-
-## 快速开始
-
-在项目目录执行（Windows PowerShell）：
+Requires **Python 3.11+**. Run from the project directory (Windows PowerShell):
 
 ```powershell
 python -m venv .venv
 .venv/Scripts/python.exe -m pip install -e .
-.venv/Scripts/epivra.exe web
+.venv/Scripts/epivra.exe --lang en web
 ```
 
-打开“连接与设置”，选择厂商、填写密钥并选择模型；输入问题，确认研究策略后开始。终端工作台使用 `.venv/Scripts/epivra.exe`。
+On macOS / Linux, use `.venv/bin/python` and `.venv/bin/epivra`. Windows is the primary platform validated so far.
 
-- [完整使用说明](docs/USAGE.md)：连接、研究、暂停改向、资料、分析、MCP 与备份。
-- [本地模型](models/README.md)：模型位于项目 `models/docling/`，权重不纳入 Git。
+1. Open **Connections & settings**, choose a provider, enter its API key, and select a model.
+2. Describe your question and intended use, then choose the material scope.
+3. Generate and approve the strategy. Epivra then proceeds with the research.
 
-## 项目结构
+Switch languages in the Web header without losing your input. No Node.js, frontend build, or database server is required.
 
-`src/epivra/` 包含应用与图标；`models/` 组织本地解析模型；`sandbox/` 提供可选分析容器；`tests/` 为离线工程测试；`evals/` 为研究验证资料；`tools/` 为检查和验证工具；`docs/` 包含使用帮助。
+## Three ways to work
 
-`.env` 保存本地凭据，`.epivra/` 保存研究和配置，两者均不提交。仓库保留从初始实现到 Epivra 的代码演进历史；内部开发文档和环境配置文件已从上传历史中排除。
+The commands below assume your virtual environment is activated:
+
+| Interface | Command |
+|---|---|
+| Web workbench | `epivra --lang en web` |
+| Interactive CLI | `epivra --lang en` |
+| MCP server | Run `epivra start`, then `epivra-mcp --lang en` |
+
+Use `--lang zh-CN` for Simplified Chinese, or set `EPIVRA_LANG`. Interface language does not translate source materials or reports; specify your preferred output language in the research request.
+
+## Providers and extensions
+
+| Capability | Supported options |
+|---|---|
+| Models | OpenAI, Claude, Gemini, Grok, DeepSeek, Qwen, Kimi, GLM, Doubao, MiniMax, Hunyuan, ERNIE |
+| Search | Tavily, Exa, Brave, Perplexity, Bocha; DuckDuckGo fallback |
+| Web reading | Jina, Tavily, Exa |
+| Materials | Text, CSV/TSV, text-layer PDFs, XLSX; optional Docling document parsing and OCR |
+| Analysis | Optional Docker Python sandbox for statistics, data processing, and charts |
+| MCP | Connect external tools and resources, or expose research to other clients |
+
+```powershell
+# Install extensions as needed
+python -m pip install -e ".[documents,mcp]"
+# Optional data analysis
+docker build -t epivra-analysis:1 sandbox
+```
+
+The default model is `deepseek-flash`. Only official model endpoints are supported; custom relay URLs are not. Model discovery and live account verification have different coverage. Unregistered models may need explicit capacity settings.
+
+## Local data and privacy
+
+Research records live in `.epivra/`, credentials in `.env`, and local parsing models in `models/docling/`. These are excluded from Git. Icons and interface assets are packaged with the application.
+
+Local operation does not mean all data stays offline: online models, search services, and external tools receive the queries and materials needed for the task. Closing an interface does not stop background research; keep the computer and research host running.
+
+## Help and project status
+
+- [User guide](docs/USAGE.en.md): setup, configuration, research, MCP, backups, and troubleshooting.
+- [Local models](models/README.en.md): downloads and directory layout.
+- [Validation tools](evals/README.en.md): engineering checks versus research quality evaluation.
+
+This is a development release. Features are integrated, but not all providers have been tested with live accounts. Cross-topic, long-document, and larger-scale research quality still needs validation. Passing engineering tests does not guarantee correct research conclusions; OCR is not semantic understanding of complex charts.

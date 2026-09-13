@@ -41,6 +41,7 @@ LAYERS = (
                 "host",
                 "cli",
                 "terminal",
+                "locale",
                 "cli_settings",
                 "mcp_server",
                 "mcp_tools",
@@ -50,7 +51,9 @@ LAYERS = (
     ),
 )
 ALLOWED = {
+    "locale": set(),
     "webui": {
+        "locale",
         "host",
         "cli_settings",
         "model_catalog",
@@ -60,8 +63,9 @@ ALLOWED = {
     },
     "mcp_client": {"domain"},
     "mcp_tools": {"domain", "harness", "workspace", "mcp_client"},
-    "mcp_server": {"host"},
+    "mcp_server": {"host", "locale"},
     "cli": {
+        "locale",
         "host",
         "terminal",
         "cli_settings",
@@ -69,9 +73,10 @@ ALLOWED = {
         "web_providers",
         "webui",
     },
-    "terminal": set(),
+    "terminal": {"locale"},
     "cli_settings": {"adapters", "model_catalog", "web_providers"},
     "host": {
+        "locale",
         "mcp_client",
         "usage",
         "analysis_runtime",
@@ -147,11 +152,7 @@ def check(package: Path) -> list[str]:
             local = []
             if isinstance(node, ast.Import):
                 modules = [a.name for a in node.names]
-                local = [
-                    m.split(".")[1]
-                    for m in modules
-                    if m.startswith("epivra.")
-                ]
+                local = [m.split(".")[1] for m in modules if m.startswith("epivra.")]
             elif isinstance(node, ast.ImportFrom):
                 module = node.module or ""
                 modules = [module]

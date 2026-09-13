@@ -9,6 +9,7 @@ from pathlib import Path
 from prompt_toolkit.patch_stdout import patch_stdout
 
 from . import cli_settings, host
+from .locale import LANGUAGES, configure, set_language, tr
 from .model_catalog import OFFICIAL_PROVIDERS
 from .terminal import Terminal
 from .web_providers import CONNECTIONS, READERS, SEARCH
@@ -38,39 +39,39 @@ ROLES = {
 
 def stage(s):
     if s.get("cancelled"):
-        return "已取消"
+        return tr("已取消")
     if s.get("published"):
-        return "已完成"
+        return tr("已完成")
     if s.get("error"):
-        return "需要处理"
+        return tr("需要处理")
     if s.get("paused"):
-        return "已暂停"
+        return tr("已暂停")
     if not s.get("approved"):
-        return "策略待审批" if s.get("plans") else "正在准备策略"
-    return "研究中" if s.get("running") else "等待接续"
+        return tr("策略待审批") if s.get("plans") else tr("正在准备策略")
+    return tr("研究中") if s.get("running") else tr("等待接续")
 
 
 def strategy(plan):
     lines = [plan["text"]]
     brief = plan.get("brief", {})
     labels = {
-        "subject": "研究对象",
-        "given_context": "已知背景",
-        "questions": "研究问题",
-        "material_scope": "资料范围",
+        "subject": tr("研究对象"),
+        "given_context": tr("已知背景"),
+        "questions": tr("研究问题"),
+        "material_scope": tr("资料范围"),
     }
     if brief:
-        lines.append("\n## 研究范围与前提")
+        lines.append(tr("\n## 研究范围与前提"))
     for key, value in brief.items():
         if isinstance(value, dict):
             modes = {
-                "case_materials": "针对本案例的资料",
-                "library": "待检索的资料库",
-                "unspecified": "尚未指定",
+                "case_materials": tr("针对本案例的资料"),
+                "library": tr("待检索的资料库"),
+                "unspecified": tr("尚未指定"),
             }
             value = (
                 modes.get(value.get("mode"), value.get("mode", ""))
-                + "；依据："
+                + tr("；依据：")
                 + value.get("basis", "")
             )
         elif isinstance(value, list):
@@ -89,12 +90,12 @@ class Workbench:
         result = await self.send(self.root, {"action": action, **fields})
         if result.get("error") and action not in {"status"}:
             messages = {
-                "Conflict": "状态已变化，请刷新并重新确认。",
-                "ValueError": "操作未完成，请检查配置、路径或当前研究状态。",
-                "NotAllowed": "当前状态不允许此操作，请先暂停研究。",
+                "Conflict": tr("状态已变化，请刷新并重新确认。"),
+                "ValueError": tr("操作未完成，请检查配置、路径或当前研究状态。"),
+                "NotAllowed": tr("当前状态不允许此操作，请先暂停研究。"),
             }
             raise ValueError(
-                messages.get(result["error"], "操作未完成：" + result["error"])
+                messages.get(result["error"], tr("操作未完成：") + result["error"])
             )
         return result
 
@@ -112,26 +113,34 @@ class Workbench:
         defaults = cli_settings.load(self.root)
         while True:
             choice = await self.ui.choose(
-                "连接与默认设置",
+                tr("连接与默认设置"),
                 [
-                    ("model", "研究模型"),
-                    ("search", "搜索与网页读取"),
-                    ("parser", "本地解析"),
-                    ("analysis", "数据分析沙箱"),
-                    ("mcp", "MCP 外部连接"),
+                    ("model", tr("研究模型")),
+                    ("search", tr("搜索与网页读取")),
+                    ("parser", tr("本地解析")),
+                    ("analysis", tr("数据分析沙箱")),
+                    ("mcp", tr("MCP 外部连接")),
+                    ("language", "简体中文 / English"),
                 ],
             )
             if choice is None:
                 return
+            if choice == "language":
+                language = await self.ui.choose(
+                    "简体中文 / English", [("zh-CN", "简体中文"), ("en", "English")]
+                )
+                if language:
+                    set_language(language)
+                continue
             keys = cli_settings.configured(self.root)
             if choice == "model":
                 provider = await self.ui.choose(
-                    "模型厂商",
+                    tr("模型厂商"),
                     [
                         (
                             k,
-                            LABELS.get(k, k)
-                            + (" · 已配置密钥" if v.credential_env in keys else ""),
+                            tr(LABELS.get(k, k))
+                            + (tr(" · 已配置密钥") if v.credential_env in keys else ""),
                         )
                         for k, v in sorted(
                             OFFICIAL_PROVIDERS.items(),
@@ -143,34 +152,34 @@ class Workbench:
                     continue
                 spec = OFFICIAL_PROVIDERS[provider]
                 if spec.credential_env not in keys or await self.ui.confirm(
-                    "替换此厂商的密钥？"
+                    tr("替换此厂商的密钥？")
                 ):
-                    key = await self.ui.text("API Key（输入隐藏）", secret=True)
+                    key = await self.ui.text(tr("API Key（输入隐藏）"), secret=True)
                     if not key:
                         continue
                     overridden = cli_settings.save_key(
                         self.root, spec.credential_env, key
                     )
                     self.ui.show(
-                        "密钥已保存，尚未进行付费联通测试。"
-                        + (" 当前环境变量会优先于该文件。" if overridden else "")
+                        tr("密钥已保存，尚未进行付费联通测试。")
+                        + (tr(" 当前环境变量会优先于该文件。") if overridden else "")
                     )
-                model = await self.ui.text("模型名称", spec.default_model.id)
+                model = await self.ui.text(tr("模型名称"), spec.default_model.id)
                 if not model:
                     continue
                 region = spec.default_region
                 if len(spec.endpoints) > 1:
                     region = await self.ui.choose(
-                        "账户地区", [(r, r) for r, _ in spec.endpoints]
+                        tr("账户地区"), [(r, r) for r, _ in spec.endpoints]
                     )
                     if region is None:
                         continue
                 update = {"provider": provider, "model": model, "region": region}
                 if model != spec.default_model.id:
-                    self.ui.show("此模型不在已核验预设中，请按官方文档填写容量。")
+                    self.ui.show(tr("此模型不在已核验预设中，请按官方文档填写容量。"))
                     for field, label in [
-                        ("context_tokens", "上下文容量 tokens"),
-                        ("max_tokens", "输出额度 tokens"),
+                        ("context_tokens", tr("上下文容量 tokens")),
+                        ("max_tokens", tr("输出额度 tokens")),
                     ]:
                         value = await self.ui.text(label)
                         if not value:
@@ -181,12 +190,16 @@ class Workbench:
                 defaults.update(update)
             elif choice == "search":
                 provider = await self.ui.choose(
-                    "配置连接", [(n, n) for n in CONNECTIONS]
+                    tr("配置连接"), [(n, n) for n in CONNECTIONS]
                 )
                 if provider is None:
                     continue
                 key = (
-                    (await self.ui.text("API Key（输入隐藏，留空不修改）", secret=True))
+                    (
+                        await self.ui.text(
+                            tr("API Key（输入隐藏，留空不修改）"), secret=True
+                        )
+                    )
                     if CONNECTIONS[provider][1]
                     else None
                 )
@@ -200,50 +213,58 @@ class Workbench:
                 names = (await self.call("mcp_connections"))["servers"]
                 if not names:
                     self.ui.show(
-                        "请先在工作目录的 mcp-servers.json 配置连接和工具授权，格式见 docs/product-redesign/MCP.md。"
+                        tr(
+                            "请先在工作目录的 mcp-servers.json 配置连接和工具授权，格式见 docs/USAGE.md。"
+                        )
                     )
                     continue
                 enabled = defaults.get("mcp_servers", [])
                 name = await self.ui.choose(
-                    "MCP 连接（用于新研究）",
-                    [(n, n + (" · 已启用" if n in enabled else "")) for n in names],
+                    tr("MCP 连接（用于新研究）"),
+                    [(n, n + (tr(" · 已启用") if n in enabled else "")) for n in names],
                 )
                 if name is None:
                     continue
                 if name in enabled:
                     defaults["mcp_servers"] = [n for n in enabled if n != name]
                 elif await self.ui.confirm(
-                    "连接并启用该 MCP？将启动配置的本地程序或访问远端；工具权限以配置文件为准。"
+                    tr(
+                        "连接并启用该 MCP？将启动配置的本地程序或访问远端；工具权限以配置文件为准。"
+                    )
                 ):
                     catalog = await self.call("mcp_discover", name=name)
                     self.ui.show(
-                        f"已连接 · 发现 {len(catalog['tools'])} 个工具、{len(catalog['resources'])} 个资源；仅配置中授权的能力会提供给研究角色。"
+                        tr(
+                            "已连接 · 发现 {0} 个工具、{1} 个资源；仅配置中授权的能力会提供给研究角色。",
+                            len(catalog["tools"]),
+                            len(catalog["resources"]),
+                        )
                     )
                     defaults["mcp_servers"] = [*enabled, name]
             elif choice == "parser":
                 mode = await self.ui.choose(
-                    "解析方式",
+                    tr("解析方式"),
                     [
-                        ("auto", "自动"),
-                        ("light", "轻量解析"),
-                        ("docling", "Docling 本地解析"),
+                        ("auto", tr("自动")),
+                        ("light", tr("轻量解析")),
+                        ("docling", tr("Docling 本地解析")),
                     ],
                 )
                 if mode is None:
                     continue
                 defaults["parser"] = mode
                 if mode == "docling":
-                    self.ui.show("选择已安装的 Docling 模型文件夹。")
+                    self.ui.show(tr("选择已安装的 Docling 模型文件夹。"))
                     path = await self.ui.path(directory=True)
                     if path is None:
                         continue
                     defaults["docling_models"] = str(path)
             else:
                 defaults["analysis"] = await self.ui.confirm(
-                    "默认启用 Docker 数据分析？需要已经构建本地镜像。"
+                    tr("默认启用 Docker 数据分析？需要已经构建本地镜像。")
                 )
             cli_settings.save(self.root, defaults)
-            self.ui.show("默认设置已保存，只应用于新研究。")
+            self.ui.show(tr("默认设置已保存，只应用于新研究。"))
 
     async def new(self):
         defaults = cli_settings.load(self.root)
@@ -251,18 +272,18 @@ class Workbench:
         if OFFICIAL_PROVIDERS[provider].credential_env not in cli_settings.configured(
             self.root
         ):
-            self.ui.show("先配置一个研究模型，再创建研究。")
+            self.ui.show(tr("先配置一个研究模型，再创建研究。"))
             await self.configure()
             return
-        text = await self.ui.text("你希望研究什么？（用途、问题或期望成果）")
+        text = await self.ui.text(tr("你希望研究什么？（用途、问题或期望成果）"))
         if not text:
             return
         scope = await self.ui.choose(
-            "资料范围",
+            tr("资料范围"),
             [
-                ("web", "公开网络"),
-                ("local", "仅使用本地资料"),
-                ("both", "网络与本地资料"),
+                ("web", tr("公开网络")),
+                ("local", tr("仅使用本地资料")),
+                ("both", tr("网络与本地资料")),
             ],
         )
         if scope is None:
@@ -271,19 +292,20 @@ class Workbench:
         if scope != "web":
             while True:
                 action = await self.ui.choose(
-                    "添加资料",
+                    tr("添加资料"),
                     [
-                        ("file", "选择文件"),
-                        ("folder", "授权文件夹"),
-                        ("remove", "移除已选资料"),
-                        ("done", "完成选择"),
+                        ("file", tr("选择文件")),
+                        ("folder", tr("授权文件夹")),
+                        ("remove", tr("移除已选资料")),
+                        ("done", tr("完成选择")),
                     ],
                 )
                 if action is None:
                     return
                 if action == "remove":
                     selected = await self.ui.choose(
-                        "移除哪项资料？", [(str(p), str(p)) for p in [*files, *roots]]
+                        tr("移除哪项资料？"),
+                        [(str(p), str(p)) for p in [*files, *roots]],
                     )
                     if selected:
                         files = [p for p in files if str(p) != selected]
@@ -292,27 +314,33 @@ class Workbench:
                 if action == "done":
                     if files or roots:
                         break
-                    self.ui.show("请至少选择一份资料或一个文件夹。")
+                    self.ui.show(tr("请至少选择一份资料或一个文件夹。"))
                     continue
                 path = await self.ui.path(directory=action == "folder")
                 if path is None:
                     continue
                 if not (path.is_dir() if action == "folder" else path.is_file()):
-                    self.ui.show("所选路径不存在或类型不符。")
+                    self.ui.show(tr("所选路径不存在或类型不符。"))
                     continue
                 target = roots if action == "folder" else files
                 if path not in target:
                     target.append(path)
-                self.ui.show("已选择：" + str(path))
+                self.ui.show(tr("已选择：") + str(path))
         self.ui.show(
-            f"\n研究：{text}\n模型：{provider} / {defaults.get('model', OFFICIAL_PROVIDERS[provider].default_model.id)}\n联网：{'是' if scope != 'local' else '否'}"
+            tr(
+                "\n研究：{0}\n模型：{1} / {2}\n联网：{3}",
+                text,
+                provider,
+                defaults.get("model", OFFICIAL_PROVIDERS[provider].default_model.id),
+                tr("是") if scope != "local" else tr("否"),
+            )
         )
         for path in files:
-            self.ui.show("导入文件：" + str(path))
+            self.ui.show(tr("导入文件：") + str(path))
         for path in roots:
-            self.ui.show("授权读取文件夹及子目录：" + str(path))
+            self.ui.show(tr("授权读取文件夹及子目录：") + str(path))
         if not await self.ui.confirm(
-            "生成初始策略？这一步将调用模型，正式研究仍需审批策略。"
+            tr("生成初始策略？这一步将调用模型，正式研究仍需审批策略。")
         ):
             return
         result = await self.call(
@@ -327,7 +355,7 @@ class Workbench:
         status = await self.call("status", study=study)
         try:
             for path in files:
-                self.ui.show("正在导入：" + path.name)
+                self.ui.show(tr("正在导入：") + path.name)
                 imported = await self.call(
                     "import_file",
                     study=study,
@@ -335,13 +363,17 @@ class Workbench:
                     path=str(path),
                 )
                 self.ui.show(
-                    f"已导入 · {imported['characters']} 字符 · {imported['coverage']}"
+                    tr(
+                        "已导入 · {0} 字符 · {1}",
+                        imported["characters"],
+                        imported["coverage"],
+                    )
                 )
                 for issue in imported.get("issues", []):
                     self.ui.show(str(issue))
             await self.command(study, status, "resume")
         except (ValueError, OSError, TimeoutError):
-            self.ui.show("研究已保留为暂停草稿，可从研究列表补充资料后继续。")
+            self.ui.show(tr("研究已保留为暂停草稿，可从研究列表补充资料后继续。"))
             raise
         await self.study(study)
 
@@ -349,53 +381,63 @@ class Workbench:
         while True:
             status = await self.call("status", study=study)
             self.ui.show(
-                f"\n{status.get('request', '研究')}\n{stage(status)} · 资料 {status.get('source_count', 0)} 份"
+                tr(
+                    "\n{0}\n{1} · 资料 {2} 份",
+                    status.get("request", tr("研究")),
+                    stage(status),
+                    status.get("source_count", 0),
+                )
             )
             if status.get("error"):
                 self.ui.show(
-                    "阻断："
+                    tr("阻断：")
                     + status["error"]
-                    + "。可暂停后检查连接设置，更新密钥后重新载入。"
+                    + tr("。可暂停后检查连接设置，更新密钥后重新载入。")
                 )
-            options = [("watch", "查看进度")]
+            options = [("watch", tr("查看进度"))]
             if (
                 status.get("plans")
                 and not status.get("approved")
                 and not status.get("cancelled")
             ):
-                options.insert(0, ("approve", "阅读并审批研究策略"))
+                options.insert(0, ("approve", tr("阅读并审批研究策略")))
             if status.get("published"):
-                options.insert(0, ("report", "阅读与导出报告"))
+                options.insert(0, ("report", tr("阅读与导出报告")))
             if not status.get("cancelled"):
                 options += [
                     (
                         "resume" if status.get("paused") else "pause",
-                        "继续研究" if status.get("paused") else "暂停研究",
+                        tr("继续研究") if status.get("paused") else tr("暂停研究"),
                     ),
-                    ("steer", "调整研究方向"),
+                    ("steer", tr("调整研究方向")),
                 ]
                 if status.get("paused") and not status.get("running"):
-                    options += [("upload", "补充资料文件"), ("reload", "重新载入密钥")]
-                options += [("cancel", "取消研究")]
-            options += [("files", "导出计算文件"), ("usage", "查看用量")]
-            action = await self.ui.choose("下一步", options)
+                    options += [
+                        ("upload", tr("补充资料文件")),
+                        ("reload", tr("重新载入密钥")),
+                    ]
+                options += [("cancel", tr("取消研究"))]
+            options += [("files", tr("导出计算文件")), ("usage", tr("查看用量"))]
+            action = await self.ui.choose(tr("下一步"), options)
             if action is None:
                 return
             if action == "approve":
                 plan = status["plans"][-1]
                 self.ui.page(strategy(plan["body"]))
-                if await self.ui.confirm("按上面这份策略开始研究？"):
+                if await self.ui.confirm(tr("按上面这份策略开始研究？")):
                     await self.command(study, status, "approve", {"plan": plan["ref"]})
                     if status["paused"]:
-                        self.ui.show("策略已审批，研究仍暂停；选择继续研究开始执行。")
+                        self.ui.show(
+                            tr("策略已审批，研究仍暂停；选择继续研究开始执行。")
+                        )
             elif action in {"pause", "resume"}:
                 await self.command(study, status, action)
             elif action == "cancel":
-                if await self.ui.confirm("取消后不能恢复此研究，确认取消？"):
+                if await self.ui.confirm(tr("取消后不能恢复此研究，确认取消？")):
                     await self.command(study, status, "cancel")
             elif action == "steer":
                 text = await self.ui.text(
-                    "新的研究需求（保留仍需满足的要求）", status.get("request", "")
+                    tr("新的研究需求（保留仍需满足的要求）"), status.get("request", "")
                 )
                 if text:
                     await self.command(study, status, "steer", {"request": text})
@@ -409,47 +451,57 @@ class Workbench:
                         path=str(path),
                     )
                     self.ui.show(
-                        f"已导入：{result['coverage']} · {result['characters']} 字符"
+                        tr(
+                            "已导入：{0} · {1} 字符",
+                            result["coverage"],
+                            result["characters"],
+                        )
                     )
             elif action == "reload":
                 await self.configure()
                 await self.call("reload", study=study)
-                self.ui.show("密钥已重新载入。研究配置不变，选择继续研究以接续。")
+                self.ui.show(tr("密钥已重新载入。研究配置不变，选择继续研究以接续。"))
             elif action == "usage":
                 groups = status.get("usage", [])
                 if not groups:
-                    self.ui.show("暂无调用用量。")
+                    self.ui.show(tr("暂无调用用量。"))
                 for group in groups:
                     self.ui.show(
-                        f"{group['resource']} / {group['model'] or '搜索'} · {group['calls']} 次调用 · 未知结果 {group['unresolved_calls']} 次"
+                        tr(
+                            "{0} / {1} · {2} 次调用 · 未知结果 {3} 次",
+                            group["resource"],
+                            group["model"] or tr("搜索"),
+                            group["calls"],
+                            group["unresolved_calls"],
+                        )
                     )
                     labels = {
-                        "input_tokens": "输入 tokens",
-                        "output_tokens": "输出 tokens",
-                        "cache_read_tokens": "缓存命中 tokens",
-                        "search_credits": "搜索 credits",
+                        "input_tokens": tr("输入 tokens"),
+                        "output_tokens": tr("输出 tokens"),
+                        "cache_read_tokens": tr("缓存命中 tokens"),
+                        "search_credits": tr("搜索 credits"),
                     }
                     for field, label in labels.items():
                         value = group["totals"].get(field)
                         self.ui.show(
-                            f"  {label}：{value if value is not None else '未报告'}"
+                            f"  {label}：{value if value is not None else tr('未报告')}"
                         )
             elif action == "report":
                 report = await self.call("report", study=study)
                 if not report.get("text"):
-                    self.ui.show("当前方向尚无已发布报告，正在刷新状态。")
+                    self.ui.show(tr("当前方向尚无已发布报告，正在刷新状态。"))
                     continue
                 self.ui.page(report["text"])
-                if await self.ui.confirm("将报告保存为 Markdown？"):
+                if await self.ui.confirm(tr("将报告保存为 Markdown？")):
                     path = await self.ui.path(save=True)
                     if path:
                         with path.open("x", encoding="utf-8") as file:
                             file.write(report["text"])
-                        self.ui.show("已保存：" + str(path))
+                        self.ui.show(tr("已保存：") + str(path))
             elif action == "files":
                 files = [f for a in status.get("analyses", []) for f in a["files"]]
                 ref = await self.ui.choose(
-                    "计算文件", [(f["ref"], f["name"]) for f in files]
+                    tr("计算文件"), [(f["ref"], f["name"]) for f in files]
                 )
                 if ref:
                     path = await self.ui.path(save=True)
@@ -457,14 +509,14 @@ class Workbench:
                         await self.call(
                             "export", study=study, source=ref, destination=str(path)
                         )
-                        self.ui.show("已保存：" + str(path))
+                        self.ui.show(tr("已保存：") + str(path))
             elif action == "watch":
                 with patch_stdout():
                     await self.watch(study)
 
     async def watch(self, study):
-        self.ui.show("进度自动刷新。按 Enter 返回，后台研究继续。")
-        prompt = asyncio.create_task(self.ui.text("Enter 返回"))
+        self.ui.show(tr("进度自动刷新。按 Enter 返回，后台研究继续。"))
+        prompt = asyncio.create_task(self.ui.text(tr("Enter 返回")))
         previous = None
         try:
             while not prompt.done():
@@ -476,13 +528,18 @@ class Workbench:
                 )
                 if snapshot != previous:
                     self.ui.show(
-                        f"{snapshot[0]} · 资料 {snapshot[1]} 份 · 已分配工作 {snapshot[2]} 项"
+                        tr(
+                            "{0} · 资料 {1} 份 · 已分配工作 {2} 项",
+                            snapshot[0],
+                            snapshot[1],
+                            snapshot[2],
+                        )
                     )
                     for work in status.get("work", [])[
                         (previous[2] if previous else 0) :
                     ]:
                         self.ui.show(
-                            f"  {ROLES.get(work['role'], work['role'])}：{work['task'][:150]}"
+                            f"  {tr(ROLES.get(work['role'], work['role']))}：{work['task'][:150]}"
                         )
                     previous = snapshot
                 if (
@@ -498,18 +555,20 @@ class Workbench:
 
     async def run(self):
         self.ui.show(
-            "Epivra\n自主研究工作台 · 从问题到洞见\n确认策略后自主研究，可暂停或调整方向；退出界面后后台任务继续"
+            tr(
+                "Epivra\n自主研究工作台 · 从问题到洞见\n确认策略后自主研究，可暂停或调整方向；退出界面后后台任务继续"
+            )
         )
         while True:
             try:
                 action = await self.ui.choose(
-                    "工作台",
+                    tr("工作台"),
                     [
-                        ("new", "新建研究"),
-                        ("list", "我的研究"),
-                        ("settings", "连接与设置"),
+                        ("new", tr("新建研究")),
+                        ("list", tr("我的研究")),
+                        ("settings", tr("连接与设置")),
                     ],
-                    back="退出",
+                    back=tr("退出"),
                 )
                 if action is None:
                     return
@@ -520,10 +579,10 @@ class Workbench:
                 else:
                     studies = (await self.call("overview"))["studies"]
                     if not studies:
-                        self.ui.show("还没有研究，可以新建一个。")
+                        self.ui.show(tr("还没有研究，可以新建一个。"))
                         continue
                     study = await self.ui.choose(
-                        "我的研究",
+                        tr("我的研究"),
                         [
                             (s["study"], f"{stage(s)} · {s['request'][:70]}")
                             for s in studies
@@ -533,40 +592,53 @@ class Workbench:
                         await self.study(study)
             except (ValueError, OSError, TimeoutError) as exc:
                 if isinstance(exc, FileExistsError):
-                    self.ui.show("目标文件已存在，请选择另一个名称。")
+                    self.ui.show(tr("目标文件已存在，请选择另一个名称。"))
                 elif isinstance(exc, TimeoutError):
                     self.ui.show(
-                        "等待响应超时，操作可能仍在后台执行。请刷新状态，不要重复创建研究。"
+                        tr(
+                            "等待响应超时，操作可能仍在后台执行。请刷新状态，不要重复创建研究。"
+                        )
                     )
                 else:
                     self.ui.show(
                         str(exc)
                         if isinstance(exc, ValueError)
-                        else "无法访问文件或宿主，请检查路径和宿主状态。"
+                        else tr("无法访问文件或宿主，请检查路径和宿主状态。")
                     )
 
 
 def main():
+    configure()
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--root", type=Path, default=Path.cwd())
+    parser.add_argument("--lang", choices=LANGUAGES)
     args, remaining = parser.parse_known_args()
     if remaining and remaining[0] == "web":
         from . import webui
 
-        webui.main(["--root", str(args.root), *remaining[1:]])
+        webui.main(
+            [
+                "--root",
+                str(args.root),
+                *(["--lang", args.lang] if args.lang else []),
+                *remaining[1:],
+            ]
+        )
         return
     if remaining and remaining != ["ui"]:
         if "--help" in remaining:
             print(
-                "无参数或 ui：终端工作台；web：本地浏览器工作台。以下子命令保留 JSON 自动化接口。\n"
+                tr(
+                    "无参数或 ui：终端工作台；web：本地浏览器工作台。以下子命令保留 JSON 自动化接口。\n"
+                )
             )
         host.main()
         return
     if not sys.stdin.isatty():
-        print("交互工作台需要终端。自动化请使用 epivra --help 中的子命令。")
+        print(tr("交互工作台需要终端。自动化请使用 epivra --help 中的子命令。"))
         return
     root = args.root.resolve()
 
@@ -577,9 +649,9 @@ def main():
     try:
         asyncio.run(launch())
     except (KeyboardInterrupt, EOFError):
-        print("\n已离开工作台，后台研究继续。")
+        print(tr("\n已离开工作台，后台研究继续。"))
     except (OSError, ValueError, RuntimeError):
-        print("无法启动工作台，请检查工作目录与 .epivra/host.log。")
+        print(tr("无法启动工作台，请检查工作目录与 .epivra/host.log。"))
         raise SystemExit(1)
 
 

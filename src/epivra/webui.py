@@ -15,6 +15,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from . import cli_settings, host
+from .locale import LANGUAGES, configure, current_language, set_language, tr
 from .model_catalog import OFFICIAL_PROVIDERS
 from .model_discovery import DiscoveryError, discover
 from .models import freeze_model_settings
@@ -48,6 +49,8 @@ COMMANDS = {
     "mcp_discover": {"name"},
 }
 ASSETS = {
+    "/messages.json": ("messages.json", "application/json; charset=utf-8"),
+    "/i18n.js": ("i18n.js", "text/javascript; charset=utf-8"),
     "/epivra-icon.svg": ("epivra-icon.svg", "image/svg+xml"),
     "/favicon.svg": ("favicon.svg", "image/svg+xml"),
     "/": ("index.html", "text/html; charset=utf-8"),
@@ -73,7 +76,7 @@ class App:
     def call(self, data):
         action = data.get("action")
         if action not in COMMANDS or data.keys() - COMMANDS[action] - {"action"}:
-            raise WebError("不支持的操作或参数。")
+            raise WebError(tr("不支持的操作或参数。"))
         if action == "control" and data.get("command") not in {
             "approve",
             "pause",
@@ -81,7 +84,7 @@ class App:
             "steer",
             "cancel",
         }:
-            raise WebError("不支持的研究控制。")
+            raise WebError(tr("不支持的研究控制。"))
         if action == "create":
             data = {**data, "draft": True}
         return self.send(data)
@@ -92,15 +95,15 @@ class App:
         # A status error is a research blocker, not a failed read.
         if result.get("error") and not (action == "status" and "control" in result):
             messages = {
-                "Conflict": "研究状态已变化，请刷新并重新阅读策略后确认。",
-                "NotAllowed": "当前状态不允许操作，请先暂停并等待在途工作结束。",
-                "ValueError": "操作未完成，请检查路径、连接配置和研究状态。",
-                "KeyError": "未找到所选研究、资料或连接，请刷新。",
-                "FileNotFoundError": "找不到所选文件，请检查路径或重新选择。",
-                "PermissionError": "无法读取所选文件，请检查本地访问权限。",
+                "Conflict": tr("研究状态已变化，请刷新并重新阅读策略后确认。"),
+                "NotAllowed": tr("当前状态不允许操作，请先暂停并等待在途工作结束。"),
+                "ValueError": tr("操作未完成，请检查路径、连接配置和研究状态。"),
+                "KeyError": tr("未找到所选研究、资料或连接，请刷新。"),
+                "FileNotFoundError": tr("找不到所选文件，请检查路径或重新选择。"),
+                "PermissionError": tr("无法读取所选文件，请检查本地访问权限。"),
             }
             raise WebError(
-                messages.get(result["error"], "宿主操作失败：" + result["error"]),
+                messages.get(result["error"], tr("宿主操作失败：") + result["error"]),
                 409 if result["error"] == "Conflict" else 400,
             )
         return result
@@ -137,56 +140,58 @@ class App:
 
     def discover_models(self, data):
         if data.keys() - {"provider", "region", "key"}:
-            raise WebError("未知模型列表参数。")
+            raise WebError(tr("未知模型列表参数。"))
         provider = data["provider"]
         with self.settings_lock:
             try:
                 key = cli_settings.model_key(self.root, provider, data.get("key", ""))
             except ValueError as exc:
-                raise WebError(str(exc)) from None
+                raise WebError(tr(str(exc))) from None
         try:
-            return discover(provider, data.get("region"), key)
+            result = discover(provider, data.get("region"), key)
+            result["message"] = tr(result.get("message", ""))
+            return result
         except DiscoveryError as exc:
-            raise WebError(str(exc)) from None
+            raise WebError(tr(str(exc))) from None
 
     def save_settings(self, data):
         if data.keys() - DEFAULT_FIELDS:
-            raise WebError("未知默认设置。")
+            raise WebError(tr("未知默认设置。"))
         # Validate model capacity/region with the same provider contract, without I/O.
         freeze_model_settings(data)
         if data.get("parser", "auto") not in {"auto", "light", "docling"}:
-            raise WebError("未知解析器。")
+            raise WebError(tr("未知解析器。"))
         for key, choices in (("search_provider", SEARCH), ("reader_provider", READERS)):
             if key in data and data[key] not in choices:
-                raise WebError("未知搜索或网页读取连接。")
+                raise WebError(tr("未知搜索或网页读取连接。"))
         if "analysis" in data and type(data["analysis"]) is not bool:
-            raise WebError("分析设置应为开关。")
+            raise WebError(tr("分析设置应为开关。"))
         names = data.get("mcp_servers", [])
         if not isinstance(names, list) or not all(isinstance(n, str) for n in names):
-            raise WebError("MCP 连接应为名称列表。")
+            raise WebError(tr("MCP 连接应为名称列表。"))
         if names and set(names) - set(
             self.call({"action": "mcp_connections"})["servers"]
         ):
-            raise WebError("MCP 连接未配置。")
+            raise WebError(tr("MCP 连接未配置。"))
         if "parse_timeout" in data and (
             type(data["parse_timeout"]) not in (int, float)
             or not 0 < data["parse_timeout"] < float("inf")
         ):
-            raise WebError("解析超时须为正数。")
+            raise WebError(tr("解析超时须为正数。"))
         if (
             data.get("docling_models")
             and not (self.root / data["docling_models"]).is_dir()
         ):
-            raise WebError("Docling 模型文件夹不存在。")
+            raise WebError(tr("Docling 模型文件夹不存在。"))
         with self.settings_lock:
             cli_settings.save(self.root, data)
         return {"saved": True}
 
     def pick(self, data):
         if data.get("kind") not in {"file", "folder"}:
-            raise WebError("请选择文件或文件夹。")
+            raise WebError(tr("请选择文件或文件夹。"))
         if not self.picker_lock.acquire(blocking=False):
-            raise WebError("系统选择窗口已打开，请先完成选择。", 409)
+            raise WebError(tr("系统选择窗口已打开，请先完成选择。"), 409)
         try:
             # Tk owns the main thread of this short-lived process, not an HTTP worker.
             result = subprocess.run(
@@ -196,10 +201,13 @@ class App:
                     "utf8",
                     "-c",
                     "from epivra.terminal import native_path; "
+                    "from epivra.locale import set_language; "
                     "import json,sys; "
+                    "set_language(sys.argv[2]); "
                     "p=native_path(directory=sys.argv[1]=='folder'); "
                     "print(json.dumps({'path':str(p) if p else None}))",
                     data["kind"],
+                    current_language(),
                 ],
                 capture_output=True,
                 text=True,
@@ -208,7 +216,7 @@ class App:
                 creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
             )
             if result.returncode:
-                raise WebError("系统选择窗口不可用，请粘贴本地路径或上传文件。")
+                raise WebError(tr("系统选择窗口不可用，请粘贴本地路径或上传文件。"))
             return json.loads(result.stdout)
         finally:
             self.picker_lock.release()
@@ -278,15 +286,17 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def guard(self, api=False):
+        language = self.headers.get("X-Epivra-Language", "zh-CN")
+        set_language(language if language in LANGUAGES else "zh-CN")
         if self.headers.get("Host") != self.server.authority:
-            raise WebError("无效的本地访问地址。", 403)
+            raise WebError(tr("无效的本地访问地址。"), 403)
         origin = self.headers.get("Origin")
         if origin is not None and origin != self.server.origin:
-            raise WebError("仅允许当前本地页面访问。", 403)
+            raise WebError(tr("仅允许当前本地页面访问。"), 403)
         if api and not secrets.compare_digest(
             self.headers.get("X-Research-Token", ""), self.server.token
         ):
-            raise WebError("访问链接已失效，请使用终端中的启动链接重新打开。", 401)
+            raise WebError(tr("访问链接已失效，请使用终端中的启动链接重新打开。"), 401)
 
     def do_GET(self):
         self.handle_request(False)
@@ -296,13 +306,13 @@ class Handler(BaseHTTPRequestHandler):
 
     def length(self, maximum):
         if self.headers.get("Transfer-Encoding"):
-            raise WebError("不支持分块请求编码。")
+            raise WebError(tr("不支持分块请求编码。"))
         try:
             size = int(self.headers.get("Content-Length", "-1"))
         except ValueError:
-            raise WebError("请求长度无效。") from None
+            raise WebError(tr("请求长度无效。")) from None
         if size < 0 or size > maximum:
-            raise WebError("文件或请求超过上传上限，请使用本地文件路径导入。", 413)
+            raise WebError(tr("文件或请求超过上传上限，请使用本地文件路径导入。"), 413)
         return size
 
     def handle_request(self, post):
@@ -334,14 +344,14 @@ class Handler(BaseHTTPRequestHandler):
                 "/api/pick",
                 "/api/file",
             }:
-                raise WebError("未找到此入口。", 404)
+                raise WebError(tr("未找到此入口。"), 404)
             if self.headers.get_content_type() != "application/json":
-                raise WebError("请求应为 JSON。", 415)
+                raise WebError(tr("请求应为 JSON。"), 415)
             raw = self.rfile.read(self.length(1024 * 1024))
             self.unread = 0
             data = json.loads(raw)
             if not isinstance(data, dict):
-                raise WebError("请求应为对象。")
+                raise WebError(tr("请求应为对象。"))
             app = self.server.app
             if path == "/api/file":
                 self.download(data)
@@ -366,22 +376,24 @@ class Handler(BaseHTTPRequestHandler):
         except (TimeoutError, subprocess.TimeoutExpired):
             self.reply(
                 {
-                    "error": "等待超时，操作可能仍在后台执行。请刷新状态，不要重复创建或提交。"
+                    "error": tr(
+                        "等待超时，操作可能仍在后台执行。请刷新状态，不要重复创建或提交。"
+                    )
                 },
                 504,
             )
         except (ValueError, KeyError, TypeError):
-            self.reply({"error": "参数或配置无效，请检查后重试。"}, 400)
+            self.reply({"error": tr("参数或配置无效，请检查后重试。")}, 400)
         except (BrokenPipeError, ConnectionResetError):
             pass
         except OSError:
             self.reply(
-                {"error": "无法访问文件或研究宿主，请检查本地路径与宿主状态。"}, 503
+                {"error": tr("无法访问文件或研究宿主，请检查本地路径与宿主状态。")}, 503
             )
 
     def download(self, data):
         if set(data) != {"study", "source"}:
-            raise WebError("下载需要研究与资料引用。")
+            raise WebError(tr("下载需要研究与资料引用。"))
         state = self.server.app.root / ".epivra"
         state.mkdir(parents=True, exist_ok=True)
         # One Host export per transfer; never decode the entire SQLite original
@@ -410,7 +422,7 @@ class Handler(BaseHTTPRequestHandler):
             or any(c in name for c in '/\\:\x00<>"|?*')
             or any(ord(c) < 32 for c in name)
         ):
-            raise WebError("文件名无效。")
+            raise WebError(tr("文件名无效。"))
         size = self.length(self.server.max_upload)
         state = self.server.app.root / ".epivra"
         state.mkdir(parents=True, exist_ok=True)
@@ -421,7 +433,7 @@ class Handler(BaseHTTPRequestHandler):
                 while remaining:
                     chunk = self.rfile.read(min(remaining, 1024 * 1024))
                     if not chunk:
-                        raise WebError("上传中断，资料未提交。")
+                        raise WebError(tr("上传中断，资料未提交。"))
                     output.write(chunk)
                     remaining -= len(chunk)
                     self.unread = remaining
@@ -437,34 +449,39 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main(argv=None):
+    language = configure(argv)
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8")
-    parser = argparse.ArgumentParser(description="Epivra · 本地自主研究工作台")
+    parser = argparse.ArgumentParser(description=tr("Epivra · 本地自主研究工作台"))
     parser.add_argument("--root", type=Path, default=Path.cwd())
+    parser.add_argument("--lang", choices=LANGUAGES, help="简体中文 / English")
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--no-browser", action="store_true")
     parser.add_argument("--max-upload-mb", type=int, default=256)
     args = parser.parse_args(argv)
     if not 0 <= args.port <= 65535 or args.max_upload_mb <= 0:
-        parser.error("端口须为 0–65535，上传容量须为正数。")
+        parser.error(tr("端口须为 0–65535，上传容量须为正数。"))
     try:
         server = Server(App(args.root), args.port, args.max_upload_mb * 1024 * 1024)
     except OSError:
-        parser.error("无法绑定本地端口，可能已有工作台运行；可用 --port 0 自动选择。")
+        parser.error(
+            tr("无法绑定本地端口，可能已有工作台运行；可用 --port 0 自动选择。")
+        )
     try:
         ready = asyncio.run(host.start(args.root.resolve()))
         if ready.get("ready") is False:
-            raise RuntimeError("研究宿主仍在启动，请稍后重试。")
+            raise RuntimeError(tr("研究宿主仍在启动，请稍后重试。"))
+        url = server.url + "&lang=" + language
         print(
-            f"Epivra 本地研究工作台：{server.url}\n关闭页面或此服务后，后台研究继续。",
+            tr("Epivra 本地研究工作台：{0}\n关闭页面或此服务后，后台研究继续。", url),
             flush=True,
         )
         if not args.no_browser:
-            webbrowser.open(server.url)
+            webbrowser.open(url)
         server.serve_forever(poll_interval=0.25)
     except KeyboardInterrupt:
-        print("\nWeb 工作台已关闭，研究宿主继续运行。")
+        print(tr("\nWeb 工作台已关闭，研究宿主继续运行。"))
     finally:
         server.server_close()
 

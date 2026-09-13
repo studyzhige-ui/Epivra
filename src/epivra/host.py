@@ -15,6 +15,7 @@ from .adapters import credentials
 from .analysis import settings as analysis_settings
 from .analysis_runtime import AnalysisRuntime
 from .application import online_service
+from .locale import LANGUAGES, configure, tr
 from .model_catalog import OFFICIAL_PROVIDERS
 from .models import freeze_model_settings
 from .scheduling import Scheduler
@@ -524,7 +525,9 @@ async def start(root: Path):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Local research host and client")
+    configure()
+    parser = argparse.ArgumentParser(description=tr("Epivra 本地研究宿主与命令行"))
+    parser.add_argument("--lang", choices=LANGUAGES, help="简体中文 / English")
     parser.add_argument("--root", type=Path, default=Path.cwd())
     sub = parser.add_subparsers(dest="action", required=True)
     sub.add_parser("serve")

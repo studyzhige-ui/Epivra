@@ -29,6 +29,11 @@ analysis-settings.json
 # Internal documentation stays local, including future additions.
 /docs/*
 !/docs/USAGE.md
+!/docs/USAGE.en.md
+!/docs/images/
+/docs/images/*
+!/docs/images/home-en.png
+!/docs/images/home-zh-CN.png
 /AGENTS.md
 /CLAUDE.md
 /PROJECT_CHARTER.md

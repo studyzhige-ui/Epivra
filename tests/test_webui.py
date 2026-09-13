@@ -20,6 +20,24 @@ from epivra.webui import App, Server
 
 
 class WebTests(unittest.IsolatedAsyncioTestCase):
+    async def test_error_language_is_per_request(self):
+        en, zh = await asyncio.gather(
+            self.http.post(
+                "/api/command",
+                json={"action": "not-real"},
+                headers={"X-Epivra-Language": "en"},
+            ),
+            self.http.post(
+                "/api/command",
+                json={"action": "not-real"},
+                headers={"X-Epivra-Language": "zh-CN"},
+            ),
+        )
+        self.assertEqual(en.status_code, 400)
+        self.assertEqual(zh.status_code, 400)
+        self.assertEqual(en.json()["error"], "Unsupported operation or parameters.")
+        self.assertEqual(zh.json()["error"], "不支持的操作或参数。")
+
     async def asyncSetUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
@@ -72,9 +90,7 @@ class WebTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_model_discovery_route_is_authenticated_and_ephemeral(self):
         result = {"models": [{"id": "example"}], "source": "account"}
-        with patch(
-            "epivra.webui.discover", return_value=result
-        ) as discover:
+        with patch("epivra.webui.discover", return_value=result) as discover:
             reply = await self.http.post(
                 "/api/models", json={"provider": "deepseek", "key": "temporary-key"}
             )
@@ -182,9 +198,7 @@ class WebTests(unittest.IsolatedAsyncioTestCase):
         reply = await self.http.post("/api/upload?" + params, content=raw)
         self.assertEqual(200, reply.status_code, reply.text)
         source = reply.json()["source"]
-        self.assertEqual(
-            [], list((self.root / ".epivra").glob("web-upload-*"))
-        )
+        self.assertEqual([], list((self.root / ".epivra").glob("web-upload-*")))
         self.assertTrue(self.host.store.control(study).paused)
         downloaded = await self.http.post(
             "/api/file", json={"study": study, "source": source}
@@ -192,9 +206,7 @@ class WebTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(200, downloaded.status_code)
         self.assertEqual(raw, downloaded.content)
         self.assertEqual(1, sum(r["action"] == "export" for r in self.requests))
-        self.assertEqual(
-            [], list((self.root / ".epivra").glob("web-download-*"))
-        )
+        self.assertEqual([], list((self.root / ".epivra").glob("web-download-*")))
 
     async def test_failed_import_keeps_draft_and_cleans_staging(self):
         study, c = await self.draft()
@@ -203,9 +215,7 @@ class WebTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(400, reply.status_code)
         self.assertTrue(self.host.store.control(study).paused)
         self.assertEqual([], self.host.store.list(study, "source"))
-        self.assertEqual(
-            [], list((self.root / ".epivra").glob("web-upload-*"))
-        )
+        self.assertEqual([], list((self.root / ".epivra").glob("web-upload-*")))
         for name in ("../escape.txt", "..\\escape.txt", "x:y.txt"):
             params = urlencode({"study": study, "expected": c.ref, "name": name})
             reply = await self.http.post("/api/upload?" + params, content=b"x")
@@ -269,17 +279,22 @@ class WebTests(unittest.IsolatedAsyncioTestCase):
             returncode = 0
             stdout = json.dumps({"path": None})
 
-        with patch(
-            "epivra.webui.subprocess.run", return_value=Result()
-        ) as run:
+        with patch("epivra.webui.subprocess.run", return_value=Result()) as run:
             result = await self.http.post("/api/pick", json={"kind": "folder"})
             self.assertEqual({"path": None}, result.json())
-            self.assertEqual("folder", run.call_args.args[0][-1])
+            self.assertEqual(["folder", "zh-CN"], run.call_args.args[0][-2:])
+            result = await self.http.post(
+                "/api/pick",
+                json={"kind": "folder"},
+                headers={"X-Epivra-Language": "en"},
+            )
+            self.assertEqual({"path": None}, result.json())
+            self.assertEqual(["folder", "en"], run.call_args.args[0][-2:])
             self.assertEqual(
                 400,
                 (await self.http.post("/api/pick", json={"kind": "shell"})).status_code,
             )
-            self.assertEqual(1, run.call_count)
+            self.assertEqual(2, run.call_count)
         self.assertEqual([], self.requests)
 
     async def test_web_shutdown_leaves_host_state_unchanged(self):
