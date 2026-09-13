@@ -10,7 +10,6 @@ dist/
 *.egg-info/
 .env
 .env.*
-!.env.example
 .deep-research-agent/
 .dl/
 .claude/settings.local.json
@@ -26,3 +25,10 @@ models/docling/
 mcp-servers.json
 provider-limits.json
 analysis-settings.json
+
+# Internal documentation stays local, including future additions.
+/docs/*
+!/docs/USAGE.md
+/AGENTS.md
+/CLAUDE.md
+/PROJECT_CHARTER.md

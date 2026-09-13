@@ -54,7 +54,7 @@ python -m pip install -e ".[documents]"
 docker build -t epivra-analysis:1 sandbox
 ```
 
-在设置中启用数据分析。执行容器禁止联网，只接收本次授权输入，不挂载密钥或整个项目。无需分析时无需 Docker。详情见[分析执行](product-redesign/ANALYSIS_EXECUTION.md)。
+在设置中启用数据分析。执行容器禁止联网，只接收本次授权输入，不挂载密钥或整个项目。无需分析时无需 Docker。
 
 ## 5. MCP 双向接入
 
@@ -65,7 +65,36 @@ epivra start
 
 外部 MCP 工具在本地 `mcp-servers.json` 配置；通过设置启用，并明确允许的工具、资料与角色。其他 MCP 客户端调用 Epivra 时，使用 `epivra-mcp --root <项目绝对路径>`。宿主须先独立启动，不能依赖 MCP 客户端的生命周期。默认不允许外部客户端批准研究策略。
 
-完整配置示例、HTTP 令牌与授权规则见[MCP 使用说明](product-redesign/MCP.md)。本产品用于本机，不提供公网多租户服务。
+例如在外部客户端的 MCP 设置中配置（路径替换为实际安装目录）：
+
+```json
+{
+  "mcpServers": {
+    "Epivra": {
+      "command": "D:/Projects/Python/Epivra/.venv/Scripts/epivra-mcp.exe",
+      "args": ["--root", "D:/Projects/Python/Epivra"]
+    }
+  }
+}
+```
+
+Epivra 连接外部服务时，在本地 `mcp-servers.json` 配置命名连接。HTTP 示例：
+
+```json
+{
+  "materials": {
+    "transport": "http",
+    "url": "https://your-service.example/mcp",
+    "token_env": "MATERIALS_MCP_TOKEN",
+    "tools": {},
+    "resources": []
+  }
+}
+```
+
+公开服务可省略 token_env；其他服务的令牌只保存在本地环境或 `.env`。先运行 `epivra mcp-discover materials` 查看工具与资源，再为需要的工具指定 `roles` 和 `write`，如 `"lookup": {"roles": ["investigator", "reviewer"], "write": false}`；resources 填精确资源 URI。只添加信任的服务，外部写工具的 `write: true` 表示用户预先授权写操作。
+
+Epivra 对外提供 HTTP MCP 时，设置独立环境变量 `EPIVRA_MCP_TOKEN`，再运行 `epivra-mcp --transport http`；客户端使用 Bearer 认证。该服务仅监听本机，本产品不提供公网多租户服务。
 
 ## 6. 文件、备份与升级
 
@@ -90,4 +119,4 @@ Epivra 是新的独立项目，不自动导入旧项目 `.deep-research-agent/` 
 - **无法启动分析：**确认 Docker 正在运行且已构建 `epivra-analysis:1`。
 - **研究被阻断：**依据任务提示处理，再恢复。不要重复新建任务来替代恢复。
 
-当前功能已集成，供应商真实账户联调、跨题材与长文档研究评测仍有未覆盖范围。报告不是必然正确的结论，重要使用场景应回看来源、条件和不确定性。[实施记录](product-redesign/IMPLEMENTATION.md)区分工程通过与研究质量验收。
+当前功能已集成，供应商真实账户联调、跨题材与长文档研究评测仍有未覆盖范围。报告不是必然正确的结论，重要使用场景应回看来源、条件和不确定性。工程测试通过不等于研究质量验收通过。

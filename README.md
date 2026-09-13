@@ -8,12 +8,8 @@ Epivra 根据你的问题和用途，结合公开网络、上传文件或授权�
 
 已接入12家官方模型、5家搜索 API 与 DuckDuckGo，以及 Jina/Tavily/Exa 网页读取；支持本地文档解析、可选 Docling OCR 和 Docker 数据分析。底层使用自研、供应商无关的 Agent Runtime / Harness，提供上下文管理、角色协作、持久恢复与用量记录。默认模型为 deepseek-flash。
 
-**当前状态：工程能力已集成，跨题材、真实长文档及规模化研究质量验收仍待完成。** 供应商适配并非全部经过真实账户联调；图表语义理解与云端解析尚未实现。具体已验证范围见实施记录，不能把工程测试通过视为研究结论必然正确。
+**当前状态：工程能力已集成，跨题材、真实长文档及规模化研究质量验收仍待完成。** 供应商适配并非全部经过真实账户联调；图表语义理解与云端解析尚未实现。不能把工程测试通过视为研究结论必然正确。
 
-- [唯一现行架构](docs/ARCHITECTURE.md)
-- [研究与产品设计](docs/product-redesign/README.md)
-- [实施进度与待完成项](docs/product-redesign/IMPLEMENTATION.md)
-- [开发与验证](docs/GETTING-STARTED.md)
 
 ## 快速开始
 
@@ -29,10 +25,9 @@ python -m venv .venv
 
 - [完整使用说明](docs/USAGE.md)：连接、研究、暂停改向、资料、分析、MCP 与备份。
 - [本地模型](models/README.md)：模型位于项目 `models/docling/`，权重不纳入 Git。
-- [GitHub 私密仓库准备](docs/GITHUB_PREPARATION.md)。
 
 ## 项目结构
 
-`src/epivra/` 包含应用与图标；`models/` 组织本地解析模型；`sandbox/` 提供可选分析容器；`tests/` 为离线工程测试；`evals/` 为研究验证资料；`tools/` 为检查和验证工具；`docs/` 包含使用、架构及产品研究文档。
+`src/epivra/` 包含应用与图标；`models/` 组织本地解析模型；`sandbox/` 提供可选分析容器；`tests/` 为离线工程测试；`evals/` 为研究验证资料；`tools/` 为检查和验证工具；`docs/` 包含使用帮助。
 
-`.env` 保存本地凭据，`.epivra/` 保存研究和配置，两者均不提交。当前项目采用独立的新 Git 历史，旧实现和学习材料保留于原仓库。开发规则见 [AGENTS.md](AGENTS.md)。
+`.env` 保存本地凭据，`.epivra/` 保存研究和配置，两者均不提交。仓库保留从初始实现到 Epivra 的代码演进历史；内部开发文档和环境配置文件已从上传历史中排除。
