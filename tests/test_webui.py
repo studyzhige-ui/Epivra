@@ -79,6 +79,11 @@ class WebTests(unittest.IsolatedAsyncioTestCase):
         self.host.store.close()
         self.temp.cleanup()
 
+    async def test_listening_port_is_exclusive(self):
+        with self.assertRaises(OSError):
+            Server(self.app, port=self.server.server_port)
+        self.assertEqual(200, (await self.http.get("/")).status_code)
+
     async def call(self, action, **fields):
         return await self.http.post("/api/command", json={"action": action, **fields})
 

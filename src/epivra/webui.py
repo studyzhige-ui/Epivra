@@ -5,6 +5,7 @@ import asyncio
 import json
 import os
 import secrets
+import socket
 import subprocess
 import sys
 import tempfile
@@ -224,6 +225,13 @@ class App:
 
 class Server(ThreadingHTTPServer):
     daemon_threads = True
+    allow_reuse_address = False
+
+    def server_bind(self):
+        # Windows address reuse can route requests to another instance/token.
+        if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        super().server_bind()
 
     def __init__(self, app, port=0, max_upload=256 * 1024 * 1024):
         self.app, self.token, self.max_upload = (
