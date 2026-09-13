@@ -306,9 +306,15 @@ header {
   padding: 32px 40px;
 }
 #welcome {
-  margin-block: auto;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  margin-block: 0;
   max-width: 1000px;
-  padding-block: clamp(16px, 3vh, 32px);
+  padding-block: clamp(24px, 4vh, 48px) 0;
+}
+#welcome > * {
+  flex-shrink: 0;
 }
 .eyebrow {
   color: #637c66;
@@ -442,11 +448,13 @@ h3 {
 }
 .research-flow {
   display: grid;
+  flex-grow: 1;
+  align-content: center;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 22px;
   list-style: none;
-  padding: 0;
-  margin: 22px 0 0;
+  padding: 20px 0;
+  margin: 0;
 }
 .research-flow li {
   display: flex;
