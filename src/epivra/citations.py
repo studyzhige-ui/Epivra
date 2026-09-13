@@ -9,37 +9,94 @@ MARKER = re.compile(r"\[\[cite:([0-9a-f]{64})\]\]")
 NUMBER = re.compile(r"\[(\d+)\]")
 
 
-def prose(text):
-    """Mask CommonMark code blocks and code spans without changing offsets."""
+def source_lines(text):
+    """CommonMark CRLF/CR/LF boundaries, retaining original character offsets."""
+    return re.findall(r"[^\r\n]*(?:\r\n|\r|\n|$)", text)[:-1]
+
+
+def occurrences(text, numbered=False):
+    """Recognize citations through inline grammar; map only recognized markers back.
+
+    Container prefixes cannot contain citation markers. Counting identical markers
+    on the original line preserves offsets even when CommonMark strips prefixes.
+    No Markdown is regenerated and no independent code-span parser is used.
+    """
+    lines = source_lines(text)
     offsets = [0]
-    for line in text.splitlines(keepends=True):
+    for line in lines:
         offsets.append(offsets[-1] + len(line))
-    chars = list(text)
-    for token in MarkdownIt().parse(text):
-        if token.map is None:
-            continue
-        start, stop = (offsets[n] for n in token.map)
-        if token.type in {"fence", "code_block"}:
-            chars[start:stop] = " " * (stop - start)
-        elif token.type == "inline":
-            block = text[start:stop]
-            runs = list(re.finditer(r"(?<!`)`+(?!`)", block))
-            cursor = 0
-            for index, run in enumerate(runs):
-                if run.start() < cursor:
-                    continue
-                prefix = block[: run.start()]
-                if (len(prefix) - len(prefix.rstrip("\\"))) % 2:
-                    continue
-                end = next(
-                    (r for r in runs[index + 1 :] if len(r[0]) == len(run[0])), None
-                )
-                if end:
-                    chars[start + run.start() : start + end.end()] = " " * (
-                        end.end() - run.start()
+    found = []
+    active = None
+    active_line = 0
+    prior = {}
+    pattern = NUMBER if numbered else MARKER
+    parser = MarkdownIt("default", {"html": False})
+
+    def citation(state, silent):
+        if active is None or state.src != active.content:
+            return False  # Image attributes use a separate nested inline source.
+        match = pattern.match(state.src, state.pos)
+        if match is None:
+            if re.match(
+                r"\[\[\s*cite\b|\[\d+(?:\s*[,–-]\s*\d+)*\]",
+                state.src[state.pos :],
+                re.I,
+            ):
+                if not silent:
+                    raise ValueError(
+                        "Use [[cite:<full source or evidence-note ref>]], not manual citation numbers"
                     )
-                    cursor = end.end()
-    return re.sub(r"\\.", "  ", "".join(chars))
+            return False
+        if not silent:
+            before = state.src[: state.pos]
+            relative_line = before.count("\n")
+            line = active_line + relative_line
+            start = before.rfind("\n") + 1
+            ordinal = prior.get((line, match[0]), 0) + state.src[
+                start : state.pos
+            ].count(match[0])
+            position = -1
+            for _ in range(ordinal + 1):
+                position = lines[line].find(match[0], position + 1)
+                if position < 0:
+                    raise ValueError("citation source position cannot be resolved")
+            original = pattern.match(text, offsets[line] + position)
+            found.append(original)
+            token = state.push("text", "", 0)
+            token.content = match[0]
+        state.pos = match.end()
+        return True
+
+    def inline(state):
+        nonlocal active, active_line
+        block_line = 0
+        for token in state.tokens:
+            if token.map is not None:
+                block_line = token.map[0]
+            if token.type == "inline":
+                active = token
+                active_line = block_line
+                token.children = []
+                state.md.inline.parse(
+                    token.content, state.md, state.env, token.children
+                )
+                # Cells share a row: count raw occurrences in earlier cells,
+                # including literals in code/URLs, to preserve original offsets.
+                for match in pattern.finditer(token.content):
+                    line = active_line + token.content[: match.start()].count("\n")
+                    key = (line, match[0])
+                    prior[key] = prior.get(key, 0) + 1
+        active = None
+
+    parser.inline.ruler.before("link", "epivra_citation", citation)
+    parser.core.ruler.at("inline", inline)
+    env = {}
+    parser.parse(text, env)
+    if any(re.fullmatch(r"\d+", key) for key in env.get("references", {})):
+        raise ValueError(
+            "Numeric reference definitions conflict with generated citations"
+        )
+    return sorted(found, key=lambda m: m.start())
 
 
 def render(text, evidence, resolve):
@@ -54,22 +111,8 @@ def render(text, evidence, resolve):
     sources = {ref: resolve(ref) for ref in evidence}
     if any(s.kind != "source" for s in sources.values()):
         raise ValueError("report evidence must name source snapshots")
-    visible = prose(text)
-    matches = list(MARKER.finditer(visible))
-    remainder = MARKER.sub("", visible)
-    if re.search(
-        r"\[\[\s*cite\b|\[\d+(?:\s*[,–-]\s*\d+)*\]", remainder, re.I
-    ):
-        raise ValueError(
-            "Use [[cite:<full source or evidence-note ref>]], not manual citation numbers"
-        )
+    matches = occurrences(text)
     refs = [m[1] for m in matches]
-    if refs and any(
-        token.type == "fence"
-        and token.map[1] - token.map[0] <= len(token.content.splitlines()) + 1
-        for token in MarkdownIt().parse(text)
-    ):
-        raise ValueError("Close the fenced code block before adding the bibliography")
     targets = []
     for ref in refs:
         item = resolve(ref)
@@ -112,8 +155,19 @@ def render(text, evidence, resolve):
             )
             label = f"[{label}](<{url}>)"
         footer.append(f"{number}. {label}")
+    rendered = body + ("\n\n---\n\n" + "\n\n".join(footer) if footer else "")
+    if footer:
+        # Validate the actual appended list, including implicit container endings.
+        start_line = len(source_lines(body + "\n\n---\n\n"))
+        if not any(
+            t.type == "ordered_list_open" and t.level == 0 and t.map[0] == start_line
+            for t in MarkdownIt("default", {"html": False}).parse(rendered)
+        ):
+            raise ValueError(
+                "Close the fenced code block or container before adding the bibliography"
+            )
     return {
-        "text": body + ("\n\n---\n\n" + "\n\n".join(footer) if footer else ""),
+        "text": rendered,
         "citations": refs,
         "citation_body_length": len(body),
     }
@@ -127,7 +181,7 @@ def validate(report, resolve):
     if type(length) is not int or not 0 <= length <= len(text):
         raise ValueError("invalid citation body boundary")
     body = text[:length]
-    matches = list(NUMBER.finditer(prose(body)))
+    matches = occurrences(body, numbered=True)
     parts, end = [], 0
     if len(matches) != len(refs):
         raise ValueError("citation occurrence binding has changed")

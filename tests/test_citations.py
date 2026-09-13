@@ -106,6 +106,55 @@ class CitationTests(unittest.TestCase):
         report = self.report(f"Claim [[cite:{self.a.ref}]]\n\n~~~python\n[1]\n~~~~")
         self.assertTrue(report["text"].startswith("Claim [1]"))
 
+    def test_link_backtick_does_not_mask_visible_invalid_citation(self):
+        text = "[Docs](https://example.org/`) Claim [[cite:bad]] `sample`"
+        with self.assertRaises(ValueError):
+            self.report(text, [])
+        with self.assertRaises(ValueError):
+            validate({"text": text, "evidence": []}, self.resolve)
+
+    def test_container_can_implicitly_end_fence_before_bibliography(self):
+        for prefix in ("> ```\n> sample code\n\n", "- ```\n  sample code\n\n"):
+            with self.subTest(prefix=prefix):
+                report = self.report(prefix + f"Claim [[cite:{self.a.ref}]]")
+                self.assertTrue(report["text"].startswith(prefix + "Claim [1]"))
+
+    def test_preserves_locations_with_containers_code_links_and_repeated_markers(self):
+        marker = f"[[cite:{self.a.ref}]]"
+        for text in (
+            f"> `{marker}` then {marker}",
+            f"- [Docs](https://example.org/`) {marker} `sample`",
+            f"## Heading {marker}\r\n\r\n> Quote {marker}",
+            f"[Label {marker}](https://example.org)",
+        ):
+            with self.subTest(text=text):
+                report = self.report(text)
+                self.assertIn("[1]", report["text"])
+
+    def test_commonmark_newline_mapping_preserves_original_characters(self):
+        for separator in ("\r", "\r\n", "\n", "\u2028", "\v", "\u0085"):
+            with self.subTest(separator=repr(separator)):
+                report = self.report(f"Text{separator}Claim [[cite:{self.a.ref}]]")
+                self.assertTrue(report["text"].startswith(f"Text{separator}Claim [1]"))
+
+    def test_html_is_literal_like_the_web_report_renderer(self):
+        with self.assertRaises(ValueError):
+            self.report("<div>Claim [[cite:bad]]</div>", [])
+
+    def test_table_cells_use_parser_scopes_and_original_positions(self):
+        marker = f"[[cite:{self.a.ref}]]"
+        text = f"| Code | Finding |\n|---|---|\n| `{marker}` | {marker} |"
+        report = self.report(text)
+        self.assertTrue(
+            report["text"].startswith(text.replace(f"| {marker} |", "| [1] |"))
+        )
+        with self.assertRaises(ValueError):
+            self.report("| A | B |\n|---|---|\n| `literal | [[cite:bad]] ` |", [])
+
+    def test_numeric_reference_definitions_cannot_redirect_generated_citations(self):
+        with self.assertRaisesRegex(ValueError, "Numeric reference definitions"):
+            self.report(f"Claim [[cite:{self.a.ref}]]\n\n[1]: https://wrong.example")
+
     def test_publication_revalidation_rejects_tampered_rendering(self):
         report = self.report(f"Claim [[cite:{self.a.ref}]]")
         for change in [

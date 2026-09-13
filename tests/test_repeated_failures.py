@@ -51,11 +51,59 @@ class RepeatedTests(unittest.IsolatedAsyncioTestCase):
             await self.rounds(1)
         self.assertEqual(3, self.calls)
 
+    async def test_no_action_is_stable_across_different_wording(self):
+        for text in ("Still thinking", "继续分析", "Working on it"):
+            self.reply = Reply(text, ()).to_json()
+            await self.rounds(1)
+        with self.assertRaises(RepeatedFailure):
+            await self.rounds(1)
+        self.assertEqual(3, self.calls)
+
+    async def test_identical_multi_failure_round_stops_before_fourth_call(self):
+        self.reply = Reply(
+            "", (Call("nonexistent", {"x": 1}), Call("nonexistent", {"x": 2}))
+        ).to_json()
+        await self.rounds(3)
+        with self.assertRaises(RepeatedFailure):
+            await self.rounds(1)
+        self.assertEqual(3, self.calls)
+
+    async def test_mixed_round_with_success_is_not_a_failed_round(self):
+        self.reply = Reply(
+            "",
+            (
+                Call("nonexistent", {"x": 1}),
+                Call("read_artifact", {"ref": self.work.ref}),
+            ),
+        ).to_json()
+        await self.rounds(4)
+        results = [
+            a.body["result"]
+            for a in self.store.list("s", "observation")
+            if a.body.get("tool") == "read_artifact"
+        ]
+        self.assertEqual(4, len(results))
+        self.assertTrue(all("error" not in result for result in results))
+        self.assertEqual(4, self.calls)
+
+    async def test_changed_failure_sequence_is_a_new_attempt(self):
+        self.reply = Reply(
+            "", (Call("nonexistent", {"x": 1}), Call("nonexistent", {"x": 2}))
+        ).to_json()
+        await self.rounds(2)
+        self.reply = Reply(
+            "", (Call("nonexistent", {"x": 1}), Call("nonexistent", {"x": 3}))
+        ).to_json()
+        await self.rounds(2)
+        self.assertEqual(4, self.calls)
+
     async def test_changed_operation_and_success_do_not_trigger(self):
         await self.rounds(2)
         self.reply = Reply("", (Call("nonexistent", {"x": 2}),)).to_json()
         await self.rounds(2)
-        self.reply = Reply("", (Call("calculate", {"expression": "1+1"}),)).to_json()
+        self.reply = Reply(
+            "", (Call("read_artifact", {"ref": self.work.ref}),)
+        ).to_json()
         await self.rounds(1)
         self.reply = Reply("", (Call("nonexistent", {"x": 2}),)).to_json()
         await self.rounds(3)

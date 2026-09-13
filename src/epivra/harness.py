@@ -984,6 +984,7 @@ class Harness:
                         "step": step.ref,
                         "text": reply.text,
                         "instruction": "Use a result tool; prose alone does not finish work.",
+                        "failure": identity("no_action"),
                     },
                     (step.ref,),
                 )
@@ -1103,9 +1104,9 @@ class Harness:
                 for a in self._steps(study, "observation", work)
                 if a.body.get("step") == step
             ]
-            failures = {a.get("failure") for a in observations}
-            if len(failures) == 1 and None not in failures:
-                failure = next(iter(failures))
+            failures = [a.get("failure") for a in observations]
+            if failures and all(failures):
+                failure = identity("failed_round", failures)
         self.store.put(
             study, "step_done", {"step": step, "failure": failure}, (work, step)
         )

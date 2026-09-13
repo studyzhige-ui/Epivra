@@ -74,7 +74,7 @@ Strategy generation also calls the model. Use explicit pause and direction contr
 
 Epivra validates citations and numbers sources in order of first appearance. Repeated citations of the same source reuse its number; the bibliography lists the sources actually cited. Passage citations also verify the original text location. Review and delivery use the same numbered manuscript. Zero-citation reports are allowed; valid citation formatting does not prove that evidence supports a conclusion.
 
-After three consecutive rounds with the identical protocol error or invalid call and no successful operation or new research material, that work stops retrying automatically and retains its reason. The lead can change the method or obtain additional material. This type of block is reconsidered when new material arrives; you can also pause and resume after addressing the cause. Normal investigation, different operations, and necessary revisions have no fixed round limit. Paid calls with unknown outcomes are still never automatically resent.
+After three consecutive rounds with no tool action, or the same protocol error or complete sequence of failed calls, and no successful operation or new research material, that work stops retrying automatically and retains its reason. The lead can change the method or obtain additional material. This type of block is reconsidered when new material arrives; you can also pause and resume after addressing the cause. Normal investigation, different operations, and necessary revisions have no fixed round limit. Paid calls with unknown outcomes are still never automatically resent.
 
 ## 4. Parsing and analysis
 
