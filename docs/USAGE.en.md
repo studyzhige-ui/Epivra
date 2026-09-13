@@ -24,6 +24,29 @@ The browser opens automatically. No Node.js, frontend build, or database server 
 
 For the terminal workbench, run `.venv/Scripts/epivra.exe --lang en`. On macOS/Linux use `.venv/bin/python` and `.venv/bin/epivra`; Windows is the primary platform validated so far. Commands below assume an activated virtual environment or the equivalent full executable path.
 
+### Startup command and arguments
+
+After installation, start from the project directory without reinstalling or activating the virtual environment:
+
+```powershell
+.\.venv\Scripts\epivra.exe --lang en web --port 0
+```
+
+| Part | Meaning |
+|---|---|
+| `.\.venv\Scripts\epivra.exe` | Run Epivra from this project's virtual environment. The old `deep-research.exe` command is retired. |
+| `--lang en` | Select English; use `--lang zh-CN` for Simplified Chinese. When omitted, `EPIVRA_LANG` applies, falling back to Simplified Chinese. |
+| `web` | Start the Web workbench and open the browser. Without this subcommand, Epivra opens the interactive CLI. |
+| `--port 0` | Let the system choose an available port and print the actual URL. Omit it to use port `8765`, or specify a port such as `--port 8080`. |
+
+Place the language option before `web` and Web options after it, as shown above. Port `0` requests an available port rather than listening on port zero. The selected port may change between launches; use the complete URL printed for the current launch. You can still switch languages in the Web header.
+
+Append `--no-browser` to run without opening the browser automatically. To list Web options:
+
+```powershell
+.\.venv\Scripts\epivra.exe web --help
+```
+
 ## 2. Configure connections
 
 Open **Connections & settings**, choose a model provider and account region, enter an API key, then choose a model. The Web model picker fetches available models and filters by characters: for example, `gpt5` matches `gpt-5.5`. Manual model IDs are also accepted. Where an account-list endpoint has not been verified, the interface explicitly shows local presets. If a model has no capacity metadata, enter context and output limits from its official documentation.
