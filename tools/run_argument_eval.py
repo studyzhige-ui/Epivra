@@ -18,10 +18,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from deep_research_agent.adapters import DeepSeek, JsonAPI, credentials
-from deep_research_agent.domain import identity
-from deep_research_agent.harness import Harness
-from deep_research_agent.storage import Store
+from epivra.adapters import DeepSeek, JsonAPI, credentials
+from epivra.domain import identity
+from epivra.harness import Harness
+from epivra.storage import Store
 from tools.run_closed_loop_eval import export
 from tools.run_review_eval import bind_run, source_snapshot
 
@@ -37,7 +37,7 @@ async def run(root: Path, run_id: str, report_db: Path, tasks_file: Path):
     ):
         raise ValueError("provide a JSON list of complete argument-check tasks")
     snapshot = {"path": str(report_db.resolve()), **source_snapshot(report_db)}
-    folder = root / ".deep-research-agent" / f"argument-{run_id}"
+    folder = root / ".epivra" / f"argument-{run_id}"
     bind_run(
         root,
         folder,

@@ -173,7 +173,10 @@ class App:
             or not 0 < data["parse_timeout"] < float("inf")
         ):
             raise WebError("解析超时须为正数。")
-        if data.get("docling_models") and not Path(data["docling_models"]).is_dir():
+        if (
+            data.get("docling_models")
+            and not (self.root / data["docling_models"]).is_dir()
+        ):
             raise WebError("Docling 模型文件夹不存在。")
         with self.settings_lock:
             cli_settings.save(self.root, data)
@@ -192,7 +195,7 @@ class App:
                     "-X",
                     "utf8",
                     "-c",
-                    "from deep_research_agent.terminal import native_path; "
+                    "from epivra.terminal import native_path; "
                     "import json,sys; "
                     "p=native_path(directory=sys.argv[1]=='folder'); "
                     "print(json.dumps({'path':str(p) if p else None}))",
@@ -230,7 +233,7 @@ class Server(ThreadingHTTPServer):
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "DeepResearch"
+    server_version = "Epivra"
 
     def setup(self):
         super().setup()
@@ -379,7 +382,7 @@ class Handler(BaseHTTPRequestHandler):
     def download(self, data):
         if set(data) != {"study", "source"}:
             raise WebError("下载需要研究与资料引用。")
-        state = self.server.app.root / ".deep-research-agent"
+        state = self.server.app.root / ".epivra"
         state.mkdir(parents=True, exist_ok=True)
         # One Host export per transfer; never decode the entire SQLite original
         # again for each HTTP chunk. This temporary copy has no persistent identity.
@@ -409,7 +412,7 @@ class Handler(BaseHTTPRequestHandler):
         ):
             raise WebError("文件名无效。")
         size = self.length(self.server.max_upload)
-        state = self.server.app.root / ".deep-research-agent"
+        state = self.server.app.root / ".epivra"
         state.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(prefix="web-upload-", dir=state) as directory:
             path = Path(directory) / name

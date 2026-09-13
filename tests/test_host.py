@@ -11,15 +11,45 @@ from unittest.mock import AsyncMock, patch
 
 import httpx
 
-from deep_research_agent.adapters import DeepSeek, JsonAPI
-from deep_research_agent.application import ResearchService
-from deep_research_agent.domain import Call, Reply
-from deep_research_agent.harness import Harness
-from deep_research_agent.host import Host, send, start
-from deep_research_agent.storage import Store
+from epivra.adapters import DeepSeek, JsonAPI
+from epivra.application import ResearchService
+from epivra.domain import Call, Reply
+from epivra.harness import Harness
+from epivra.host import Host, send, start
+from epivra.storage import Store
 
 
 class HostTests(unittest.IsolatedAsyncioTestCase):
+    async def test_project_models_are_discovered_and_explicit_path_wins(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            local = root / "models/docling"
+            local.mkdir(parents=True)
+            alternate = root / "alternate-models"
+            alternate.mkdir()
+            host = Host(root)
+            try:
+                for selected in (None, "alternate-models"):
+                    result = await host.dispatch(
+                        {
+                            "action": "create",
+                            "request": "Research",
+                            "draft": True,
+                            "token": host.token,
+                            "docling_models": selected,
+                        }
+                    )
+                    control = host.store.control(result["study"])
+                    policy = host.store.get(result["study"], control.direction).body[
+                        "policy"
+                    ]
+                    self.assertEqual(
+                        policy["parsing"]["artifacts_path"],
+                        str((alternate if selected else local).resolve()),
+                    )
+            finally:
+                host.store.close()
+
     async def test_shared_cooldown_is_restored_from_durable_retry(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
@@ -79,7 +109,7 @@ class HostTests(unittest.IsolatedAsyncioTestCase):
             host.store.create("good", "Research", {})
             task = asyncio.create_task(host.serve())
             for _ in range(100):
-                if (root / ".deep-research-agent/host.json").exists():
+                if (root / ".epivra/host.json").exists():
                     break
                 await asyncio.sleep(0.01)
             try:
@@ -181,7 +211,7 @@ class HostTests(unittest.IsolatedAsyncioTestCase):
             ):
                 with self.assertRaises(OSError):
                     await host.serve()
-            store = Store(root / ".deep-research-agent/research.db")
+            store = Store(root / ".epivra/research.db")
             store.close()
 
     async def test_previous_direction_report_is_not_current_delivery(self):
@@ -253,7 +283,7 @@ class HostTests(unittest.IsolatedAsyncioTestCase):
 
             host = Host(root, factory)
             task = asyncio.create_task(host.serve())
-            pointer = root / ".deep-research-agent/host.json"
+            pointer = root / ".epivra/host.json"
             for _ in range(100):
                 if pointer.exists():
                     break

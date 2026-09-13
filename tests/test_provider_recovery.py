@@ -5,16 +5,16 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from deep_research_agent.adapters import (
+from epivra.adapters import (
     DeepSeek,
     IncompleteStream,
     ProviderFailure,
     Tavily,
 )
-from deep_research_agent.domain import Call, Conflict, Reply, UnknownOutcome
-from deep_research_agent.harness import Harness, object_schema
-from deep_research_agent.harness import Tool as BaseTool
-from deep_research_agent.storage import Store
+from epivra.domain import Call, Conflict, Reply, UnknownOutcome
+from epivra.harness import Harness, object_schema
+from epivra.harness import Tool as BaseTool
+from epivra.storage import Store
 
 
 def Tool(*args, **kwargs):

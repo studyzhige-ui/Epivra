@@ -5,9 +5,9 @@ from importlib.util import find_spec
 from pathlib import Path
 from unittest.mock import patch
 
-from deep_research_agent.materials import parse, parse_isolated
-from deep_research_agent.storage import Store
-from deep_research_agent.workspace import Workspace
+from epivra.materials import parse, parse_isolated
+from epivra.storage import Store
+from epivra.workspace import Workspace
 
 
 class DocumentParserTests(unittest.IsolatedAsyncioTestCase):
@@ -49,7 +49,7 @@ class DocumentParserTests(unittest.IsolatedAsyncioTestCase):
                 workspace = Workspace(store)
                 await workspace.upload_async("s", control.ref, "first.txt", b"original")
                 with patch(
-                    "deep_research_agent.workspace.parse_isolated",
+                    "epivra.workspace.parse_isolated",
                     side_effect=AssertionError("must reuse"),
                 ):
                     second = await workspace.upload_async(

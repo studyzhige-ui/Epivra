@@ -5,7 +5,7 @@ import unittest
 
 import httpx
 
-from deep_research_agent.adapters import (
+from epivra.adapters import (
     DeepSeek,
     IncompleteStream,
     JsonAPI,

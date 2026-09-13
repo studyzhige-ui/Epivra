@@ -3,7 +3,7 @@ import unittest
 
 import httpx
 
-from deep_research_agent.web_providers import CONNECTIONS, SEARCH, connect
+from epivra.web_providers import CONNECTIONS, SEARCH, connect
 
 
 class WebProtocolTests(unittest.IsolatedAsyncioTestCase):

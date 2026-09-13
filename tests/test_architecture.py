@@ -16,7 +16,7 @@ class ArchitectureTests(unittest.TestCase):
                 (root / f"{name}.py").write_text("", encoding="utf-8")
             self.assertEqual([], GATE["check"](root))
             (root / "domain.py").write_text(
-                "from deep_research_agent import application\n", encoding="utf-8"
+                "from epivra import application\n", encoding="utf-8"
             )
             (root / "prompts.py").write_text(
                 "def hidden():\n    import httpx\n", encoding="utf-8"

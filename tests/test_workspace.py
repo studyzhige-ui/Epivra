@@ -4,10 +4,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from deep_research_agent.context import assemble
-from deep_research_agent.domain import Artifact, NotAllowed, encode
-from deep_research_agent.storage import Store
-from deep_research_agent.workspace import Workspace
+from epivra.context import assemble
+from epivra.domain import Artifact, NotAllowed, encode
+from epivra.storage import Store
+from epivra.workspace import Workspace
 
 
 class WorkspaceTests(unittest.TestCase):

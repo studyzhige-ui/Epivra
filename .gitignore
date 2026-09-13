@@ -19,3 +19,10 @@ runs/
 
 .playwright-cli/
 output/playwright/
+
+# Local model weights and pre-Epivra working data
+models/docling/
+.epivra/
+mcp-servers.json
+provider-limits.json
+analysis-settings.json

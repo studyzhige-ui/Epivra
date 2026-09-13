@@ -12,16 +12,16 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from deep_research_agent.adapters import DeepSeek, JsonAPI, credentials
-from deep_research_agent.application import ResearchService
-from deep_research_agent.harness import Harness
-from deep_research_agent.storage import Store
+from epivra.adapters import DeepSeek, JsonAPI, credentials
+from epivra.application import ResearchService
+from epivra.harness import Harness
+from epivra.storage import Store
 
 
 async def run(root: Path, source_db: Path, run_id: str):
     if not re.fullmatch(r"[a-zA-Z0-9_-]+", run_id):
         raise ValueError("invalid run ID")
-    folder = root / ".deep-research-agent" / f"repair-{run_id}"
+    folder = root / ".epivra" / f"repair-{run_id}"
     database = folder / "research.db"
     if not database.exists():
         folder.mkdir(parents=True, exist_ok=True)

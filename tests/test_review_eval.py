@@ -16,10 +16,10 @@ class ReviewIdentityTests(unittest.IsolatedAsyncioTestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
-        self.src = self.root / "src/deep_research_agent"
+        self.src = self.root / "src/epivra"
         self.src.mkdir(parents=True)
         (self.src / "example.py").write_text("version = 1", encoding="utf-8")
-        self.folder = self.root / ".deep-research-agent/review-test"
+        self.folder = self.root / ".epivra/review-test"
 
     def test_same_configuration_replays_but_drift_is_rejected(self):
         cases = [{"id": "one", "report": "Original", "accept": True}]

@@ -6,14 +6,14 @@ import asyncio
 import json
 from pathlib import Path
 
-from deep_research_agent.adapters import credentials
-from deep_research_agent.application import online_service
-from deep_research_agent.storage import Store
+from epivra.adapters import credentials
+from epivra.application import online_service
+from epivra.storage import Store
 
 
 async def main():
     root = Path(__file__).resolve().parents[1]
-    store = Store(root / ".deep-research-agent" / "online-scenario.db")
+    store = Store(root / ".epivra" / "online-scenario.db")
     study = "official-tool-protocol"
     try:
         store.control(study)
@@ -50,7 +50,7 @@ async def main():
         }
         if published:
             report = store.get(study, published[-1].body["report"])
-            output = root / ".deep-research-agent" / "online-scenario-report.md"
+            output = root / ".epivra" / "online-scenario-report.md"
             output.write_text(report.body["text"], encoding="utf-8")
             result["report_path"] = str(output)
         print(json.dumps(result, ensure_ascii=False))

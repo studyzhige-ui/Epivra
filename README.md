@@ -15,8 +15,24 @@ Epivra 根据你的问题和用途，结合公开网络、上传文件或授权�
 - [实施进度与待完成项](docs/product-redesign/IMPLEMENTATION.md)
 - [开发与验证](docs/GETTING-STARTED.md)
 
-日常使用：在此 worktree 安装后运行 `.venv/Scripts/deep-research.exe`，无参数进入交互工作台。支持系统文件/文件夹选择、策略审批、研究控制与成果导出；显式子命令保留 JSON 接口。
+## 快速开始
 
-历史学习、面试和复盘文档描述旧实现，仅作为背景材料；不指导本分支的新架构。开发规则见 [AGENTS.md](AGENTS.md)。
+在项目目录执行（Windows PowerShell）：
 
-可选 Docker 通用分析已接入现有角色与成果链：数据处理、统计和绘图共用 run_analysis，使用来源引用传入原始文件。部署与恢复边界见[通用分析执行](docs/product-redesign/ANALYSIS_EXECUTION.md)。
+```powershell
+python -m venv .venv
+.venv/Scripts/python.exe -m pip install -e .
+.venv/Scripts/epivra.exe web
+```
+
+打开“连接与设置”，选择厂商、填写密钥并选择模型；输入问题，确认研究策略后开始。终端工作台使用 `.venv/Scripts/epivra.exe`。
+
+- [完整使用说明](docs/USAGE.md)：连接、研究、暂停改向、资料、分析、MCP 与备份。
+- [本地模型](models/README.md)：模型位于项目 `models/docling/`，权重不纳入 Git。
+- [GitHub 私密仓库准备](docs/GITHUB_PREPARATION.md)。
+
+## 项目结构
+
+`src/epivra/` 包含应用与图标；`models/` 组织本地解析模型；`sandbox/` 提供可选分析容器；`tests/` 为离线工程测试；`evals/` 为研究验证资料；`tools/` 为检查和验证工具；`docs/` 包含使用、架构及产品研究文档。
+
+`.env` 保存本地凭据，`.epivra/` 保存研究和配置，两者均不提交。当前项目采用独立的新 Git 历史，旧实现和学习材料保留于原仓库。开发规则见 [AGENTS.md](AGENTS.md)。

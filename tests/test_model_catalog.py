@@ -4,7 +4,7 @@ import unittest
 from dataclasses import FrozenInstanceError
 from urllib.parse import urlsplit
 
-from deep_research_agent.model_catalog import (
+from epivra.model_catalog import (
     OFFICIAL_PROVIDERS,
     get_provider,
     resolve_endpoint,

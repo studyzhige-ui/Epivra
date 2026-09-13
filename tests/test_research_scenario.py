@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from deep_research_agent.domain import identity
+from epivra.domain import identity
 from tools.run_closed_loop_eval import load_case, prepare_corpus
 
 ROOT = Path(__file__).resolve().parents[1]

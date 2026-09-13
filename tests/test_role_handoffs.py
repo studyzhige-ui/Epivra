@@ -4,9 +4,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from deep_research_agent.domain import Call, Reply
-from deep_research_agent.harness import Harness
-from deep_research_agent.storage import Store
+from epivra.domain import Call, Reply
+from epivra.harness import Harness
+from epivra.storage import Store
 
 
 class ScriptedModel:

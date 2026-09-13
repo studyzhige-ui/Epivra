@@ -8,10 +8,10 @@ from prompt_toolkit.application import create_app_session
 from prompt_toolkit.input import create_pipe_input
 from prompt_toolkit.output import DummyOutput
 
-from deep_research_agent import cli_settings
-from deep_research_agent.cli import Workbench, stage, strategy
-from deep_research_agent.host import Host
-from deep_research_agent.terminal import Terminal, clean, native_path
+from epivra import cli_settings
+from epivra.cli import Workbench, stage, strategy
+from epivra.host import Host
+from epivra.terminal import Terminal, clean, native_path
 
 
 class UI:
@@ -68,7 +68,7 @@ class CLITests(unittest.IsolatedAsyncioTestCase):
             paths=[path],
         )
         with patch(
-            "deep_research_agent.cli.cli_settings.configured",
+            "epivra.cli.cli_settings.configured",
             return_value={"DEEPSEEK_API_KEY"},
         ):
             await Workbench(self.root, ui, self.send).new()
@@ -98,7 +98,7 @@ class CLITests(unittest.IsolatedAsyncioTestCase):
             paths=[path],
         )
         with patch(
-            "deep_research_agent.cli.cli_settings.configured",
+            "epivra.cli.cli_settings.configured",
             return_value={"DEEPSEEK_API_KEY"},
         ):
             with self.assertRaises(ValueError):
@@ -109,7 +109,7 @@ class CLITests(unittest.IsolatedAsyncioTestCase):
     async def test_cancel_picker_never_creates_study(self):
         ui = UI(choices=["local", "folder", None], texts=["question"], paths=[None])
         with patch(
-            "deep_research_agent.cli.cli_settings.configured",
+            "epivra.cli.cli_settings.configured",
             return_value={"DEEPSEEK_API_KEY"},
         ):
             await Workbench(self.root, ui, self.send).new()

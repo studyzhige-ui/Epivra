@@ -173,7 +173,7 @@ def main():
         action="store_true",
         help="Explicitly delegate exact strategy approvals to the connected client",
     )
-    parser.add_argument("--token-env", default="DR_MCP_TOKEN")
+    parser.add_argument("--token-env", default="EPIVRA_MCP_TOKEN")
     args = parser.parse_args()
     root = args.root.resolve()
     token = os.environ.get(args.token_env, "")
@@ -183,7 +183,7 @@ def main():
         asyncio.run(send(root, {"action": "list"}))
     except (OSError, ValueError, TimeoutError):
         parser.error(
-            "Start the independent research host first: deep-research --root <root> start"
+            "Start the independent research host first: epivra --root <root> start"
         )
     server = build(root, args.allow_approval)
     if args.transport == "stdio":

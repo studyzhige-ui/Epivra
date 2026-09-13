@@ -14,9 +14,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from deep_research_agent.adapters import DeepSeek, JsonAPI, credentials
-from deep_research_agent.harness import Harness
-from deep_research_agent.storage import Store
+from epivra.adapters import DeepSeek, JsonAPI, credentials
+from epivra.harness import Harness
+from epivra.storage import Store
 from tools.run_closed_loop_eval import export
 from tools.run_review_eval import bind_run
 
@@ -122,7 +122,7 @@ async def run(
             raise ValueError("disk materials differ from frozen diagnostic sources")
 
     check_corpus()
-    folder = root / ".deep-research-agent" / f"diagnostic-{run_id}-{variant}"
+    folder = root / ".epivra" / f"diagnostic-{run_id}-{variant}"
     bind_run(
         root,
         folder,

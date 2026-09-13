@@ -1,6 +1,6 @@
 """Offline browser fixture. Seeds display facts; does NOT evaluate research quality.
 
-Run from the worktree, then launch deep-research-web with the printed temp root.
+Run from the worktree, then launch epivra-web with the printed temp root.
 Stop with Host.shutdown against that temporary root. Never loads account keys.
 """
 
@@ -9,9 +9,9 @@ import json
 import tempfile
 from pathlib import Path
 
-from deep_research_agent import cli_settings
-from deep_research_agent.host import Host
-from deep_research_agent.workspace import Workspace
+from epivra import cli_settings
+from epivra.host import Host
+from epivra.workspace import Workspace
 
 
 async def main():
@@ -86,7 +86,7 @@ async def main():
             {"report": report.ref},
             (c.direction, report.ref),
         )
-        pointer = Path.cwd() / ".deep-research-agent/web-fixture.json"
+        pointer = Path.cwd() / ".epivra/web-fixture.json"
         pointer.parent.mkdir(parents=True, exist_ok=True)
         pointer.write_text(
             json.dumps({"root": str(root), "file": str(material)}, ensure_ascii=False),

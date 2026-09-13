@@ -9,11 +9,11 @@ import tempfile
 import uuid
 from pathlib import Path
 
-from deep_research_agent.analysis import DockerSandbox, settings
-from deep_research_agent.domain import Call, Reply, identity
-from deep_research_agent.harness import Harness
-from deep_research_agent.storage import Store
-from deep_research_agent.workspace import Workspace
+from epivra.analysis import DockerSandbox, settings
+from epivra.domain import Call, Reply, identity
+from epivra.harness import Harness
+from epivra.storage import Store
+from epivra.workspace import Workspace
 
 ANALYZE = """
 import pandas as pd
@@ -222,6 +222,6 @@ async def probe(output):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--output", type=Path, default=Path(".deep-research-agent/analysis-probe")
+        "--output", type=Path, default=Path(".epivra/analysis-probe")
     )
     asyncio.run(probe(parser.parse_args().output))

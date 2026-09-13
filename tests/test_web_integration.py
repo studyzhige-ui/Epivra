@@ -5,10 +5,10 @@ from unittest.mock import patch
 
 import httpx
 
-from deep_research_agent.application import online_service
-from deep_research_agent.domain import Call, Reply
-from deep_research_agent.storage import Store
-from deep_research_agent.web_providers import connect
+from epivra.application import online_service
+from epivra.domain import Call, Reply
+from epivra.storage import Store
+from epivra.web_providers import connect
 
 
 class WebIntegrationTests(unittest.IsolatedAsyncioTestCase):
@@ -27,11 +27,11 @@ class WebIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 )
                 with (
                     patch(
-                        "deep_research_agent.models.create_model",
+                        "epivra.models.create_model",
                         return_value=(object(), client),
                     ),
                     patch(
-                        "deep_research_agent.web_providers.connect",
+                        "epivra.web_providers.connect",
                         side_effect=lambda name, keys: connect(name, keys, client),
                     ),
                 ):
@@ -114,11 +114,11 @@ class WebIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 work = store.work("s", c.ref, "investigator", "Investigate")
                 with (
                     patch(
-                        "deep_research_agent.models.create_model",
+                        "epivra.models.create_model",
                         return_value=(Model(), client),
                     ),
                     patch(
-                        "deep_research_agent.web_providers.connect",
+                        "epivra.web_providers.connect",
                         side_effect=lambda name, keys: connect(name, keys, client),
                     ),
                 ):

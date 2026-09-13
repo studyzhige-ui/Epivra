@@ -1,6 +1,6 @@
 import unittest
 
-from deep_research_agent.calculation import calculate
+from epivra.calculation import calculate
 
 
 class CalculationTests(unittest.TestCase):

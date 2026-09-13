@@ -14,12 +14,12 @@ from openpyxl import Workbook
 from pypdf import PdfWriter
 from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
 
-from deep_research_agent.domain import Call, NotAllowed, Reply
-from deep_research_agent.harness import Harness
-from deep_research_agent.host import Host, send
-from deep_research_agent.materials import parse
-from deep_research_agent.storage import Store
-from deep_research_agent.workspace import Workspace
+from epivra.domain import Call, NotAllowed, Reply
+from epivra.harness import Harness
+from epivra.host import Host, send
+from epivra.materials import parse
+from epivra.storage import Store
+from epivra.workspace import Workspace
 
 
 def pdf_bytes(encrypted=False):
@@ -148,7 +148,7 @@ class MaterialTests(unittest.TestCase):
         first = self.workspace.snapshot("s", catalog.ref, path.name)
         path.write_bytes(b"changed")
         with patch(
-            "deep_research_agent.workspace.parse", side_effect=AssertionError("reparse")
+            "epivra.workspace.parse", side_effect=AssertionError("reparse")
         ):
             self.assertEqual(
                 first.ref, self.workspace.snapshot("s", catalog.ref, path.name).ref
@@ -232,7 +232,7 @@ class MaterialAsyncTests(unittest.IsolatedAsyncioTestCase):
                     "data": base64.b64encode(b"evidence").decode(),
                 }
                 with patch(
-                    "deep_research_agent.workspace.parse_isolated", side_effect=slow
+                    "epivra.workspace.parse_isolated", side_effect=slow
                 ):
                     task = asyncio.create_task(host.dispatch(request))
                     await asyncio.wait_for(entered.wait(), 1)
@@ -255,7 +255,7 @@ class MaterialAsyncTests(unittest.IsolatedAsyncioTestCase):
             c = host.store.command("s", "pause", c.ref, "pause")
             task = asyncio.create_task(host.serve())
             for _ in range(100):
-                if (root / ".deep-research-agent/host.json").exists():
+                if (root / ".epivra/host.json").exists():
                     break
                 await asyncio.sleep(0.01)
             try:
@@ -274,7 +274,7 @@ class MaterialAsyncTests(unittest.IsolatedAsyncioTestCase):
                 process = await asyncio.create_subprocess_exec(
                     sys.executable,
                     "-m",
-                    "deep_research_agent.host",
+                    "epivra.host",
                     "--root",
                     str(root),
                     "upload",

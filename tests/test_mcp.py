@@ -18,10 +18,10 @@ except ImportError:
         "install optional .[mcp] dependencies for MCP integration tests"
     )
 
-from deep_research_agent.domain import Call, Reply
-from deep_research_agent.harness import Harness
-from deep_research_agent.host import Host, send, start
-from deep_research_agent.mcp_client import (
+from epivra.domain import Call, Reply
+from epivra.harness import Harness
+from epivra.host import Host, send, start
+from epivra.mcp_client import (
     MCPConnection,
     alias,
     catalog,
@@ -29,10 +29,10 @@ from deep_research_agent.mcp_client import (
     freeze,
     validate,
 )
-from deep_research_agent.mcp_server import Bearer, build
-from deep_research_agent.mcp_tools import connect_tools
-from deep_research_agent.storage import Store
-from deep_research_agent.workspace import Workspace
+from epivra.mcp_server import Bearer, build
+from epivra.mcp_tools import connect_tools
+from epivra.storage import Store
+from epivra.workspace import Workspace
 
 
 class MCPTests(unittest.IsolatedAsyncioTestCase):
@@ -57,7 +57,7 @@ class MCPTests(unittest.IsolatedAsyncioTestCase):
             async with Client(self.server) as client:
                 yield client
 
-        self.patch = patch("deep_research_agent.mcp_client.connection", connection)
+        self.patch = patch("epivra.mcp_client.connection", connection)
         self.patch.start()
         self.config = {
             "transport": "stdio",
@@ -106,7 +106,7 @@ class MCPTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_production_harness_uses_ledger_sources_and_role_grants(self):
         frozen = await freeze(self.root, ["test"])
-        store = Store(self.root / ".deep-research-agent/state.db")
+        store = Store(self.root / ".epivra/state.db")
         try:
             c = store.create("s", "Research fixture", {"mcp": frozen})
             plan = store.put("s", "plan", {"text": "approved"}, (c.direction,))
@@ -255,7 +255,7 @@ class MCPTests(unittest.IsolatedAsyncioTestCase):
         frozen["test"]["definitions"][0]["inputSchema"] = {
             "$ref": "https://invalid.example/private.json"
         }
-        store = Store(self.root / ".deep-research-agent/state.db")
+        store = Store(self.root / ".epivra/state.db")
         try:
             store.create("s", "fixture", {})
             tools, connections = connect_tools(store, "s", {"mcp": frozen})
@@ -299,7 +299,7 @@ class MCPTests(unittest.IsolatedAsyncioTestCase):
         async def connection(config, root):
             yield client
 
-        with patch("deep_research_agent.mcp_client.connection", connection):
+        with patch("epivra.mcp_client.connection", connection):
             self.assertEqual(
                 raw, await execute(self.root, self.config, definition, {"query": "x"})
             )
@@ -329,7 +329,7 @@ class MCPTests(unittest.IsolatedAsyncioTestCase):
         await start(self.root)
         transport = StdioServerParameters(
             command=sys.executable,
-            args=["-m", "deep_research_agent.mcp_server", "--root", str(self.root)],
+            args=["-m", "epivra.mcp_server", "--root", str(self.root)],
         )
         try:
             async with Client(transport) as client:
@@ -338,7 +338,7 @@ class MCPTests(unittest.IsolatedAsyncioTestCase):
             # Bridge exited; the single host remains available.
             self.assertEqual([], (await send(self.root, {"action": "list"}))["studies"])
         finally:
-            pointer = self.root / ".deep-research-agent/host.json"
+            pointer = self.root / ".epivra/host.json"
             if pointer.exists():
                 await send(self.root, {"action": "shutdown"})
                 for _ in range(100):
@@ -363,7 +363,7 @@ class MCPTests(unittest.IsolatedAsyncioTestCase):
         async def connection(config, root):
             yield client
 
-        with patch("deep_research_agent.mcp_client.connection", connection):
+        with patch("epivra.mcp_client.connection", connection):
             with self.assertRaisesRegex(RuntimeError, "outcome unknown"):
                 await execute(self.root, self.config, definition, {"query": "x"})
         self.assertEqual(1, client.session.send_request.await_count)

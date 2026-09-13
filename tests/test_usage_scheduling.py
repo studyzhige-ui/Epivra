@@ -4,9 +4,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from deep_research_agent.scheduling import Scheduler
-from deep_research_agent.storage import Store
-from deep_research_agent.usage import counters, summarize
+from epivra.scheduling import Scheduler
+from epivra.storage import Store
+from epivra.usage import counters, summarize
 
 
 class UsageTests(unittest.TestCase):
@@ -167,7 +167,7 @@ class RateTests(unittest.IsolatedAsyncioTestCase):
         async def advance(delay):
             now[0] += delay
 
-        with patch("deep_research_agent.scheduling.asyncio.sleep", advance):
+        with patch("epivra.scheduling.asyncio.sleep", advance):
             async with scheduler.slot("p", lambda: None):
                 self.assertGreaterEqual(now[0], 160)
 

@@ -12,9 +12,9 @@ import json
 import re
 from pathlib import Path
 
-from deep_research_agent.adapters import DeepSeek, JsonAPI, credentials
-from deep_research_agent.domain import identity
-from deep_research_agent.storage import Store
+from epivra.adapters import DeepSeek, JsonAPI, credentials
+from epivra.domain import identity
+from epivra.storage import Store
 
 
 async def run(root: Path, case_id: str, run_id: str):
@@ -27,7 +27,7 @@ async def run(root: Path, case_id: str, run_id: str):
         )
         if c["id"] == case_id
     )
-    folder = root / ".deep-research-agent" / f"baseline-{case_id}-{run_id}"
+    folder = root / ".epivra" / f"baseline-{case_id}-{run_id}"
     store = Store(folder / "research.db")
     api = JsonAPI(
         "https://api.deepseek.com", credentials(root / ".env")["DEEPSEEK_API_KEY"]

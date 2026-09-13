@@ -46,7 +46,7 @@ async def parse_isolated(
     process = await asyncio.create_subprocess_exec(
         sys.executable,
         "-m",
-        "deep_research_agent.materials",
+        "epivra.materials",
         Path(name).name,
         encode(options or {}),
         stdin=asyncio.subprocess.PIPE,

@@ -7,11 +7,11 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from deep_research_agent.domain import Call, Conflict, Reply, UnknownOutcome
-from deep_research_agent.harness import STRING, Harness, object_schema
-from deep_research_agent.harness import Tool as BaseTool
-from deep_research_agent.scheduling import Scheduler
-from deep_research_agent.storage import Store
+from epivra.domain import Call, Conflict, Reply, UnknownOutcome
+from epivra.harness import STRING, Harness, object_schema
+from epivra.harness import Tool as BaseTool
+from epivra.scheduling import Scheduler
+from epivra.storage import Store
 
 
 def Tool(*args, **kwargs):
@@ -179,7 +179,7 @@ class BoundaryTests(unittest.IsolatedAsyncioTestCase):
             (self.work.ref,),
         )
         with patch.dict(
-            "deep_research_agent.harness.TOOLS", {"read_source": "changed contract"}
+            "epivra.harness.TOOLS", {"read_source": "changed contract"}
         ):
             with self.assertRaisesRegex(Exception, "original tool contracts"):
                 await harness.step("s", self.work.ref)

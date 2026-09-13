@@ -150,7 +150,7 @@ def check(package: Path) -> list[str]:
                 local = [
                     m.split(".")[1]
                     for m in modules
-                    if m.startswith("deep_research_agent.")
+                    if m.startswith("epivra.")
                 ]
             elif isinstance(node, ast.ImportFrom):
                 module = node.module or ""
@@ -161,9 +161,9 @@ def check(package: Path) -> list[str]:
                         if module
                         else [alias.name for alias in node.names]
                     )
-                elif module.startswith("deep_research_agent."):
+                elif module.startswith("epivra."):
                     local = [module.split(".")[1]]
-                elif module == "deep_research_agent":
+                elif module == "epivra":
                     local = [alias.name for alias in node.names]
             for dependency in local:
                 if dependency not in ALLOWED[name]:
@@ -179,7 +179,7 @@ def check(package: Path) -> list[str]:
 
 
 if __name__ == "__main__":
-    failures = check(Path(__file__).resolve().parents[1] / "src/deep_research_agent")
+    failures = check(Path(__file__).resolve().parents[1] / "src/epivra")
     for failure in failures:
         print(failure)
     print("architecture FAILED" if failures else "architecture OK")

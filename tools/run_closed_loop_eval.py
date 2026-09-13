@@ -12,10 +12,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from deep_research_agent.adapters import DEFAULT_MODEL, credentials
-from deep_research_agent.application import online_service
-from deep_research_agent.domain import identity
-from deep_research_agent.storage import Store
+from epivra.adapters import DEFAULT_MODEL, credentials
+from epivra.application import online_service
+from epivra.domain import identity
+from epivra.storage import Store
 
 
 def load_case(root: Path, case_id: str) -> dict:
@@ -151,14 +151,14 @@ async def run(root, case_id, run_id, assess_only=False, plan_only=False):
     if not re.fullmatch(r"[a-zA-Z0-9_-]+", run_id):
         raise ValueError("invalid run ID")
     case = load_case(root, case_id)
-    folder = root / ".deep-research-agent" / f"closed-{case_id}-{run_id}"
+    folder = root / ".epivra" / f"closed-{case_id}-{run_id}"
     if assess_only and not (folder / "research.db").exists():
         raise ValueError("no existing run")
     corpus = folder / "corpus"
     implementation = identity(
         [
             [p.name, p.read_text(encoding="utf-8")]
-            for p in sorted((root / "src/deep_research_agent").glob("*.py"))
+            for p in sorted((root / "src/epivra").glob("*.py"))
         ]
     )
     binding = identity(case, DEFAULT_MODEL, implementation)

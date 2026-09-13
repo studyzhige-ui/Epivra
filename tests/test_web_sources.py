@@ -4,11 +4,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from deep_research_agent.adapters import ProviderFailure, Tavily
-from deep_research_agent.domain import Call, Reply
-from deep_research_agent.harness import Harness, Tool, object_schema
-from deep_research_agent.storage import Store
-from deep_research_agent.workspace import Workspace
+from epivra.adapters import ProviderFailure, Tavily
+from epivra.domain import Call, Reply
+from epivra.harness import Harness, Tool, object_schema
+from epivra.storage import Store
+from epivra.workspace import Workspace
 
 
 class WebAcquisitionRecoveryTests(unittest.IsolatedAsyncioTestCase):

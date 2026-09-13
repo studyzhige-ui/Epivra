@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from deep_research_agent.domain import encode
+from epivra.domain import encode
 
 
 def corpus(directory: Path, size: int) -> dict:

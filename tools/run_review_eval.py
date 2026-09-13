@@ -13,10 +13,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from deep_research_agent.adapters import DEFAULT_MODEL, DeepSeek, JsonAPI, credentials
-from deep_research_agent.domain import identity
-from deep_research_agent.harness import Harness
-from deep_research_agent.storage import Store
+from epivra.adapters import DEFAULT_MODEL, DeepSeek, JsonAPI, credentials
+from epivra.domain import identity
+from epivra.harness import Harness
+from epivra.storage import Store
 from evals.review_cases import CASES
 
 
@@ -47,7 +47,7 @@ def bind_run(root: Path, folder: Path, cases: list, effort: str, source=None) ->
     implementation = identity(
         [
             [str(p.relative_to(root)), p.read_text(encoding="utf-8")]
-            for p in sorted((root / "src/deep_research_agent").glob("*.py"))
+            for p in sorted((root / "src/epivra").glob("*.py"))
         ],
         Path(__file__).read_text(encoding="utf-8"),
     )
@@ -84,7 +84,7 @@ async def run(
 ):
     if not re.fullmatch(r"[a-zA-Z0-9_-]+", run_id):
         raise ValueError("invalid run ID")
-    folder = root / ".deep-research-agent" / f"review-{run_id}"
+    folder = root / ".epivra" / f"review-{run_id}"
     database = folder / "research.db"
     cases = CASES
     if mechanisms:

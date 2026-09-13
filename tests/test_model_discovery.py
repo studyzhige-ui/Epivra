@@ -7,10 +7,10 @@ from unittest.mock import patch
 
 import httpx
 
-from deep_research_agent import cli_settings
-from deep_research_agent.model_catalog import OFFICIAL_PROVIDERS, resolve_endpoint
-from deep_research_agent.model_discovery import DISCOVERY, DiscoveryError, discover
-from deep_research_agent.webui import App
+from epivra import cli_settings
+from epivra.model_catalog import OFFICIAL_PROVIDERS, resolve_endpoint
+from epivra.model_discovery import DISCOVERY, DiscoveryError, discover
+from epivra.webui import App
 
 
 class DiscoveryTests(unittest.TestCase):
@@ -164,7 +164,7 @@ class DiscoveryTests(unittest.TestCase):
             root = Path(directory)
             cli_settings.save_key(root, "DEEPSEEK_API_KEY", "saved")
             with patch(
-                "deep_research_agent.webui.discover",
+                "epivra.webui.discover",
                 return_value={"models": [], "source": "account"},
             ) as mock:
                 App(root).discover_models({"provider": "deepseek", "key": "entered"})

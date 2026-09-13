@@ -566,7 +566,7 @@ def main():
         host.main()
         return
     if not sys.stdin.isatty():
-        print("交互工作台需要终端。自动化请使用 deep-research --help 中的子命令。")
+        print("交互工作台需要终端。自动化请使用 epivra --help 中的子命令。")
         return
     root = args.root.resolve()
 
@@ -579,7 +579,7 @@ def main():
     except (KeyboardInterrupt, EOFError):
         print("\n已离开工作台，后台研究继续。")
     except (OSError, ValueError, RuntimeError):
-        print("无法启动工作台，请检查工作目录与 .deep-research-agent/host.log。")
+        print("无法启动工作台，请检查工作目录与 .epivra/host.log。")
         raise SystemExit(1)
 
 

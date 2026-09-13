@@ -11,16 +11,16 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from deep_research_agent.adapters import DEFAULT_MODEL, credentials
-from deep_research_agent.application import online_service
-from deep_research_agent.storage import Store
+from epivra.adapters import DEFAULT_MODEL, credentials
+from epivra.application import online_service
+from epivra.storage import Store
 from evals.research_case import QUESTION, assess, corpus
 
 
 async def run(root: Path, size: int, run_id: str, assess_only: bool = False):
     if not re.fullmatch(r"[a-zA-Z0-9_-]+", run_id):
         raise ValueError("invalid run ID")
-    folder = root / ".deep-research-agent" / f"eval-{size}-{run_id}"
+    folder = root / ".epivra" / f"eval-{size}-{run_id}"
     if assess_only and not (folder / "research.db").exists():
         raise ValueError("assessment requires an existing run")
     prior = (

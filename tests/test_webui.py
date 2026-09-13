@@ -14,9 +14,9 @@ from urllib.parse import urlencode
 
 import httpx
 
-from deep_research_agent import cli_settings
-from deep_research_agent.host import Host, send
-from deep_research_agent.webui import App, Server
+from epivra import cli_settings
+from epivra.host import Host, send
+from epivra.webui import App, Server
 
 
 class WebTests(unittest.IsolatedAsyncioTestCase):
@@ -73,7 +73,7 @@ class WebTests(unittest.IsolatedAsyncioTestCase):
     async def test_model_discovery_route_is_authenticated_and_ephemeral(self):
         result = {"models": [{"id": "example"}], "source": "account"}
         with patch(
-            "deep_research_agent.webui.discover", return_value=result
+            "epivra.webui.discover", return_value=result
         ) as discover:
             reply = await self.http.post(
                 "/api/models", json={"provider": "deepseek", "key": "temporary-key"}
@@ -183,7 +183,7 @@ class WebTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(200, reply.status_code, reply.text)
         source = reply.json()["source"]
         self.assertEqual(
-            [], list((self.root / ".deep-research-agent").glob("web-upload-*"))
+            [], list((self.root / ".epivra").glob("web-upload-*"))
         )
         self.assertTrue(self.host.store.control(study).paused)
         downloaded = await self.http.post(
@@ -193,7 +193,7 @@ class WebTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(raw, downloaded.content)
         self.assertEqual(1, sum(r["action"] == "export" for r in self.requests))
         self.assertEqual(
-            [], list((self.root / ".deep-research-agent").glob("web-download-*"))
+            [], list((self.root / ".epivra").glob("web-download-*"))
         )
 
     async def test_failed_import_keeps_draft_and_cleans_staging(self):
@@ -204,7 +204,7 @@ class WebTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.host.store.control(study).paused)
         self.assertEqual([], self.host.store.list(study, "source"))
         self.assertEqual(
-            [], list((self.root / ".deep-research-agent").glob("web-upload-*"))
+            [], list((self.root / ".epivra").glob("web-upload-*"))
         )
         for name in ("../escape.txt", "..\\escape.txt", "x:y.txt"):
             params = urlencode({"study": study, "expected": c.ref, "name": name})
@@ -270,7 +270,7 @@ class WebTests(unittest.IsolatedAsyncioTestCase):
             stdout = json.dumps({"path": None})
 
         with patch(
-            "deep_research_agent.webui.subprocess.run", return_value=Result()
+            "epivra.webui.subprocess.run", return_value=Result()
         ) as run:
             result = await self.http.post("/api/pick", json={"kind": "folder"})
             self.assertEqual({"path": None}, result.json())
@@ -300,7 +300,7 @@ class WebProcessTests(unittest.IsolatedAsyncioTestCase):
             "-X",
             "utf8",
             "-m",
-            "deep_research_agent.webui",
+            "epivra.webui",
             "--root",
             str(root),
             "--port",
@@ -321,7 +321,7 @@ class WebProcessTests(unittest.IsolatedAsyncioTestCase):
             if process.returncode is None:
                 process.terminate()
                 await process.wait()
-            if (root / ".deep-research-agent/host.json").exists():
+            if (root / ".epivra/host.json").exists():
                 await send(root, {"action": "shutdown"})
             # Pointer removal precedes the child's final log-handle close on Windows.
             for _ in range(100):

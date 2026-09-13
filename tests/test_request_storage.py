@@ -6,9 +6,9 @@ import unittest
 
 from test_execution import FakeModel, Fixture
 
-from deep_research_agent.domain import Conflict, Reply, UnknownOutcome, identity
-from deep_research_agent.harness import Harness
-from deep_research_agent.storage import Store
+from epivra.domain import Conflict, Reply, UnknownOutcome, identity
+from epivra.harness import Harness
+from epivra.storage import Store
 
 
 class RequestStorageTests(Fixture, unittest.IsolatedAsyncioTestCase):

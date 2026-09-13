@@ -3,7 +3,7 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "deep-research-agent"
+name = "epivra"
 version = "0.2.0.dev0"
 description = "Epivra: a local autonomous research workbench."
 requires-python = ">=3.11"
@@ -15,12 +15,12 @@ documents = ["docling>=2.126,<3", "onnxruntime>=1.23,<2"]
 mcp = ["mcp>=2.2,<3"]
 
 [project.scripts]
-deep-research = "deep_research_agent.cli:main"
-deep-research-mcp = "deep_research_agent.mcp_server:main"
-deep-research-web = "deep_research_agent.webui:main"
+epivra = "epivra.cli:main"
+epivra-mcp = "epivra.mcp_server:main"
+epivra-web = "epivra.webui:main"
 
 [tool.setuptools.package-data]
-deep_research_agent = ["web/*"]
+epivra = ["web/*"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

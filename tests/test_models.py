@@ -8,16 +8,16 @@ from unittest.mock import patch
 
 import httpx
 
-from deep_research_agent.adapters import ChatCompletions, credentials, rate_limit_delay
-from deep_research_agent.application import online_service
-from deep_research_agent.domain import encode
-from deep_research_agent.model_catalog import OFFICIAL_PROVIDERS
-from deep_research_agent.models import (
+from epivra.adapters import ChatCompletions, credentials, rate_limit_delay
+from epivra.application import online_service
+from epivra.domain import encode
+from epivra.model_catalog import OFFICIAL_PROVIDERS
+from epivra.models import (
     create_model,
     freeze_model_settings,
     model_settings,
 )
-from deep_research_agent.storage import Store
+from epivra.storage import Store
 
 CONTEXT = {
     "system": "Complete the assigned research task using original evidence.",
@@ -114,7 +114,7 @@ class OfficialModelTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(model.retry_on_resume({"http_status": 400}))
 
     async def test_three_protocols_run_real_harness_and_resume_exact_history(self):
-        from deep_research_agent.harness import Harness, Tool
+        from epivra.harness import Harness, Tool
 
         for name in ("openai", "claude", "gemini"):
             with (
@@ -199,7 +199,7 @@ class OfficialModelTests(unittest.IsolatedAsyncioTestCase):
     async def test_freeze_defaults_respects_protocol_and_original_deepseek_binding(
         self,
     ):
-        from deep_research_agent.adapters import DeepSeek, JsonAPI
+        from epivra.adapters import DeepSeek, JsonAPI
 
         policy = freeze_model_settings({"provider": "minimax"})
         self.assertFalse(policy["stream_model"])
@@ -354,7 +354,7 @@ class OfficialModelTests(unittest.IsolatedAsyncioTestCase):
             )
 
     async def test_chat_usage_only_chunk_and_tool_reassembly(self):
-        from deep_research_agent.adapters import JsonAPI
+        from epivra.adapters import JsonAPI
 
         chunks = [
             {

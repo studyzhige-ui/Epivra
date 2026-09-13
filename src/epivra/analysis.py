@@ -9,7 +9,7 @@ import time
 from pathlib import Path
 
 DEFAULTS = {
-    "image": "deep-research-analysis:1",
+    "image": "epivra-analysis:1",
     "timeout": 120,
     "memory_mb": 1024,
     "cpus": 2,
@@ -138,7 +138,7 @@ class DockerSandbox:
             "--name",
             name,
             "--label",
-            "deep-research.job=" + job,
+            "epivra.job=" + job,
             "--network",
             "none",
             "--read-only",
@@ -179,7 +179,7 @@ class DockerSandbox:
         name = "dr-analysis-" + job
         found = await self.inspect(name)
         if found:
-            if found["Config"]["Labels"].get("deep-research.job") != job:
+            if found["Config"]["Labels"].get("epivra.job") != job:
                 raise ValueError("analysis container identity mismatch")
             await docker("rm", "-f", name)
 
@@ -198,7 +198,7 @@ class DockerSandbox:
             await docker(*self.command(name, job, folder, config))
             info = await self.inspect(name)
         if (
-            info["Config"]["Labels"].get("deep-research.job") != job
+            info["Config"]["Labels"].get("epivra.job") != job
             or info["Image"] != config["image"]
         ):
             raise ValueError("analysis container identity mismatch")

@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from deep_research_agent.domain import (
+from epivra.domain import (
     Call,
     Conflict,
     NotAllowed,
@@ -13,9 +13,9 @@ from deep_research_agent.domain import (
     Reply,
     UnknownOutcome,
 )
-from deep_research_agent.harness import Harness, object_schema
-from deep_research_agent.harness import Tool as BaseTool
-from deep_research_agent.storage import Store
+from epivra.harness import Harness, object_schema
+from epivra.harness import Tool as BaseTool
+from epivra.storage import Store
 
 
 def Tool(*args, **kwargs):

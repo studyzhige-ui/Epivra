@@ -11,7 +11,7 @@ from .web_providers import CONNECTIONS
 
 
 def load(root):
-    path = root / ".deep-research-agent/cli-settings.json"
+    path = root / ".epivra/cli-settings.json"
     return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
 
 
@@ -28,7 +28,7 @@ def write(path, text):
 
 def save(root, values):
     write(
-        root / ".deep-research-agent/cli-settings.json",
+        root / ".epivra/cli-settings.json",
         json.dumps(values, ensure_ascii=False, indent=2) + "\n",
     )
 

@@ -8,11 +8,11 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from deep_research_agent.domain import Conflict, UnknownOutcome, identity
-from deep_research_agent.harness import Harness
-from deep_research_agent.materials import parse_isolated
-from deep_research_agent.scheduling import Scheduler
-from deep_research_agent.storage import Store
+from epivra.domain import Conflict, UnknownOutcome, identity
+from epivra.harness import Harness
+from epivra.materials import parse_isolated
+from epivra.scheduling import Scheduler
+from epivra.storage import Store
 
 
 class LifecycleTests(unittest.IsolatedAsyncioTestCase):

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from deep_research_agent.review import text_metrics, units
+from epivra.review import text_metrics, units
 from evals.review_cases import CASES
 
 

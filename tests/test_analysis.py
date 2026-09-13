@@ -5,11 +5,11 @@ import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
-from deep_research_agent.analysis import DEFAULTS, DockerSandbox, filename
-from deep_research_agent.domain import Call, Conflict, Reply
-from deep_research_agent.harness import Harness
-from deep_research_agent.storage import Store
-from deep_research_agent.workspace import Workspace
+from epivra.analysis import DEFAULTS, DockerSandbox, filename
+from epivra.domain import Call, Conflict, Reply
+from epivra.harness import Harness
+from epivra.storage import Store
+from epivra.workspace import Workspace
 
 
 class Model:
@@ -241,7 +241,7 @@ class AnalysisTests(unittest.IsolatedAsyncioTestCase):
         sandbox = DockerSandbox()
         with (
             patch.object(sandbox, "inspect", AsyncMock(return_value=None)),
-            patch("deep_research_agent.analysis.docker", AsyncMock()) as command,
+            patch("epivra.analysis.docker", AsyncMock()) as command,
         ):
             result = await sandbox.run(
                 "fixture", self.folder.name, DEFAULTS, False, lambda: None

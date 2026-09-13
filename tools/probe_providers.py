@@ -6,20 +6,20 @@ import asyncio
 import json
 from pathlib import Path
 
-from deep_research_agent.adapters import (
+from epivra.adapters import (
     DEFAULT_MODEL,
     DeepSeek,
     JsonAPI,
     Tavily,
     credentials,
 )
-from deep_research_agent.domain import identity
-from deep_research_agent.storage import Store
+from epivra.domain import identity
+from epivra.storage import Store
 
 
 async def run(root: Path, stream: bool = False) -> dict:
     keys = credentials(root / ".env")
-    store = Store(root / ".deep-research-agent" / "provider-probe.db")
+    store = Store(root / ".epivra" / "provider-probe.db")
     clients = [
         JsonAPI("https://api.deepseek.com", keys["DEEPSEEK_API_KEY"]),
         JsonAPI("https://api.tavily.com", keys["TAVILY_API_KEY"]),

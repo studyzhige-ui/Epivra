@@ -27,7 +27,7 @@ from .workspace import Workspace
 class Host:
     def __init__(self, root: Path, factory=None):
         self.root = root.resolve()
-        self.state = self.root / ".deep-research-agent"
+        self.state = self.root / ".epivra"
         self.store = Store(self.state / "research.db")
         try:
             limits_path = self.root / "provider-limits.json"
@@ -191,7 +191,12 @@ class Host:
                 policy.update(search_providers=[], reader_providers=[])
             policy["parsing"] = {
                 "parser": request.get("parser", "auto"),
-                "artifacts_path": request.get("docling_models"),
+                "artifacts_path": request.get("docling_models")
+                or (
+                    "models/docling"
+                    if (self.root / "models/docling").is_dir()
+                    else None
+                ),
                 "timeout": request.get("parse_timeout", 300),
             }
             if policy["parsing"]["parser"] not in {"auto", "light", "docling"}:
@@ -457,9 +462,7 @@ class Host:
 
 
 async def send(root: Path, request: dict):
-    pointer = json.loads(
-        (root / ".deep-research-agent/host.json").read_text(encoding="utf-8")
-    )
+    pointer = json.loads((root / ".epivra/host.json").read_text(encoding="utf-8"))
     reader, writer = await asyncio.open_connection(
         "127.0.0.1", pointer["port"], limit=4 * 1024 * 1024
     )
@@ -490,14 +493,14 @@ async def start(root: Path):
 
     if await available():
         return {"already_running": True}
-    state = root / ".deep-research-agent"
+    state = root / ".epivra"
     state.mkdir(parents=True, exist_ok=True)
     with (state / "host.log").open("ab") as log:
         process = subprocess.Popen(
             [
                 sys.executable,
                 "-m",
-                "deep_research_agent.host",
+                "epivra.host",
                 "--root",
                 str(root),
                 "serve",

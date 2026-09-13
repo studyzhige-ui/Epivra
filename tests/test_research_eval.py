@@ -4,8 +4,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from deep_research_agent.domain import encode
-from deep_research_agent.storage import Store
+from epivra.domain import encode
+from epivra.storage import Store
 from evals.research_case import QUESTION, assess, corpus
 
 

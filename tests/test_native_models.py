@@ -6,8 +6,8 @@ from copy import deepcopy
 
 import httpx
 
-from deep_research_agent.adapters import JsonAPI, ProviderFailure
-from deep_research_agent.native_models import Anthropic, Gemini
+from epivra.adapters import JsonAPI, ProviderFailure
+from epivra.native_models import Anthropic, Gemini
 
 
 def context():

@@ -5,12 +5,12 @@ import asyncio
 import json
 from pathlib import Path
 
-from deep_research_agent.adapters import credentials
-from deep_research_agent.analysis import settings
-from deep_research_agent.harness import Harness
-from deep_research_agent.models import create_model, freeze_model_settings
-from deep_research_agent.storage import Store
-from deep_research_agent.workspace import Workspace
+from epivra.adapters import credentials
+from epivra.analysis import settings
+from epivra.harness import Harness
+from epivra.models import create_model, freeze_model_settings
+from epivra.storage import Store
+from epivra.workspace import Workspace
 
 TASK = (
     "根据所提供的 UCI Iris 数据制作一份简短中文描述性分析说明，附可复用的分组统计 CSV 和 PNG 图。"

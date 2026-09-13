@@ -4,11 +4,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from deep_research_agent.application import ResearchService
-from deep_research_agent.domain import Call, Conflict, NotAllowed, Reply
-from deep_research_agent.harness import BUILTINS, Harness, Tool, object_schema, validate
-from deep_research_agent.review import text_metrics
-from deep_research_agent.storage import Store
+from epivra.application import ResearchService
+from epivra.domain import Call, Conflict, NotAllowed, Reply
+from epivra.harness import BUILTINS, Harness, Tool, object_schema, validate
+from epivra.review import text_metrics
+from epivra.storage import Store
 
 
 class MainlineTests(unittest.IsolatedAsyncioTestCase):

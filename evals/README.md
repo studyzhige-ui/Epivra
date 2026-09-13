@@ -16,7 +16,7 @@
 .venv/Scripts/python.exe tools/run_research_eval.py --sources 30 --run-id baseline --assess-only
 ```
 
-不同版本使用新 run-id，保留旧数据库与实际请求。产物在被忽略的 `.deep-research-agent/eval-{sources}-{run-id}/`，包含语料、SQLite 账本、最终报告和 result.json。夹具自动批准策略仅用于测试，产品任务仍由用户审批。
+不同版本使用新 run-id，保留旧数据库与实际请求。产物在被忽略的 `.epivra/eval-{sources}-{run-id}/`，包含语料、SQLite 账本、最终报告和 result.json。夹具自动批准策略仅用于测试，产品任务仍由用户审批。
 
 30 来源基线已完成，但人工质量验收未通过；先修正和复测，再扩大到 100。见 [实测记录](../docs/product-redesign/RESEARCH_EVAL.md) 和 [渐进验收](../docs/product-redesign/PARSING_AND_EVALUATION.md)。短文本夹具不能代表真实长文档研究质量。旧版脚本与数据保存在基线快照。
 
@@ -30,13 +30,13 @@
 直接核查已知失败的完整报告，复制数据库至独立评测目录，保留原报告和来源引用，原目录不修改：
 
 ```powershell
-.venv/Scripts/python.exe tools/run_review_eval.py --run-id report-version --report-db .deep-research-agent/eval-30-coverage/research.db
+.venv/Scripts/python.exe tools/run_review_eval.py --run-id report-version --report-db .epivra/eval-30-coverage/research.db
 ```
 
 使用已拒绝的独立审查驱动真实修订与再次核查，复用保存的来源（此夹具自行发出改向命令）：
 
 ```powershell
-.venv/Scripts/python.exe tools/run_repair_eval.py --run-id repair-version --source-db .deep-research-agent/review-report-version/research.db
+.venv/Scripts/python.exe tools/run_repair_eval.py --run-id repair-version --source-db .epivra/review-report-version/research.db
 ```
 
 所有语义结果仍需检查理由是否正确；拒绝坏报告但给出错误理由，也不能判定通过。不同代码版本使用不同 run-id，未完成请求不能跨工具契约或模型绑定静默迁移。评测脚本不属于产品阶段控制器。
@@ -73,8 +73,8 @@ closed_loop_cases属于封闭资料的小型语义与流程回归。candidate_me
 仅隔离调查者的委派文字（固定measurement题、同一原计划/资料/模型；每侧独立目录）：
 
 ```powershell
-.venv/Scripts/python.exe tools/run_role_diagnostic.py --run-id delegation-v3 --trace .deep-research-agent/closed-measurement-domain-v11/trace.json --variant direct
-.venv/Scripts/python.exe tools/run_role_diagnostic.py --run-id delegation-v3 --trace .deep-research-agent/closed-measurement-domain-v11/trace.json --variant delegated
+.venv/Scripts/python.exe tools/run_role_diagnostic.py --run-id delegation-v3 --trace .epivra/closed-measurement-domain-v11/trace.json --variant direct
+.venv/Scripts/python.exe tools/run_role_diagnostic.py --run-id delegation-v3 --trace .epivra/closed-measurement-domain-v11/trace.json --variant delegated
 ```
 
 该工具刻意不运行完整研究；没有publication是正常的角色级诊断，不是失败。result中的semantic_acceptance仍须主审。首次请求仅task不同，后续采样可不同；一次每侧不能证明因果或成功率。源目录与祖先身份、资料一致性均在调用前检查，结束后复核磁盘文件集合和正文；改变工具/角色/资料配置须新run-id。

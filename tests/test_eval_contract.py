@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from deep_research_agent.storage import Store
+from epivra.storage import Store
 from evals.mechanism_cases import CASES
 from tools.run_closed_loop_eval import export
 
