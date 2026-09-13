@@ -328,12 +328,6 @@ h3 {
   font-weight: 600;
   margin: 28px 0 15px;
 }
-.intro {
-  color: var(--muted);
-  font-size: 16px;
-  line-height: 1.6;
-  margin: 0 0 16px;
-}
 .card {
   border: 1px solid var(--line);
   background: var(--surface);
@@ -409,29 +403,68 @@ h3 {
 .material-list li span {
   flex: 1;
 }
-.research-guide {
-  margin-top: 12px;
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.help-button {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  background: transparent;
+  border-color: transparent;
   color: var(--muted);
-  font-size: 13px;
 }
-.research-guide summary {
-  width: fit-content;
-  padding: 5px 0;
-  text-underline-offset: 4px;
-}
-.research-guide summary:hover {
+.help-button:hover {
   color: var(--accent);
 }
-.guide-body {
-  max-width: 70ch;
+#help-dialog {
+  max-width: 560px;
+}
+.help-content {
+  font-size: 15px;
   line-height: 1.8;
 }
-.guide-body p {
-  margin: 10px 0;
+.help-content h3 {
+  margin: 22px 0 6px;
+  color: var(--accent);
 }
-.guide-body strong {
-  color: var(--ink);
+.help-content p {
+  margin: 0;
+}
+.research-flow {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 22px;
+  list-style: none;
+  padding: 0;
+  margin: 22px 0 0;
+}
+.research-flow li {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  min-width: 0;
+}
+.flow-number {
+  font-family: Georgia, serif;
+  color: #819a87;
+  font-size: 23px;
+  line-height: 1.3;
+}
+.research-flow strong {
+  display: block;
+  font-size: 14px;
   font-weight: 600;
+  margin-bottom: 2px;
+}
+.research-flow div > span {
+  display: block;
+  font-size: 12px;
+  color: var(--muted);
 }
 .study-heading {
   display: flex;
@@ -699,6 +732,20 @@ summary {
   }
 }
 @media (max-width: 680px) {
+  .research-flow {
+    grid-template-columns: 1fr;
+    gap: 14px;
+  }
+  .research-flow li {
+    gap: 14px;
+  }
+  .research-flow strong {
+    display: inline;
+    margin-right: 10px;
+  }
+  .research-flow div > span {
+    display: inline;
+  }
   .shell {
     display: block;
   }
@@ -764,9 +811,6 @@ summary {
   }
   .welcome-heading {
     gap: 12px;
-  }
-  .intro {
-    font-size: 15px;
   }
   .compose-footer {
     flex-wrap: wrap;

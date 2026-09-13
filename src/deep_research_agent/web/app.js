@@ -558,6 +558,7 @@ document.querySelector(".brand").onclick = (e) => {
 };
 for (const button of document.querySelectorAll("[data-tab]"))
   button.onclick = () => selectTab(button.dataset.tab);
+$("open-help").onclick = () => $("help-dialog").showModal();
 for (const button of document.querySelectorAll(".close-dialog"))
   button.onclick = () => button.closest("dialog").close();
 $("approve").onclick = () => {

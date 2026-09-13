@@ -44,8 +44,39 @@
       </aside>
       <main>
         <header>
-          <span id="breadcrumb">工作台 / 新建研究</span
-          ><span class="local-badge">LOCAL · EPIVRA</span>
+          <span id="breadcrumb">工作台 / 新建研究</span>
+          <div class="header-actions">
+            <span class="local-badge">LOCAL · EPIVRA</span>
+            <button
+              id="open-help"
+              class="help-button"
+              type="button"
+              aria-label="使用帮助"
+              aria-haspopup="dialog"
+              aria-controls="help-dialog"
+              title="使用帮助"
+            >
+              <svg
+                viewBox="0 0 24 24"
+                width="20"
+                height="20"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.6"
+                aria-hidden="true"
+              >
+                <circle cx="12" cy="12" r="9" />
+                <path d="M9.5 9a2.5 2.5 0 0 1 5 .3c0 1.7-2.5 1.9-2.5 3.7" />
+                <circle
+                  cx="12"
+                  cy="16.7"
+                  r=".8"
+                  fill="currentColor"
+                  stroke="none"
+                />
+              </svg>
+            </button>
+          </div>
         </header>
         <div id="notice" role="status" hidden></div>
         <section id="welcome" class="view">
@@ -62,7 +93,6 @@
               <h1>你想研究清楚什么？</h1>
             </div>
           </div>
-          <p class="intro">你确认方向，Epivra 自主研究，交付有依据的成果。</p>
           <form id="create-form" class="card compose">
             <label for="request">研究需求</label>
             <textarea
@@ -119,23 +149,26 @@
               </button>
             </div>
           </form>
-          <details class="research-guide">
-            <summary>研究流程与资料隐私</summary>
-            <div class="guide-body">
-              <p>
-                <strong>确认策略后自主研究。</strong> Epivra
-                搜集资料、比较证据并撰写和核查成果；你可随时暂停或调整方向，遇到额度不足等阻断会提示处理。
-              </p>
-              <p>
-                <strong>需求可以从简。</strong>
-                可补充时间范围、必读资料、读者或文档形式，未确定的部分在策略中明确。
-              </p>
-              <p>
-                <strong>记录保存在本机。</strong>
-                在线模型、搜索及外部工具会接收必要查询和资料内容。
-              </p>
-            </div>
-          </details>
+          <ol class="research-flow" aria-label="研究流程">
+            <li>
+              <span class="flow-number" aria-hidden="true">01</span>
+              <div>
+                <strong>提出问题</strong><span>告诉我们，你想弄清什么</span>
+              </div>
+            </li>
+            <li>
+              <span class="flow-number" aria-hidden="true">02</span>
+              <div>
+                <strong>确认策略</strong><span>由你确定范围与方法</span>
+              </div>
+            </li>
+            <li>
+              <span class="flow-number" aria-hidden="true">03</span>
+              <div>
+                <strong>收获洞见</strong><span>Epivra 自主研究，有据交付</span>
+              </div>
+            </li>
+          </ol>
         </section>
         <section id="study-view" class="view" hidden>
           <div class="study-heading">
@@ -234,6 +267,33 @@
         </section>
       </main>
     </div>
+    <dialog id="help-dialog" aria-labelledby="help-title">
+      <div class="dialog-heading">
+        <h2 id="help-title">使用 Epivra</h2>
+        <button type="button" class="icon close-dialog" aria-label="关闭帮助">
+          ×
+        </button>
+      </div>
+      <div class="help-content">
+        <h3>从问题开始</h3>
+        <p>
+          写下问题与用途即可。也可补充时间范围、必读资料、读者或文档形式，未确定的部分在策略中明确。
+        </p>
+        <h3>确认后，自主研究</h3>
+        <p>
+          审批初始策略后，Epivra
+          自主搜集、分析、写作与核查，无需逐步确认。你可主动暂停或调整方向；遇到额度不足等阻断，会提示你处理。
+        </p>
+        <h3>离开页面，研究继续</h3>
+        <p>
+          关闭页面不会取消研究，请保持本机与后台研究服务运行。稍后回来查看成果与来源依据。
+        </p>
+        <h3>资料与隐私</h3>
+        <p>
+          记录与成果保存在本机。在线模型、搜索及外部工具会接收必要查询和资料内容；生成策略与研究会使用所选服务的额度。
+        </p>
+      </div>
+    </dialog>
     <dialog id="settings-dialog">
       <form id="settings-form">
         <div class="dialog-heading">
