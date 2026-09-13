@@ -53,26 +53,23 @@
             <img
               class="welcome-icon"
               src="/epivra-icon.svg"
-              width="76"
-              height="76"
+              width="56"
+              height="56"
               alt=""
             />
             <div>
-              <div class="eyebrow">EPIVRA · 从问题到洞见</div>
+              <div class="eyebrow">从问题到洞见</div>
               <h1>你想研究清楚什么？</h1>
             </div>
           </div>
-          <p class="intro">
-            告诉 Epivra
-            你的问题和用途，它会结合选定资料，搜集证据、分析论证并撰写研究成果。<br />先由你确认研究策略，再自主推进；你可以随时暂停或调整方向。
-          </p>
+          <p class="intro">你确认方向，Epivra 自主研究，交付有依据的成果。</p>
           <form id="create-form" class="card compose">
             <label for="request">研究需求</label>
             <textarea
               id="request"
               required
-              rows="5"
-              placeholder="例如：研究社区养老的几种服务模式，比较适用条件、成本与证据局限，为社区负责人提供试点建议。&#10;也可以补充时间范围、必读资料、读者或文档形式；暂不确定的部分可在研究策略中明确。"
+              rows="3"
+              placeholder="写下你的问题，以及希望用研究成果做什么。"
             ></textarea>
             <div class="form-row">
               <label
@@ -86,7 +83,7 @@
                 <span class="muted">研究模型</span
                 ><strong id="model-summary">尚未配置</strong
                 ><button type="button" id="change-model" class="text-button">
-                  更改设置 ↗
+                  更换
                 </button>
               </div>
             </div>
@@ -116,33 +113,29 @@
             </div>
             <div class="compose-footer">
               <span id="creation-hint" class="muted"
-                >先生成策略，确认后开始研究。此步骤会使用模型额度。</span
+                >生成策略会使用模型额度</span
               ><button type="submit" id="create-button" class="primary">
                 生成研究策略 <span>→</span>
               </button>
             </div>
           </form>
-          <div class="principles">
-            <div>
-              <span>01</span><strong>你确认方向</strong>
-              <p>明确问题、资料范围与研究方法，再开始调查。</p>
-            </div>
-            <div>
-              <span>02</span><strong>Epivra 自主研究</strong>
+          <details class="research-guide">
+            <summary>研究流程与资料隐私</summary>
+            <div class="guide-body">
               <p>
-                围绕问题搜集资料、比较证据、综合与核查；遇到阻断会提示你处理。
+                <strong>确认策略后自主研究。</strong> Epivra
+                搜集资料、比较证据并撰写和核查成果；你可随时暂停或调整方向，遇到额度不足等阻断会提示处理。
+              </p>
+              <p>
+                <strong>需求可以从简。</strong>
+                可补充时间范围、必读资料、读者或文档形式，未确定的部分在策略中明确。
+              </p>
+              <p>
+                <strong>记录保存在本机。</strong>
+                在线模型、搜索及外部工具会接收必要查询和资料内容。
               </p>
             </div>
-            <div>
-              <span>03</span><strong>获得有据的成果</strong>
-              <p>
-                按用途组织成文，附上来源依据，说明结论的适用条件与不确定性。
-              </p>
-            </div>
-          </div>
-          <p class="data-note">
-            研究记录与成果保存在本机；使用在线模型、搜索或外部工具时，相关查询和必要资料内容会发送给所选服务。
-          </p>
+          </details>
         </section>
         <section id="study-view" class="view" hidden>
           <div class="study-heading">

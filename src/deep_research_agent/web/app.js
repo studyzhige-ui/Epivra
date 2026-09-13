@@ -178,7 +178,7 @@ async function refreshList() {
   $("studies").dataset.signature = signature;
   $("studies").replaceChildren();
   if (!data.studies.length)
-    $("studies").append(node("p", "还没有研究，从一个问题开始。", "muted"));
+    $("studies").append(node("p", "暂无研究", "muted"));
   for (const s of data.studies) {
     const button = node(
       "button",
@@ -535,7 +535,7 @@ $("create-form").onsubmit = (e) => {
       throw error;
     } finally {
       $("creation-hint").textContent =
-        "先生成策略，确认后开始研究。此步骤会使用模型额度。";
+        "生成策略会使用模型额度";
     }
   });
 };
