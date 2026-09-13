@@ -157,6 +157,70 @@ class MainlineTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValueError):
             validate({"text": "Report", "evidence": [], "unexpected": "x"}, schema)
 
+    async def test_citation_rendering_is_reviewed_and_published_unchanged(self):
+        source = self.store.put(
+            "s", "source", {"text": "Original", "origin": "source.txt"}
+        )
+        investigator = self.child("investigator", "Read source", (source.ref,))
+        harness = await self.execute(
+            investigator,
+            Call("finish_work", {"text": "Finding from source", "refs": [source.ref]}),
+        )
+        finding = harness._steps("s", "work_result", investigator.ref)[0]
+        writer = self.child("writer", "Write", (finding.ref, source.ref))
+        await self.execute(
+            writer,
+            Call(
+                "draft_report",
+                {"text": "Unknown [[cite:" + "f" * 64 + "]]", "evidence": [source.ref]},
+            ),
+        )
+        self.assertEqual([], self.store.list("s", "report"))
+        self.assertIn("error", self.store.list("s", "observation")[-1].body["result"])
+        await self.execute(
+            writer,
+            Call(
+                "draft_report",
+                {"text": f"Finding [[cite:{source.ref}]].", "evidence": [source.ref]},
+            ),
+        )
+        report = self.store.list("s", "report")[0]
+        self.assertEqual("Finding [1].\n\n---\n\n1. source.txt", report.body["text"])
+        reviewer = self.child("reviewer", "Review", (report.ref,))
+        await self.execute(reviewer, Call("read_report", {"offset": 0, "limit": 20}))
+        self.assertIn("Finding [1]", str(self.store.list("s", "observation")[-1].body))
+        await self.execute(
+            reviewer,
+            Call(
+                "submit_review", {"reason": "Reviewed exact manuscript", "defects": []}
+            ),
+        )
+        review = self.store.list("s", "review")[0]
+        publication = self.store.publish(
+            "s", self.lead.ref, self.c.epoch, report.ref, review.ref
+        )
+        self.assertEqual(
+            report.body["text"],
+            self.store.get("s", publication.body["report"]).body["text"],
+        )
+        forged = self.store.put(
+            "s",
+            "report",
+            {**report.body, "text": report.body["text"].replace("[1]", "[8]")},
+            report.parents,
+        )
+        checker = self.child("reviewer", "Review altered report", (forged.ref,))
+        accepted = self.store.put(
+            "s",
+            "review",
+            {"accepted": True, "work": checker.ref},
+            (forged.ref, checker.ref),
+        )
+        with self.assertRaises(ValueError):
+            self.store.publish(
+                "s", self.lead.ref, self.c.epoch, forged.ref, accepted.ref
+            )
+
     async def test_archived_runtime_cannot_restart_paid_work(self):
         # Construct a legacy snapshot without mutating any real database.
         old = self.store._put("old", "direction", {"request": "Old", "policy": {}})

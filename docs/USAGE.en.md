@@ -69,6 +69,13 @@ Keys are stored locally in `.env`; environment variables take precedence. Defaul
 
 Strategy generation also calls the model. Use explicit pause and direction controls to change a task. When a revised strategy needs approval, review the current version. Do not edit the database or intermediate files to control research.
 
+
+### Citations and repeated failures
+
+Epivra validates citations and numbers sources in order of first appearance. Repeated citations of the same source reuse its number; the bibliography lists the sources actually cited. Passage citations also verify the original text location. Review and delivery use the same numbered manuscript. Zero-citation reports are allowed; valid citation formatting does not prove that evidence supports a conclusion.
+
+After three consecutive rounds with the identical protocol error or invalid call and no successful operation or new research material, that work stops retrying automatically and retains its reason. The lead can change the method or obtain additional material. This type of block is reconsidered when new material arrives; you can also pause and resume after addressing the cause. Normal investigation, different operations, and necessary revisions have no fixed round limit. Paid calls with unknown outcomes are still never automatically resent.
+
 ## 4. Parsing and analysis
 
 The base installation handles text, CSV/TSV, text-layer PDFs, and XLSX. Spreadsheet formulas are read but not recalculated. For scanned PDFs, image OCR, DOCX/PPTX, and other complex materials:

@@ -24,6 +24,10 @@ class UnknownOutcome(RuntimeError):
     """A request may have run; automatic resubmission would risk duplication."""
 
 
+class RepeatedFailure(RuntimeError):
+    """Repeated identical failures without progress; preserve work for correction."""
+
+
 class OwnershipError(RuntimeError):
     """Another host owns this database."""
 

@@ -390,7 +390,11 @@ class Workbench:
             )
             if status.get("error"):
                 self.ui.show(
-                    tr("阻断：")
+                    tr(
+                        "连续重复相同错误且没有进展，已停止自动尝试。请检查失败步骤，调整方法或补充资料后再恢复。"
+                    )
+                    if status["error"] == "RepeatedFailure"
+                    else tr("阻断：")
                     + status["error"]
                     + tr("。可暂停后检查连接设置，更新密钥后重新载入。")
                 )

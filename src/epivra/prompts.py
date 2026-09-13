@@ -14,7 +14,7 @@ TOOLS = {
     "delegate_work": "委派完整问题：task说明目标、范围和用途，refs直接交接原成果。reviewer可选review_mode=check做有范围的论证检查，默认final裁决整稿；两者都须绑定一份report，整稿裁决可直接接同版本检查成果。不按段落或URL拆工，不预设核查结论。",
     "finish_work": "完成调查、综合或论证检查并自查后提交：text回答任务，保留依据、推导、必要限制；refs引用直接来源或成果。论证检查说明检查范围、发现及影响，不裁决整稿。修订交付说明改变的前提及受影响判断，保留仍成立的成果。不复制完整原文或填写无关表单。",
     "propose_plan": "提交text研究方法和brief研究约定：given_context只列用户给定背景；questions列待检验问题，不能把疑问中的经验前提当事实；material_scope.mode区分个案资料case_materials、混合文库library、不明确unspecified，basis说明依据。一起等待用户审批。",
-    "draft_report": "text 保存纯粹的用户成品；内部删改说明、计数记录放可选 handoff，不进入报告。evidence 必须是 source 引用。",
+    "draft_report": "text 保存纯粹的用户成品；内部删改说明、计数记录放可选 handoff，不进入报告。evidence 必须是 source 引用。正文引用使用 [[cite:<完整ref>]]，ref 可为 source 或 record_evidence 返回的精确摘录 note；其来源必须在 evidence 中。工具按首次出现顺序编号并生成参考资料，不手写数字引用或参考文献表。允许零引用；不为凑引用添加无关来源。审查针对工具生成的最终文本。",
     "publish_report": "发布已有报告与其精确绑定的接受审查；report 和 review 都使用完整返回引用。",
     "discover_local": "列出用户授权根目录中的文件，返回 catalog 引用；只发现清单，不阅读正文。root 必须来自任务授权。",
     "read_catalog": "分页读取 discover_local 返回的 catalog；ref 不能使用目录路径或 source 引用。source_ref 是此清单已保存的正文快照。",

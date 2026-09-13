@@ -403,5 +403,6 @@
   "明确授权连接的客户端审批精确研究策略": "Explicitly delegate exact strategy approvals to the connected client",
   "HTTP需要通过--token-env指定独立Bearer令牌": "HTTP requires an independent Bearer token in --token-env",
   "请先独立启动研究宿主：epivra --root <root> start": "Start the independent research host first: epivra --root <root> start",
-  "请先在工作目录的 mcp-servers.json 配置连接和工具授权，格式见 docs/USAGE.md。": "Configure connections and tool permissions in mcp-servers.json. See docs/USAGE.md for the format."
+  "请先在工作目录的 mcp-servers.json 配置连接和工具授权，格式见 docs/USAGE.md。": "Configure connections and tool permissions in mcp-servers.json. See docs/USAGE.md for the format.",
+  "连续重复相同错误且没有进展，已停止自动尝试。请检查失败步骤，调整方法或补充资料后再恢复。": "Automatic attempts stopped after identical repeated errors without progress. Inspect the failed steps, change the method or add materials, then resume."
 }

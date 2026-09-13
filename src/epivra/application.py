@@ -6,7 +6,7 @@ import asyncio
 from typing import Any
 
 from .adapters import ProviderFailure
-from .domain import Conflict
+from .domain import Conflict, RepeatedFailure
 from .harness import Harness
 from .storage import Store
 from .usage import summarize
@@ -21,6 +21,7 @@ class ResearchService:
         self.tasks: dict[str, asyncio.Task] = {}
         self.errors: dict[str, str] = {}
         self.work_errors: dict[str, str] = {}
+        self.repeated_failures: set[str] = set()
 
     def start(self, study: str) -> None:
         running = self.tasks.get(study)
@@ -29,6 +30,7 @@ class ResearchService:
         self.errors.pop(study, None)
         for work in self.store.list(study, "work"):
             self.work_errors.pop(work.ref, None)
+            self.repeated_failures.discard(work.ref)
         self.tasks[study] = asyncio.create_task(self.run(study))
 
     async def run(self, study: str) -> None:
@@ -82,6 +84,15 @@ class ResearchService:
                         for w in self.store.list(study, "work")
                         if w.body["owner"] == root.ref
                     ]
+                    for child in children:
+                        if child.ref in self.repeated_failures:
+                            try:
+                                self.harness._check_repeated(study, child.ref, c.epoch)
+                            except RepeatedFailure:
+                                pass
+                            else:
+                                self.repeated_failures.discard(child.ref)
+                                self.work_errors.pop(child.ref, None)
                     pending = [
                         w
                         for w in children
@@ -112,7 +123,11 @@ class ResearchService:
                                 {
                                     "work": child.ref,
                                     "blocked": self.work_errors[child.ref],
-                                    "instruction": "Do not resubmit unknown paid work; assess dependency.",
+                                    "instruction": (
+                                        "This work repeated identical failures without progress. Change its inputs or method; do not recreate the same failing task."
+                                        if child.ref in self.repeated_failures
+                                        else "Do not resubmit unknown paid work; assess dependency."
+                                    ),
                                 },
                                 (child.ref,),
                             )
@@ -205,6 +220,8 @@ class ResearchService:
         except Conflict:
             raise
         except Exception as exc:
+            if isinstance(exc, RepeatedFailure):
+                self.repeated_failures.add(work)
             self.work_errors[work] = (
                 str(exc) if isinstance(exc, ProviderFailure) else type(exc).__name__
             )

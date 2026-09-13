@@ -8,6 +8,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
 
+from .citations import validate as validate_citations
 from .domain import (
     Artifact,
     Conflict,
@@ -128,6 +129,16 @@ class Store:
         return Artifact(
             row["ref"], row["study"], row["kind"], body, parents, row["seq"]
         )
+
+    def latest_sequence(self, study: str, kinds: tuple[str, ...]) -> int:
+        """Read a progress watermark without loading original document bodies."""
+        if not kinds:
+            return 0
+        placeholders = ",".join("?" for _ in kinds)
+        return self.db.execute(
+            f"SELECT COALESCE(MAX(seq), 0) FROM artifacts WHERE study=? AND kind IN ({placeholders})",
+            (study, *kinds),
+        ).fetchone()[0]
 
     def get(self, study: str, ref: str) -> Artifact:
         row = self.db.execute(
@@ -792,6 +803,7 @@ class Store:
                 or report.ref not in reviewer.body["inputs"]
             ):
                 raise Conflict("review must come from a separate bound review work")
+            validate_citations(report.body, lambda ref: self.get(study, ref))
             for ref in report.body["evidence"]:
                 source = self.get(study, ref)
                 if source.kind != "source":

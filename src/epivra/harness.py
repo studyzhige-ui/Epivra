@@ -11,12 +11,14 @@ from typing import Any, Protocol
 
 from .analysis_runtime import AnalysisRuntime
 from .calculation import calculate
+from .citations import render as render_citations
 from .context import assemble, source_ranges
 from .domain import (
     Artifact,
     Call,
     Conflict,
     NotAllowed,
+    RepeatedFailure,
     Reply,
     encode,
     identity,
@@ -748,6 +750,7 @@ class Harness:
             if pending:
                 step = pending[-1]
             else:
+                self._check_repeated(study, work_ref, control.epoch)
                 if (
                     steps
                     and steps[0].body["request"]["provider"] != self.model.identity
@@ -758,6 +761,8 @@ class Harness:
                     "step",
                     {
                         "number": len(steps),
+                        "epoch": control.epoch,
+                        "progress": self._progress(study),
                         "request": self._request(study, work),
                     },
                     (work_ref,),
@@ -818,7 +823,7 @@ class Harness:
                     },
                     (step.ref,),
                 )
-                self._done(study, work_ref, step.ref)
+                self._done(study, work_ref, step.ref, identity("protocol", str(exc)))
                 return "continue"
             schema = step.body["request"]["tools"]
             prefetched = set()
@@ -885,6 +890,7 @@ class Harness:
                         break
                     continue
                 self.store.require_work(study, work_ref, control.epoch)
+                invalid = False
                 try:
                     if call.name not in schema:
                         raise NotAllowed("tool not available to this work")
@@ -892,6 +898,7 @@ class Harness:
                     if call.name in self.tools and self.tools[call.name].check:
                         self.tools[call.name].check(call.arguments)
                 except (ValueError, NotAllowed) as exc:
+                    invalid = True
                     result = {"error": str(exc)}
                 else:
                     if call.name in BUILTINS:
@@ -955,6 +962,9 @@ class Harness:
                         "index": index,
                         "tool": call.name,
                         "result": result,
+                        "failure": identity("tool", call.name, call.arguments, result)
+                        if (invalid or call.name in BUILTINS) and "error" in result
+                        else None,
                     },
                     (step.ref,),
                 )
@@ -1057,8 +1067,48 @@ class Harness:
             self.scheduler.defer(resource, event.body["not_before"])
         return raw
 
-    def _done(self, study: str, work: str, step: str) -> None:
-        self.store.put(study, "step_done", {"step": step}, (work, step))
+    def _progress(self, study):
+        # Only new durable research inputs can invalidate a failed attempt.
+        return self.store.latest_sequence(
+            study,
+            (
+                "source",
+                "work_result",
+                "clarification_answer",
+                "note",
+                "report",
+                "review",
+            ),
+        )
+
+    def _check_repeated(self, study, work, epoch):
+        recent = self._steps(study, "step_done", work)[-3:]
+        if len(recent) != 3 or not recent[0].body.get("failure"):
+            return
+        steps = [self.store.get(study, a.body["step"]) for a in recent]
+        progress = self._progress(study)
+        if (
+            len({a.body.get("failure") for a in recent}) == 1
+            and all(s.body.get("epoch") == epoch for s in steps)
+            and all(s.body.get("progress") == progress for s in steps)
+        ):
+            raise RepeatedFailure(
+                "Three identical failed rounds without progress; change the input or method before resuming this work."
+            )
+
+    def _done(self, study: str, work: str, step: str, failure=None) -> None:
+        if failure is None:
+            observations = [
+                a.body
+                for a in self._steps(study, "observation", work)
+                if a.body.get("step") == step
+            ]
+            failures = {a.get("failure") for a in observations}
+            if len(failures) == 1 and None not in failures:
+                failure = next(iter(failures))
+        self.store.put(
+            study, "step_done", {"step": step, "failure": failure}, (work, step)
+        )
 
     async def _analysis(self, study, work, epoch, step, index, args):
         return await self.analysis.run(study, work, epoch, step, index, args)
@@ -1304,6 +1354,9 @@ class Harness:
         elif call.name == "measure_text":
             return text_metrics(args["text"])
         elif call.name == "draft_report":
+            rendered = render_citations(
+                args["text"], args["evidence"], lambda ref: self.store.get(study, ref)
+            )
             for ref in args["evidence"]:
                 if self.store.get(study, ref).kind != "source":
                     raise ValueError("evidence must reference source snapshots")
@@ -1311,11 +1364,16 @@ class Harness:
                 study,
                 "report",
                 {
-                    "text": args["text"],
+                    **rendered,
                     "evidence": args["evidence"],
                     "producer": work.ref,
                 },
-                (*parents, *self._handoff_inputs(study, work), *args["evidence"]),
+                (
+                    *parents,
+                    *self._handoff_inputs(study, work),
+                    *args["evidence"],
+                    *rendered["citations"],
+                ),
             )
             self.store.put(
                 study,

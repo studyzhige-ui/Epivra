@@ -221,6 +221,8 @@ function renderStatus(s) {
     !s.error && !s.analysis_cleanup_error && !s.unsettled_operations?.length;
   $("blocker").textContent = s.unsettled_operations?.length
     ? t("存在返回结果未知的调用，系统不会自动重发。请暂停后通过 CLI 对账入口，依据供应商的真实结果处理。")
+    : s.error === "RepeatedFailure"
+      ? t("连续重复相同错误且没有进展，已停止自动尝试。请检查失败步骤，调整方法或补充资料后再恢复。")
     : s.error
       ? t("研究暂时阻断：{0}。可暂停后检查连接设置，更新密钥并重新载入。", s.error)
       : s.analysis_cleanup_error
