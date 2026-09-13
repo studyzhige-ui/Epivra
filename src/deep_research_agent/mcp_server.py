@@ -16,7 +16,7 @@ from .host import send
 
 def build(root, allow_approval=False, sender=send):
     server = MCPServer(
-        "Deep Research",
+        "Epivra",
         instructions="Research runs in a persistent local host. Read the exact strategy before approval; disconnection does not cancel research.",
     )
 

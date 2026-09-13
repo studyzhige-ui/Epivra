@@ -497,7 +497,9 @@ class Workbench:
             await asyncio.gather(prompt, return_exceptions=True)
 
     async def run(self):
-        self.ui.show("Deep Research\n研究工作台 · 退出界面后后台任务继续")
+        self.ui.show(
+            "Epivra\n自主研究工作台 · 从问题到洞见\n确认策略后自主研究，可暂停或调整方向；退出界面后后台任务继续"
+        )
         while True:
             try:
                 action = await self.ui.choose(
@@ -558,7 +560,9 @@ def main():
         return
     if remaining and remaining != ["ui"]:
         if "--help" in remaining:
-            print("无参数或 ui：终端工作台；web：本地浏览器工作台。以下子命令保留 JSON 自动化接口。\n")
+            print(
+                "无参数或 ui：终端工作台；web：本地浏览器工作台。以下子命令保留 JSON 自动化接口。\n"
+            )
         host.main()
         return
     if not sys.stdin.isatty():

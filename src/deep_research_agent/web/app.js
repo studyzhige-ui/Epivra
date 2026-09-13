@@ -238,10 +238,10 @@ function renderStatus(s) {
       : !s.approved && s.plans?.length
         ? s.paused
           ? "初始策略已准备好。研究当前暂停，审批后仍需选择继续研究。"
-          : "初始策略已准备好。阅读并审批后，系统会继续研究并交付最终成果。"
+          : "初始策略已准备好。阅读并审批后，Epivra 会自主研究并交付最终成果。"
         : s.paused
           ? "研究保持暂停。可补充资料或修改连接设置，再决定继续。"
-          : "研究在独立宿主中运行。你可以离开页面，稍后回来查看结果。";
+          : "Epivra 正在后台研究。可以关闭页面，保持本机运行，稍后回来查看成果；也可以主动暂停或调整方向。";
   $("progress-summary").replaceChildren(
     node("strong", stage(s)),
     node("p", message, "muted"),
@@ -498,7 +498,7 @@ $("create-form").onsubmit = (e) => {
       throw new Error("请先在连接与设置中保存研究模型密钥。");
     if (scope === "local" && !chosen.length && !defaults.mcp_servers?.length)
       throw new Error("请至少选择文件、授权文件夹或启用资料 MCP。");
-    $("creation-hint").textContent = "正在创建暂停草稿…";
+    $("creation-hint").textContent = "正在准备研究与资料…";
     // A lost create response is never automatically resent.
     let id;
     try {
@@ -535,7 +535,7 @@ $("create-form").onsubmit = (e) => {
       throw error;
     } finally {
       $("creation-hint").textContent =
-        "生成策略会调用模型；正式研究需另行审批。";
+        "先生成策略，确认后开始研究。此步骤会使用模型额度。";
     }
   });
 };
@@ -595,7 +595,7 @@ $("approve").onclick = () => {
   }
   $("approval-hint").textContent = status.paused
     ? "研究当前暂停。批准策略不会自动恢复；之后选择继续研究开始执行。"
-    : "确认后将按此策略自主研究并交付成果；你仍可主动暂停或改向。";
+    : "确认后，Epivra 将按此策略自主研究并交付成果，无需逐步确认。你仍可主动暂停或调整方向；若遇到额度不足等阻断，会提示你处理。";
   $("approval-dialog").showModal();
 };
 $("confirm-approval").onclick = () =>

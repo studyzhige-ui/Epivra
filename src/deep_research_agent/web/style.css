@@ -1,10 +1,10 @@
 :root {
-  --paper: #f7f8f5;
+  --paper: #f8f9f5;
   --surface: #fff;
   --ink: #26352e;
   --muted: #6e7972;
   --line: #e0e6dd;
-  --accent: #245943;
+  --accent: #1d5545;
   --tint: #edf3ec;
   --danger: #a43832;
   font-family: Inter, "Segoe UI", "Microsoft YaHei", sans-serif;
@@ -179,21 +179,32 @@ label > textarea {
   margin-bottom: 33px;
 }
 .brand-icon {
+  display: block;
+  width: 44px;
+  height: 44px;
+  flex-shrink: 0;
+}
+.welcome-heading {
   display: flex;
   align-items: center;
-  justify-content: center;
-  border: 1px solid #cbd6c8;
-  border-radius: 12px;
-  background: #f9faf6;
-  width: 43px;
-  height: 43px;
-  font-family: Georgia, serif;
-  font-size: 28px;
-  letter-spacing: -3px;
-  padding-right: 5px;
+  gap: 18px;
+  margin-bottom: 20px;
 }
-.brand-icon span {
-  color: var(--accent);
+.welcome-icon {
+  display: block;
+  flex-shrink: 0;
+}
+.welcome-heading h1 {
+  margin: 0;
+}
+.welcome-heading .eyebrow {
+  margin-bottom: 5px;
+}
+.data-note {
+  margin: 28px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.8;
 }
 .brand small {
   display: block;

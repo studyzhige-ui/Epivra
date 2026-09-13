@@ -73,7 +73,7 @@ class WebTests(unittest.IsolatedAsyncioTestCase):
     async def test_loopback_guard_csrf_and_assets(self):
         reply = await self.http.get("/")
         self.assertEqual(200, reply.status_code)
-        self.assertIn("本地研究工作台", reply.text)
+        self.assertIn("Epivra · 自主研究工作台", reply.text)
         self.assertNotIn(self.server.token, reply.text)
         self.assertIn(
             "frame-ancestors 'none'", reply.headers["Content-Security-Policy"]

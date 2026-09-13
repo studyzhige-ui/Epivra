@@ -47,6 +47,7 @@ COMMANDS = {
     "mcp_discover": {"name"},
 }
 ASSETS = {
+    "/epivra-icon.svg": ("epivra-icon.svg", "image/svg+xml"),
     "/favicon.svg": ("favicon.svg", "image/svg+xml"),
     "/": ("index.html", "text/html; charset=utf-8"),
     "/app.js": ("app.js", "text/javascript; charset=utf-8"),
@@ -418,7 +419,7 @@ def main(argv=None):
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8")
-    parser = argparse.ArgumentParser(description="本地 Deep Research Web 工作台")
+    parser = argparse.ArgumentParser(description="Epivra · 本地自主研究工作台")
     parser.add_argument("--root", type=Path, default=Path.cwd())
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--no-browser", action="store_true")
@@ -435,7 +436,7 @@ def main(argv=None):
         if ready.get("ready") is False:
             raise RuntimeError("研究宿主仍在启动，请稍后重试。")
         print(
-            f"本地研究工作台：{server.url}\n关闭页面或此服务后，后台研究继续。",
+            f"Epivra 本地研究工作台：{server.url}\n关闭页面或此服务后，后台研究继续。",
             flush=True,
         )
         if not args.no_browser:

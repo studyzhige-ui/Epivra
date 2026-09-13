@@ -3,7 +3,12 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <title>Deep Research · 本地研究工作台</title>
+    <title>Epivra · 自主研究工作台</title>
+    <meta
+      name="description"
+      content="Epivra 从你的问题出发，结合网络与指定资料，搜集证据、分析论证并交付有来源依据的研究成果。"
+    />
+    <meta name="theme-color" content="#173f36" />
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <link rel="stylesheet" href="/style.css" />
     <script src="/markdown-it.min.js" defer></script>
@@ -13,8 +18,14 @@
     <div class="shell">
       <aside class="sidebar">
         <a class="brand" href="#"
-          ><span class="brand-icon">dr<span>·</span></span
-          ><span>Deep Research<small>本地研究工作台</small></span></a
+          ><img
+            class="brand-icon"
+            src="/favicon.svg"
+            width="44"
+            height="44"
+            alt=""
+          />
+          <span>Epivra<small>自主研究工作台</small></span></a
         >
         <button id="new-study" class="primary wide">＋ 新建研究</button>
         <div class="nav-heading">
@@ -24,24 +35,36 @@
           </button>
         </div>
         <nav id="studies" aria-label="研究列表">
-          <p class="muted">正在连接本地宿主…</p>
+          <p class="muted">正在连接研究工作台…</p>
         </nav>
         <div class="sidebar-bottom">
           <button id="open-settings" class="wide secondary">连接与设置</button>
-          <p><span class="dot"></span> 数据保存在本机</p>
+          <p><span class="dot"></span> 研究记录保存在本机</p>
         </div>
       </aside>
       <main>
         <header>
           <span id="breadcrumb">工作台 / 新建研究</span
-          ><span class="local-badge">LOCAL WORKSPACE</span>
+          ><span class="local-badge">LOCAL · EPIVRA</span>
         </header>
         <div id="notice" role="status" hidden></div>
         <section id="welcome" class="view">
-          <div class="eyebrow">从一个值得追问的问题开始</div>
-          <h1>你希望深入研究什么？</h1>
+          <div class="welcome-heading">
+            <img
+              class="welcome-icon"
+              src="/epivra-icon.svg"
+              width="76"
+              height="76"
+              alt=""
+            />
+            <div>
+              <div class="eyebrow">EPIVRA · 从问题到洞见</div>
+              <h1>你想研究清楚什么？</h1>
+            </div>
+          </div>
           <p class="intro">
-            给出问题与用途，让研究从明确的方向出发。<br />先阅读策略，再决定开始。
+            告诉 Epivra
+            你的问题和用途，它会结合选定资料，搜集证据、分析论证并撰写研究成果。<br />先由你确认研究策略，再自主推进；你可以随时暂停或调整方向。
           </p>
           <form id="create-form" class="card compose">
             <label for="request">研究需求</label>
@@ -49,7 +72,7 @@
               id="request"
               required
               rows="5"
-              placeholder="例如：比较三种方案的适用条件、成本与风险，为下季度的选型提供建议。&#10;你也可以指定时间范围、受众和希望得到的文档形式。"
+              placeholder="例如：研究社区养老的几种服务模式，比较适用条件、成本与证据局限，为社区负责人提供试点建议。&#10;也可以补充时间范围、必读资料、读者或文档形式；暂不确定的部分可在研究策略中明确。"
             ></textarea>
             <div class="form-row">
               <label
@@ -70,7 +93,7 @@
             <div id="material-panel" hidden>
               <div class="section-label">
                 研究资料
-                <span class="muted">单份文件导入 · 文件夹按需检索</span>
+                <span class="muted">添加必读文件，或授权按需查阅的文件夹</span>
               </div>
               <div class="button-row">
                 <button type="button" id="pick-file">选择本地文件</button
@@ -93,7 +116,7 @@
             </div>
             <div class="compose-footer">
               <span id="creation-hint" class="muted"
-                >生成策略会调用模型；正式研究需另行审批。</span
+                >先生成策略，确认后开始研究。此步骤会使用模型额度。</span
               ><button type="submit" id="create-button" class="primary">
                 生成研究策略 <span>→</span>
               </button>
@@ -101,18 +124,25 @@
           </form>
           <div class="principles">
             <div>
-              <span>01</span><strong>明确策略</strong>
-              <p>问题、范围与方法，由你先确认。</p>
+              <span>01</span><strong>你确认方向</strong>
+              <p>明确问题、资料范围与研究方法，再开始调查。</p>
             </div>
             <div>
-              <span>02</span><strong>持续研究</strong>
-              <p>自主搜集、分析与核查，可随时暂停。</p>
+              <span>02</span><strong>Epivra 自主研究</strong>
+              <p>
+                围绕问题搜集资料、比较证据、综合与核查；遇到阻断会提示你处理。
+              </p>
             </div>
             <div>
-              <span>03</span><strong>交付成果</strong>
-              <p>报告与引用、资料和计算文件一处保存。</p>
+              <span>03</span><strong>获得有据的成果</strong>
+              <p>
+                按用途组织成文，附上来源依据，说明结论的适用条件与不确定性。
+              </p>
             </div>
           </div>
+          <p class="data-note">
+            研究记录与成果保存在本机；使用在线模型、搜索或外部工具时，相关查询和必要资料内容会发送给所选服务。
+          </p>
         </section>
         <section id="study-view" class="view" hidden>
           <div class="study-heading">
@@ -223,7 +253,7 @@
           </button>
         </div>
         <p class="muted">
-          与 CLI 共用配置，仅影响新研究。密钥留空则保留已有值。
+          网页与命令行共用本机配置。以下默认设置用于新研究，密钥留空则保留已有值。
         </p>
         <div id="settings-feedback" role="status"></div>
         <h3>研究模型</h3>
@@ -307,9 +337,7 @@
         <button class="icon close-dialog" aria-label="关闭策略">×</button>
       </div>
       <article id="approval-text" class="markdown"></article>
-      <p id="approval-hint" class="muted">
-        确认后将按此策略自主研究并交付成果；你仍可主动暂停或改向。
-      </p>
+      <p id="approval-hint" class="muted"></p>
       <div class="dialog-footer">
         <button class="close-dialog">稍后决定</button
         ><button id="confirm-approval" class="primary">批准这份策略</button>
