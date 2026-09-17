@@ -1,0 +1,202 @@
+[
+  {
+    "id": 2,
+    "product": "Gemini",
+    "title": "Gemini · ID 2 · 全球顶尖保险公司综合评估",
+    "markdown": "gemini-02.md",
+    "html": "html/gemini-02.html",
+    "original_conversation_url": "https://gemini.google.com/app/2d52ae9a714300b8",
+    "markdown_sha256": "30a08a574f5fbe3ac2285d0ee81c58688d351d9ec2bde060a9cefa525fb77d7a",
+    "html_sha256": "b1dc434b33b0b099d30446ab36cc984e16794f2b0a45b8794db43c0e88ff5324"
+  },
+  {
+    "id": 7,
+    "product": "Gemini",
+    "title": "Gemini · ID 7 · 房地产低迷对地方财政的影响",
+    "markdown": "gemini-07.md",
+    "html": "html/gemini-07.html",
+    "original_conversation_url": "https://gemini.google.com/app/3c34b9b7c09024bc",
+    "markdown_sha256": "f9dd31473833b5aad5be1a05078b13a363d8a20fd08885e180592191a9c0b24a",
+    "html_sha256": "8952f49b22cd009e85bbf0e31e1dc9cd1aee0d8bdab6c856dc377bf6ba5d99d9"
+  },
+  {
+    "id": 10,
+    "product": "Gemini",
+    "title": "Gemini · ID 10 · 动力技术路线商业化评估体系",
+    "markdown": "gemini-10.md",
+    "html": "html/gemini-10.html",
+    "original_conversation_url": "https://gemini.google.com/app/6a17a532b153fc66",
+    "markdown_sha256": "83809e21fd6919cf2958c2f084dc1bc4047cf6f05506bb2b3df234e71e70e16a",
+    "html_sha256": "354229f148df7a0f22d63aacea3da6c34dbef1e3097f9ab3a67c465f73e7bd3e"
+  },
+  {
+    "id": 14,
+    "product": "Gemini",
+    "title": "Gemini · ID 14 · 量子计算与数学交叉研究评估",
+    "markdown": "gemini-14.md",
+    "html": "html/gemini-14.html",
+    "original_conversation_url": "https://gemini.google.com/app/826564c20b27059a",
+    "markdown_sha256": "be70172584c94fc1dcc7aced8eb783c6d871dc2b8e6ef603d07a616ce2743b6b",
+    "html_sha256": "5522b0686da1d313ca3918cd89b5ce6872b4a86e13a805f392af5695449cc9fd"
+  },
+  {
+    "id": 17,
+    "product": "Gemini",
+    "title": "Gemini · ID 17 · 低代码开发的价值与挑战",
+    "markdown": "gemini-17.md",
+    "html": "html/gemini-17.html",
+    "original_conversation_url": "https://gemini.google.com/app/d6143f76fcf1fe1b",
+    "markdown_sha256": "a9e671dbab2a40c9dd66d134ddfa7a83260c54ab6a281cc9606d07ae4bb0c884",
+    "html_sha256": "c5885ab012672f73056cfb8587de31eb33f6274488f008a4305fc61eeae4c1ec"
+  },
+  {
+    "id": 19,
+    "product": "Gemini",
+    "title": "Gemini · ID 19 · Prometheus 高流失率影响与云厂商方案",
+    "markdown": "gemini-19.md",
+    "html": "html/gemini-19.html",
+    "original_conversation_url": "https://gemini.google.com/app/e8a06f1b510c6223",
+    "markdown_sha256": "aefd9afa6eafd48f67bb9d9ebe68f5459a7905cdf7bd7242e026582015fe2a30",
+    "html_sha256": "546180b65540f3f0d0ae0766f08e9b73ece338975d10b2dea2d2d6b1e629ce07"
+  },
+  {
+    "id": 21,
+    "product": "Gemini",
+    "title": "Gemini · ID 21 · 人工智能与教育的双向赋能",
+    "markdown": "gemini-21.md",
+    "html": "html/gemini-21.html",
+    "original_conversation_url": "https://gemini.google.com/app/e998b10ec8201b4a",
+    "markdown_sha256": "5f72dcf5173af52c1b1b0313d4738431c5447dc8883a1c1ce22973c5a4505a76",
+    "html_sha256": "b9b2ef2844d8281e8e1ec7feeda4a0634f5a0994f8e544f48db88b19feceaa38"
+  },
+  {
+    "id": 24,
+    "product": "Gemini",
+    "title": "Gemini · ID 24 · 增强自闭症学生课堂参与度策略",
+    "markdown": "gemini-24.md",
+    "html": "html/gemini-24.html",
+    "original_conversation_url": "https://gemini.google.com/app/406fb26a4385923b",
+    "markdown_sha256": "4b0043baa6a52fcc838a33c742835ecf5c838db86a5313fe5913bce9e08e2b2d",
+    "html_sha256": "7c76ffc2f2acc5d0cef16895425b9e5510c663b3cc498a08d00578dd03315e3b"
+  },
+  {
+    "id": 25,
+    "product": "Gemini",
+    "title": "Gemini · ID 25 · 中性粒细胞与脑缺血研究进展",
+    "markdown": "gemini-25.md",
+    "html": "html/gemini-25.html",
+    "original_conversation_url": "https://gemini.google.com/app/12a842e5f4103100",
+    "markdown_sha256": "677d6796ffa2de1491132628542eccd92e7c79902f985eb21864013c2ef1a76e",
+    "html_sha256": "e094b0101ef7c6ffe12210190e8c3a3aafb01c7b723e940daa73c9d6c2bae0c2"
+  },
+  {
+    "id": 28,
+    "product": "Gemini",
+    "title": "Gemini · ID 28 · 大模型模拟药物影响评估展望",
+    "markdown": "gemini-28.md",
+    "html": "html/gemini-28.html",
+    "original_conversation_url": "https://gemini.google.com/app/bfa6d0b5dc1da21c",
+    "markdown_sha256": "335dd6d037be7e0664045353c1e9abf732f0167d6403483e67f3bc01c6281d5a",
+    "html_sha256": "7527861ba174555292b7eaa6704cf8b6f60e1493061923a5e1f73a55005fb33b"
+  },
+  {
+    "id": 2,
+    "product": "ChatGPT",
+    "title": "ChatGPT · ID 2 · 全球顶尖保险公司综合评估",
+    "markdown": "gpt-02.md",
+    "html": "html/gpt-02.html",
+    "original_conversation_url": "https://chatgpt.com/g/g-p-6aa7b0cb61f48191bc4c4f582a8acef5/c/6aa7b4ab-dfdc-83ea-b725-9aaf62c0f3bd",
+    "markdown_sha256": "e7d1413e00233490667539f6b792410c18e48638f07cb0c97cc81b904e7f5c42",
+    "html_sha256": "878c6d9ccd4af42b780fae1643d819e82f8787bb1457157a4812db93e008ee3d"
+  },
+  {
+    "id": 7,
+    "product": "ChatGPT",
+    "title": "ChatGPT · ID 7 · 房地产低迷对地方财政的影响",
+    "markdown": "gpt-07.md",
+    "html": "html/gpt-07.html",
+    "original_conversation_url": "https://chatgpt.com/g/g-p-6aa7b0cb61f48191bc4c4f582a8acef5/c/6aa7b4bf-f110-83e9-bf27-bf70e04eaeb5",
+    "markdown_sha256": "0f1291c49c2cebafa6f082fd354b03407651ada6b7a7d2671aca9c9fa9e48310",
+    "html_sha256": "69eeb9d219f779ca176e6b668ba8d6466aeed8a5d4637cc8fb9a1bd360d5f212"
+  },
+  {
+    "id": 10,
+    "product": "ChatGPT",
+    "title": "ChatGPT · ID 10 · 动力技术路线商业化评估体系",
+    "markdown": "gpt-10.md",
+    "html": "html/gpt-10.html",
+    "original_conversation_url": "https://chatgpt.com/g/g-p-6aa7b0cb61f48191bc4c4f582a8acef5/c/6aa7b4cb-ea50-83e9-8eeb-bac01399a89b",
+    "markdown_sha256": "1eb6b3f8b3a020b434330eb5bacc7b02da0d1836eac73e64068d2996e87bcbbd",
+    "html_sha256": "82b0216f86d3c25085b6f37e454b827c93df288c23460d3ca76c696ba768b08f"
+  },
+  {
+    "id": 14,
+    "product": "ChatGPT",
+    "title": "ChatGPT · ID 14 · 量子计算与数学交叉研究评估",
+    "markdown": "gpt-14.md",
+    "html": "html/gpt-14.html",
+    "original_conversation_url": "https://chatgpt.com/g/g-p-6aa7b0cb61f48191bc4c4f582a8acef5/c/6aa7b4dc-4954-83ea-a600-9d115d7edf23",
+    "markdown_sha256": "265f1643a67a9dd94a45ae060f25ce565ae1fb156a6b23a3aad0b74a04d22ad5",
+    "html_sha256": "77eb7350761877e1ac3aa69b0411efb40091073e2b9de7b3ae6e5e0ddcdebc6b"
+  },
+  {
+    "id": 17,
+    "product": "ChatGPT",
+    "title": "ChatGPT · ID 17 · 低代码开发的价值与挑战",
+    "markdown": "gpt-17.md",
+    "html": "html/gpt-17.html",
+    "original_conversation_url": "https://chatgpt.com/g/g-p-6aa7b0cb61f48191bc4c4f582a8acef5/c/6aa7b4e7-652c-83ea-8642-507be08f9de5",
+    "markdown_sha256": "50f7f2244d3545e514254e20be9bbbdece6a9584710fc5b8ea51848defadaa14",
+    "html_sha256": "1992985eb4dc5ec23348071a5cbabee2a891d18df69c3aa7121da80e379a5d12"
+  },
+  {
+    "id": 19,
+    "product": "ChatGPT",
+    "title": "ChatGPT · ID 19 · Prometheus 高流失率影响与云厂商方案",
+    "markdown": "gpt-19.md",
+    "html": "html/gpt-19.html",
+    "original_conversation_url": "https://chatgpt.com/g/g-p-6aa7b0cb61f48191bc4c4f582a8acef5/c/6aa7b4f1-031c-83ea-ab1b-7e03ab92912d",
+    "markdown_sha256": "7c5e26f0ef6c52861fa7d6d274d3e92888bd207e2226594c94237ec41a35cd89",
+    "html_sha256": "fc2a2cbefb15527aa7af1aea95c9e2ed4c750030b4853fbbf835dfba2073b9f3"
+  },
+  {
+    "id": 21,
+    "product": "ChatGPT",
+    "title": "ChatGPT · ID 21 · 人工智能与教育的双向赋能",
+    "markdown": "gpt-21.md",
+    "html": "html/gpt-21.html",
+    "original_conversation_url": "https://chatgpt.com/g/g-p-6aa7b0cb61f48191bc4c4f582a8acef5/c/6aa7b4fb-44a4-83e9-8e12-1f67beff29e2",
+    "markdown_sha256": "f27332fd20eccd41e7ab85e370031c0577b7d0556283848093f9ab8820d41313",
+    "html_sha256": "96811f0de1d65a289a0784891a5959835db9e54b9aa9d939827b0fc8f5f40c4c"
+  },
+  {
+    "id": 24,
+    "product": "ChatGPT",
+    "title": "ChatGPT · ID 24 · 增强自闭症学生课堂参与度策略",
+    "markdown": "gpt-24.md",
+    "html": "html/gpt-24.html",
+    "original_conversation_url": "https://chatgpt.com/g/g-p-6aa7b0cb61f48191bc4c4f582a8acef5/c/6aa7b507-f3a8-83ea-a4ce-d7c696bef970",
+    "markdown_sha256": "88d872f5ae35024d9262d8734214f94abab4b7da53cc93d1df00b5133088e554",
+    "html_sha256": "daf13202ceda09aae54d4d7611f93f129b5dd751f690c888e1db3acf8357ea01"
+  },
+  {
+    "id": 25,
+    "product": "ChatGPT",
+    "title": "ChatGPT · ID 25 · 中性粒细胞与脑缺血研究进展",
+    "markdown": "gpt-25.md",
+    "html": "html/gpt-25.html",
+    "original_conversation_url": "https://chatgpt.com/g/g-p-6aa7b0cb61f48191bc4c4f582a8acef5/c/6aa7b52c-b8d0-83e9-94bd-ff9df3ad615e",
+    "markdown_sha256": "ef1ba5e769e1938f89246f57633afcb5cc3c1dd7ba7ee7df33adba22abb14271",
+    "html_sha256": "23ee389109f1a1a2364c88fc442dfdee6ae0dedd32e05017b04f78466a87e175"
+  },
+  {
+    "id": 28,
+    "product": "ChatGPT",
+    "title": "ChatGPT · ID 28 · 大模型模拟药物影响评估展望",
+    "markdown": "gpt-28.md",
+    "html": "html/gpt-28.html",
+    "original_conversation_url": "https://chatgpt.com/g/g-p-6aa7b0cb61f48191bc4c4f582a8acef5/c/6aa7b53a-394c-83e9-bcce-7b2d2e317670",
+    "markdown_sha256": "21a2ecff40166c3231ce4ca0ae80ab27040ed922715baf6399ed65b11a447805",
+    "html_sha256": "a57dbadce8bf669fb77d03aec0e864d34fb3da041ef89d7f28cf43bcbce615d3"
+  }
+]
