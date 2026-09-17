@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
+import time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
@@ -51,7 +52,9 @@ class Store:
             existing = self.db.execute(
                 "SELECT name FROM sqlite_master WHERE type='table'"
             ).fetchall()
-            if version not in (0, 2001, 2002, 2003) or (version == 0 and existing):
+            if version not in (0, 2001, 2002, 2003, 2004) or (
+                version == 0 and existing
+            ):
                 raise ValueError("incompatible database; use a new redesign workspace")
             self.db.execute("PRAGMA foreign_keys=ON")
             self.db.execute("PRAGMA journal_mode=WAL")
@@ -67,6 +70,10 @@ class Store:
                 );
                 CREATE INDEX IF NOT EXISTS artifact_lookup
                     ON artifacts(study, kind, seq);
+                CREATE INDEX IF NOT EXISTS artifact_work
+                    ON artifacts(study, kind, json_extract(parents,'$[0]'), seq);
+                CREATE INDEX IF NOT EXISTS artifact_producer
+                    ON artifacts(study, kind, json_extract(body,'$.producer'), seq);
                 CREATE TABLE IF NOT EXISTS commands (
                     study TEXT NOT NULL,
                     command_id TEXT NOT NULL,
@@ -98,7 +105,15 @@ class Store:
                     )
                 if "admission" not in columns:
                     self.db.execute("ALTER TABLE operations ADD COLUMN admission TEXT")
-                self.db.execute("PRAGMA user_version=2003")
+                artifact_columns = {
+                    row[1] for row in self.db.execute("PRAGMA table_info(artifacts)")
+                }
+                if "created_at" not in artifact_columns:
+                    self.db.execute("ALTER TABLE artifacts ADD COLUMN created_at REAL")
+                self.db.execute(
+                    "CREATE INDEX IF NOT EXISTS operation_study_status ON operations(study,status)"
+                )
+                self.db.execute("PRAGMA user_version=2004")
         except BaseException:
             if hasattr(self, "db"):
                 self.db.close()
@@ -108,6 +123,107 @@ class Store:
     def close(self) -> None:
         self.db.close()
         self._lock.close()
+
+    def import_completed(self, path: Path, study: str) -> dict:
+        """Import a complete immutable study, including its paid-call ledger."""
+        source = sqlite3.connect(
+            path.resolve(strict=True).as_uri() + "?mode=ro", uri=True
+        )
+        source.row_factory = sqlite3.Row
+        try:
+            source.execute("BEGIN")
+            if source.execute("PRAGMA user_version").fetchone()[0] != 2004:
+                raise ValueError("import requires the current database format")
+            rows = source.execute(
+                "SELECT * FROM artifacts WHERE study=? ORDER BY seq", (study,)
+            )
+            refs = set()
+            direction = None
+            publications = []
+            for row in rows:
+                artifact = self._artifact(row)
+                if any(ref not in refs for ref in artifact.parents):
+                    raise ValueError(
+                        "import has missing or out-of-order research parents"
+                    )
+                refs.add(artifact.ref)
+                if artifact.kind == "control":
+                    direction = artifact.body["direction"]
+                if artifact.kind == "publication":
+                    publications.append(artifact)
+                if artifact.kind == "delete_request":
+                    raise ValueError("cannot import a study pending deletion")
+            if direction is None or not any(
+                direction in publication.parents for publication in publications
+            ):
+                raise ValueError("only completed studies can be imported")
+            with self.transaction():
+                existing = {
+                    r[0]
+                    for r in self.db.execute(
+                        "SELECT ref FROM artifacts WHERE study=?", (study,)
+                    )
+                }
+                if existing:
+                    if existing != refs:
+                        raise Conflict("study ID already contains different research")
+                for table in ("artifacts", "operations", "commands"):
+                    columns = [
+                        r[1]
+                        for r in self.db.execute(f"PRAGMA table_info({table})")
+                        if r[1] != "seq"
+                    ]
+                    names = ",".join(columns)
+                    placeholders = ",".join("?" for _ in columns)
+                    order = " ORDER BY seq" if table == "artifacts" else ""
+                    source_rows = [
+                        tuple(row)
+                        for row in source.execute(
+                            f"SELECT {names} FROM {table} WHERE study=?{order}",
+                            (study,),
+                        )
+                    ]
+                    if table in ("operations", "commands"):
+                        ref_columns = (
+                            ("work", "direction", "request_step")
+                            if table == "operations"
+                            else ("receipt",)
+                        )
+                        for row in source_rows:
+                            data = dict(zip(columns, row))
+                            if any(
+                                data[key] is not None and data[key] not in refs
+                                for key in ref_columns
+                            ):
+                                raise ValueError(
+                                    "import ledger references another or missing study"
+                                )
+                    if existing:
+                        target_rows = [
+                            tuple(row)
+                            for row in self.db.execute(
+                                f"SELECT {names} FROM {table} WHERE study=?{order}",
+                                (study,),
+                            )
+                        ]
+                        if set(source_rows) != set(target_rows):
+                            raise Conflict(
+                                "existing study artifacts or call ledger differ; import refused"
+                            )
+                        continue
+                    for row in source_rows:
+                        self.db.execute(
+                            f"INSERT INTO {table} ({names}) VALUES ({placeholders})",
+                            tuple(row),
+                        )
+            return {
+                "study": study,
+                "imported": not bool(existing),
+                "already_imported": bool(existing),
+                "artifacts": len(refs),
+            }
+        finally:
+            source.close()
 
     @contextmanager
     def transaction(self) -> Iterator[None]:
@@ -157,6 +273,48 @@ class Store:
             )
         ]
 
+    def count(self, study: str, kind: str) -> int:
+        return self.db.execute(
+            "SELECT COUNT(*) FROM artifacts WHERE study=? AND kind=?", (study, kind)
+        ).fetchone()[0]
+
+    def step_sequence(self, study: str, work: str) -> int:
+        """Scheduling needs sequence metadata, never a full frozen model request."""
+        return self.db.execute(
+            "SELECT COALESCE(MAX(seq),-1) FROM artifacts "
+            "WHERE study=? AND kind='step' AND json_extract(parents,'$[0]')=?",
+            (study, work),
+        ).fetchone()[0]
+
+    def related(
+        self,
+        study: str,
+        kind: str,
+        ref: str,
+        *,
+        producer=False,
+        first_parent=False,
+        limit=None,
+    ) -> list[Artifact]:
+        """Filter before decoding immutable bodies, especially frozen model requests."""
+        predicate = (
+            "json_extract(body,'$.producer')=?"
+            if producer
+            else "json_extract(parents,'$[0]')=?"
+            if first_parent
+            else "EXISTS (SELECT 1 FROM json_each(artifacts.parents) WHERE value=?)"
+        )
+        sql = f"SELECT * FROM artifacts WHERE study=? AND kind=? AND {predicate} ORDER BY seq"
+        args = [study, kind, ref]
+        if limit is not None:
+            sql += " DESC LIMIT ?"
+            args.append(limit)
+        rows = self.db.execute(sql, args).fetchall()
+        return [
+            self._artifact(row)
+            for row in (reversed(rows) if limit is not None else rows)
+        ]
+
     def search(
         self, study: str, kind: str, query: str, after: int, limit: int
     ) -> list[Artifact]:
@@ -189,9 +347,9 @@ class Store:
             self.get(study, ref)
         ref = identity(study, kind, body, parents)
         self.db.execute(
-            "INSERT OR IGNORE INTO artifacts(ref,study,kind,body,parents) "
-            "VALUES(?,?,?,?,?)",
-            (ref, study, kind, encode(body), encode(parents)),
+            "INSERT OR IGNORE INTO artifacts(ref,study,kind,body,parents,created_at) "
+            "VALUES(?,?,?,?,?,?)",
+            (ref, study, kind, encode(body), encode(parents), time.time()),
         )
         return self.get(study, ref)
 
@@ -228,10 +386,83 @@ class Store:
             return self._control(study, 0, direction.ref, False, False, False, ())
 
     def control(self, study: str) -> Control:
-        rows = self.list(study, "control")
-        if not rows:
+        row = self.db.execute(
+            "SELECT * FROM artifacts WHERE study=? AND kind='control' ORDER BY seq DESC LIMIT 1",
+            (study,),
+        ).fetchone()
+        if row is None:
             raise ValueError("study not found")
-        return self._decode_control(rows[-1])
+        return self._decode_control(self._artifact(row))
+
+    def request_deletion(self, study: str, expected: str) -> None:
+        with self.transaction():
+            current = self.control(study)
+            intents = self.list(study, "delete_request")
+            if intents:
+                if expected not in {current.ref, intents[0].body["expected"]}:
+                    raise Conflict("control version changed")
+                return
+            if current.ref != expected:
+                raise Conflict("control version changed")
+            stopped = self._control(
+                study,
+                current.epoch + 1,
+                current.direction,
+                current.approved,
+                True,
+                True,
+                (current.ref,),
+                current.plan,
+            )
+            self._put(study, "delete_request", {"expected": expected}, (stopped.ref,))
+
+    def delete_study(self, study: str) -> None:
+        """Host must finish owned-resource cleanup before erasing its manifest."""
+        with self.transaction():
+            if not self.control(study).cancelled or not self.count(
+                study, "delete_request"
+            ):
+                raise NotAllowed(
+                    "deletion requires explicit intent and stopped execution"
+                )
+            self.db.execute("DELETE FROM commands WHERE study=?", (study,))
+            self.db.execute("DELETE FROM operations WHERE study=?", (study,))
+            self.db.execute("DELETE FROM artifacts WHERE study=?", (study,))
+        getattr(self, "_usage_cache", {}).pop(study, None)
+
+    def timing(self, study: str, now: float | None = None) -> dict[str, Any]:
+        """Elapsed wall time, not summed parallel work or estimated compute time."""
+        control = self.control(study)
+        start = self.db.execute(
+            "SELECT created_at FROM artifacts WHERE study=? AND kind='control' "
+            "AND json_extract(body,'$.approved')=1 ORDER BY seq LIMIT 1",
+            (study,),
+        ).fetchone()
+        end = self.db.execute(
+            "SELECT created_at FROM artifacts WHERE study=? AND kind='publication' "
+            "AND EXISTS (SELECT 1 FROM json_each(artifacts.parents) WHERE value=?) "
+            "ORDER BY seq DESC LIMIT 1",
+            (study, control.direction),
+        ).fetchone()
+        if end is None and control.cancelled:
+            end = self.db.execute(
+                "SELECT created_at FROM artifacts WHERE ref=?", (control.ref,)
+            ).fetchone()
+        started_at = start[0] if start else None
+        ended_at = end[0] if end else None
+        until = ended_at if end else (time.time() if now is None else now)
+        elapsed = (
+            until - started_at
+            if started_at is not None and until is not None and until >= started_at
+            else None
+        )
+        return {
+            "basis": "approval_to_publication_wall_time",
+            "includes_waiting": True,
+            "started_at": started_at,
+            "ended_at": ended_at,
+            "elapsed_seconds": elapsed,
+        }
 
     @staticmethod
     def _decode_control(artifact: Artifact) -> Control:
@@ -355,6 +586,8 @@ class Store:
         inputs: tuple[str, ...] = (),
         owner: str | None = None,
         review_mode: str = "final",
+        shared_context: str = "",
+        deliverable: str = "",
     ) -> Artifact:
         with self.transaction():
             current = self.control(study)
@@ -427,6 +660,8 @@ class Store:
                     "inputs": inputs,
                     "owner": owner,
                     **({"review_mode": "check"} if review_mode == "check" else {}),
+                    **({"shared_context": shared_context} if shared_context else {}),
+                    **({"deliverable": deliverable} if deliverable else {}),
                 },
                 (current.direction, *inputs, *((owner,) if owner else ())),
             )
@@ -625,35 +860,86 @@ class Store:
 
         from .usage import counters
 
+        # Operations only transition unknown -> succeeded. This small watermark
+        # invalidates the disposable display cache on admission and settlement.
+        watermark = tuple(
+            self.db.execute(
+                "SELECT COUNT(*), COALESCE(SUM(status='succeeded'), 0) "
+                "FROM operations WHERE study=?",
+                (study,),
+            ).fetchone()
+        )
+        if not hasattr(self, "_usage_cache"):
+            self._usage_cache = {}
+        cached = self._usage_cache.get(study)
+        if cached and cached[0] == watermark:
+            return cached[1]
         records = []
+        # UI accounting is a projection, not a replay of paid model contexts.
         for row in self.db.execute(
-            "SELECT * FROM operations WHERE study=? ORDER BY rowid", (study,)
+            """
+            WITH calls AS (
+                SELECT o.id, o.work, o.status, o.admission,
+                    CASE WHEN o.request_step IS NOT NULL
+                        THEN json_extract(a.body, '$.request') ELSE o.request END AS req,
+                    o.result
+                FROM operations o LEFT JOIN artifacts a
+                    ON a.ref=o.request_step AND a.study=o.study
+                WHERE o.study=?
+                ORDER BY o.rowid
+            ), projected AS (
+                SELECT id, work, status, admission,
+                    json_extract(req, '$.tool') AS tool,
+                    json_extract(req, '$.wire.payload.model') AS model,
+                    CASE WHEN json_type(req, '$.tool') IS NOT NULL
+                        THEN CASE WHEN json_type(result, '$.value')='object'
+                            THEN json_extract(result, '$.value') END
+                        ELSE result END AS raw
+                FROM calls
+            )
+            SELECT id, work, status, admission, tool, model,
+                json_extract(raw, '$.http_status') AS http_status,
+                CASE WHEN json_type(raw, '$.data.usage')='object'
+                    THEN json_extract(raw, '$.data.usage') END AS usage,
+                CASE WHEN json_type(raw, '$.data.usageMetadata')='object'
+                    THEN json_extract(raw, '$.data.usageMetadata') END AS metadata,
+                CASE WHEN json_type(raw, '$.data.data.usage')='object'
+                    THEN json_extract(raw, '$.data.data.usage') END AS reader_usage,
+                CASE WHEN json_type(raw, '$.data.costDollars')='object'
+                    THEN json_extract(raw, '$.data.costDollars') END AS cost_dollars
+            FROM projected
+            """,
+            (study,),
         ):
             admission = json.loads(row["admission"]) if row["admission"] else {}
-            request = (
-                self._step_request(study, row["work"], row["request_step"])
-                if row["request_step"]
-                else json.loads(row["request"])
-            )
-            raw = json.loads(row["result"]) if row["result"] else {}
-            if "tool" in request:
-                raw = raw.get("value", {})
+            raw = {
+                "data": {
+                    key: json.loads(row[column])
+                    for key, column in (
+                        ("usage", "usage"),
+                        ("usageMetadata", "metadata"),
+                    )
+                    if row[column] is not None
+                }
+            }
+            if row["reader_usage"] is not None:
+                raw["data"]["data"] = {"usage": json.loads(row["reader_usage"])}
+            if row["cost_dollars"] is not None:
+                raw["data"]["costDollars"] = json.loads(row["cost_dollars"])
             records.append(
                 {
                     "operation": row["id"],
                     "work": row["work"],
                     "resource": admission.get("resource", "legacy"),
-                    "model": admission.get("model")
-                    or request.get("wire", {}).get("payload", {}).get("model"),
-                    "tool": request.get("tool"),
+                    "model": admission.get("model") or row["model"],
+                    "tool": row["tool"],
                     "status": row["status"],
-                    "http_status": raw.get("http_status")
-                    if isinstance(raw, dict)
-                    else None,
+                    "http_status": row["http_status"],
                     "admitted_at": admission.get("at"),
-                    "usage": counters(raw),
+                    "usage": counters(raw, admission.get("resource")),
                 }
             )
+        self._usage_cache[study] = (watermark, records)
         return records
 
     def reconcile(

@@ -134,3 +134,16 @@ class ContextTests(unittest.TestCase):
             with self.subTest(capacity=capacity):
                 result = assemble({"task": "问题"}, candidates, None, capacity)
                 self.assertLessEqual(len(encode(result)), capacity)
+
+    def test_direct_original_input_precedes_newer_activity(self):
+        original = self.artifact(1, "原始交付" * 60)
+        recent = [self.artifact(i, "later" * 50) for i in range(2, 12)]
+        result = assemble(
+            {"task": "write", "inputs": [{"ref": original.ref}]},
+            [original, *recent],
+            None,
+            850,
+        )
+        entry = next(x for x in result["context"] if x["ref"] == original.ref)
+        self.assertEqual(original.body, entry["body"])
+        self.assertGreater(result["omitted_count"], 0)

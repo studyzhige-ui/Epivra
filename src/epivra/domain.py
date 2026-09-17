@@ -12,6 +12,10 @@ class Conflict(ValueError):
     """A command or result was based on a different control version."""
 
 
+class ContextCapacity(ValueError):
+    """The essential task cannot fit the configured model input allowance."""
+
+
 class NotAllowed(ValueError):
     """The requested action is outside the current authority."""
 

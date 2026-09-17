@@ -9,6 +9,10 @@ Synthetic cases here are diagnostic and regression tools, not a public benchmark
 python -m unittest discover -s tests
 python tools/check_architecture.py
 ruff check src tests tools evals
+# Optional deterministic frontend checks require Node.js; the app does not
+node tests/web_reader.cjs
+node tests/web_status.cjs
+node tests/web_usage.cjs
 ```
 
 ## Online diagnostics
@@ -45,7 +49,9 @@ Role diagnostics intentionally do not run the full research process; no publicat
 
 `mechanism_cases.py` supplies 36 short positive/negative reports across 18 mechanisms. They calibrate reviewing; they do not prove exploration, redirection, collaboration, or recovery occurred. `closed_loop_cases.json` supplies small complete tasks with four synthetic materials per task. `research_scenarios/` contains input corpora and separate assessment data; grading labels are not injected into the agent context.
 
-`research_case.py` can generate 30 or 100 source files, including repeated origins and critical independent evidence. Automated coverage checks do not establish semantic correctness or long-document competence. Keep scale tests at 100 files or fewer.
+`research_case.py` can generate 30 or 100 source files, including repeated origins and critical independent evidence. These are fixture sizes, not a product source limit. Automated coverage checks do not establish semantic correctness or long-document competence.
+
+`tools/run_benchmark10.py` is a Windows batch diagnostic runner: cases run sequentially while retaining normal within-study concurrency. Supply your own JSONL file using `--queries path/to/cases.jsonl`; each line contains an integer `id` and a string `prompt`. Start with `python tools/run_benchmark10.py --run-id batch-version --queries path/to/cases.jsonl`; inspect saved status with `--run-id batch-version --status`. Starting consumes model/search quota and automatically approves generated strategies, so use explicitly authorized diagnostic cases only. Code and inputs are frozen into the run identity; do not silently change versions under the same run ID. The runner includes no private case list or public leaderboard score, and publication does not establish quality.
 
 Assess decisive conclusions and evidence before stylistic preferences. A rejected report with incorrect rejection reasoning is not a successful review. Mark absent behavior as untested, not automatically passed or failed. Preserve disputed judgments for human review, and keep holdout tasks out of debugging. Raw model self-evaluation is not ground truth.
 

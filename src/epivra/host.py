@@ -18,6 +18,13 @@ from .application import online_service
 from .locale import LANGUAGES, configure, tr
 from .model_catalog import OFFICIAL_PROVIDERS
 from .models import freeze_model_settings
+from .presentation import (
+    progress,
+    published_report,
+    source_info,
+    source_page,
+    work_detail,
+)
 from .scheduling import Scheduler
 from .storage import Store
 from .usage import summarize
@@ -57,6 +64,9 @@ class Host:
         self.token = secrets.token_urlsafe(32)
         self.stopping = asyncio.Event()
         self.analysis_errors = {}
+        self.deletions = {}
+        self.study_requests = {}
+        self.analysis_locks = {}
 
     async def maintain_analyses(self):
         while not self.stopping.is_set():
@@ -69,7 +79,12 @@ class Host:
                 if task and not task.done():
                     continue
                 try:
-                    await AnalysisRuntime(self.store).reconcile(study)
+                    async with self.analysis_locks.setdefault(study, asyncio.Lock()):
+                        if not self.store.count(study, "control") or self.store.count(
+                            study, "delete_request"
+                        ):
+                            continue
+                        await AnalysisRuntime(self.store).reconcile(study)
                     self.analysis_errors.pop(study, None)
                 except (ValueError, OSError, TimeoutError) as exc:
                     self.analysis_errors[study] = str(exc)
@@ -96,12 +111,66 @@ class Host:
         return self.services[study]
 
     def start_study(self, study):
+        if self.store.count(study, "delete_request"):
+            self.start_deletion(study)
+            return
         try:
             self.service(study).start(study)
         except Exception as exc:
             self.failures[study] = type(exc).__name__
 
     async def dispatch(self, request):
+        if not secrets.compare_digest(str(request.get("token", "")), self.token):
+            return {"error": "unauthorized"}
+        study = request.get("study")
+        if isinstance(study, str) and request.get("action") not in {"delete", "status"}:
+            if self.store.count(study, "delete_request"):
+                raise ValueError("study deletion in progress")
+            pending = self.study_requests.setdefault(study, set())
+            task = asyncio.current_task()
+            pending.add(task)
+            try:
+                return await self._dispatch(request)
+            finally:
+                pending.discard(task)
+        return await self._dispatch(request)
+
+    def start_deletion(self, study):
+        task = self.deletions.get(study)
+        if task is None or task.done():
+            task = asyncio.create_task(self.finish_deletion(study))
+            self.deletions[study] = task
+        return task
+
+    async def finish_deletion(self, study):
+        try:
+            pending = list(self.study_requests.get(study, ()))
+            for task in pending:
+                task.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
+            service = self.services.get(study)
+            if service:
+                await service.close()
+            for client in self.clients.get(study, []):
+                await client.close()
+            async with self.analysis_locks.setdefault(study, asyncio.Lock()):
+                await AnalysisRuntime(self.store).reconcile(study)
+                self.store.delete_study(study)
+            for mapping in (
+                self.services,
+                self.clients,
+                self.failures,
+                self.analysis_errors,
+                self.study_requests,
+                self.analysis_locks,
+            ):
+                mapping.pop(study, None)
+            return {"deleted": True}
+        except Exception as exc:
+            self.failures[study] = type(exc).__name__
+            return {"error": type(exc).__name__, "deleted": False}
+
+    async def _dispatch(self, request):
         if not secrets.compare_digest(str(request.get("token", "")), self.token):
             return {"error": "unauthorized"}
         action = request.get("action")
@@ -126,7 +195,11 @@ class Host:
                 "SELECT study, MAX(rowid) AS recent FROM artifacts "
                 "WHERE kind='control' GROUP BY study ORDER BY recent DESC"
             ).fetchall()
-            return {"studies": [self.describe(row[0]) for row in studies]}
+            return {"studies": [self.describe(row[0], summary=True) for row in studies]}
+        if action == "import_study":
+            return self.store.import_completed(
+                Path(request["database"]), request["study"]
+            )
         if action == "create":
             text = request.get("request")
             if not isinstance(text, str) or not text.strip():
@@ -185,6 +258,7 @@ class Host:
                         "selected search/reader provider requires its credential"
                     )
                 policy.update(
+                    public_sources=True,
                     search_providers=[primary, *[n for n in available if n != primary]],
                     reader_providers=[reader, *[n for n in readable if n != reader]],
                 )
@@ -225,21 +299,30 @@ class Host:
         study = request["study"]
         if not isinstance(study, str):
             raise ValueError("study must be text")
+        if action == "delete":
+            if request.get("confirmed") is not True or not request.get("expected"):
+                raise ValueError("explicit confirmation and control version required")
+            if not self.store.count(study, "control"):
+                return {"deleted": True}
+            self.store.request_deletion(study, request["expected"])
+            return await asyncio.shield(self.start_deletion(study))
         if action == "usage":
             self.store.control(study)
             return {"calls": self.store.usage_records(study)}
         if action == "sources":
             self.store.control(study)
             return {
-                "sources": [
-                    {
-                        "ref": s.ref,
-                        "origin": s.body.get("origin"),
-                        "coverage": s.body.get("coverage"),
-                    }
-                    for s in self.store.list(study, "source")
-                ]
+                "sources": [source_info(s) for s in self.store.list(study, "source")]
             }
+        if action == "source_text":
+            return source_page(
+                self.store, study, request["source"], request.get("offset", 0)
+            )
+        if action == "progress":
+            service = self.services.get(study)
+            return progress(self.store, study, service.work_errors if service else {})
+        if action == "work_detail":
+            return work_detail(self.store, study, request["work"])
         if action == "download":
             offset, length = request.get("offset", 0), request.get("length", 65536)
             if (
@@ -345,35 +428,27 @@ class Host:
             }
         if action == "status":
             service = self.services.get(study)
+            details = (
+                service.status(study)
+                if service
+                else {
+                    "unsettled_operations": self.store.unsettled(study),
+                    "usage": summarize(self.store.usage_records(study)),
+                    "analyses": [
+                        a.body for a in self.store.list(study, "analysis_result")
+                    ],
+                }
+            )
             return {
-                **(service.status(study) if service else {}),
+                **details,
                 **self.describe(study),
-                "unsettled_operations": self.store.unsettled(study),
-                "usage": summarize(self.store.usage_records(study)),
-                "analyses": [a.body for a in self.store.list(study, "analysis_result")],
                 "analysis_cleanup_error": self.analysis_errors.get(study),
             }
         if action == "report":
-            direction = self.store.control(study).direction
-            pubs = [
-                p
-                for p in self.store.list(study, "publication")
-                if direction in p.parents
-            ]
-            if not pubs:
-                return {"report": None}
-            report = self.store.get(study, pubs[-1].body["report"])
-            sources = [self.store.get(study, ref) for ref in report.body["evidence"]]
-            return {
-                "ref": report.ref,
-                "text": report.body["text"],
-                "sources": [
-                    {"ref": s.ref, "origin": s.body.get("origin")} for s in sources
-                ],
-            }
+            return published_report(self.store, study, request.get("expected"))
         raise ValueError("unknown host command")
 
-    def describe(self, study):
+    def describe(self, study, summary=False):
         c = self.store.control(study)
         direction = self.store.get(study, c.direction)
         service = self.services.get(study)
@@ -382,20 +457,30 @@ class Host:
         published = any(
             c.direction in a.parents for a in self.store.list(study, "publication")
         )
-        return {
+        result = {
             "study": study,
             "request": direction.body["request"],
             "control": c.ref,
+            "direction": c.direction,
             "approved": c.approved,
             "paused": c.paused,
             "cancelled": c.cancelled,
+            "deleting": bool(self.store.count(study, "delete_request")),
             "running": bool(task and not task.done()),
             "published": published,
             "error": self.failures.get(study)
             or (service.errors.get(study) if service else None),
             "plans": [{"ref": a.ref, "body": a.body} for a in plans],
+            "approved_plan": c.plan,
+        }
+        if summary:
+            result["plans"] = [{"ref": a.ref} for a in plans]
+            return result
+        return {
+            **result,
+            "timing": self.store.timing(study),
             "policy": direction.body["policy"],
-            "source_count": len(self.store.list(study, "source")),
+            "source_count": self.store.count(study, "source"),
             "work": [
                 {"role": a.body["role"], "task": a.body["task"]}
                 for a in self.store.list(study, "work")
@@ -405,21 +490,25 @@ class Host:
 
     async def connection(self, reader, writer):
         try:
-            line = await asyncio.wait_for(reader.readline(), 10)
-            request = json.loads(line)
-            if not isinstance(request, dict):
-                raise ValueError("expected object")
-            result = await self.dispatch(request)
-        except Exception as exc:
-            result = {"error": type(exc).__name__}
-        try:
-            writer.write((json.dumps(result, ensure_ascii=False) + "\n").encode())
-            await writer.drain()
-        except (ConnectionError, OSError):
-            pass
+            try:
+                line = await asyncio.wait_for(reader.readline(), 10)
+                request = json.loads(line)
+                if not isinstance(request, dict):
+                    raise ValueError("expected object")
+                result = await self.dispatch(request)
+            except Exception as exc:
+                result = {"error": type(exc).__name__}
+            try:
+                writer.write((json.dumps(result, ensure_ascii=False) + "\n").encode())
+                await writer.drain()
+            except OSError:
+                pass
         finally:
             writer.close()
-            await writer.wait_closed()
+            try:
+                await writer.wait_closed()
+            except OSError:
+                pass
 
     async def serve(self):
         pointer = self.state / "host.json"
@@ -441,7 +530,9 @@ class Host:
             ):
                 study = row[0]
                 c = self.store.control(study)
-                if not c.paused and not c.cancelled:
+                if self.store.count(study, "delete_request") or (
+                    not c.paused and not c.cancelled
+                ):
                     self.start_study(study)
             async with server:
                 await self.stopping.wait()
@@ -452,6 +543,7 @@ class Host:
             if server:
                 server.close()
                 await server.wait_closed()
+            await asyncio.gather(*self.deletions.values(), return_exceptions=True)
             for service in self.services.values():
                 await service.close()
             for clients in self.clients.values():
@@ -473,11 +565,18 @@ async def send(root: Path, request: dict):
         )
         await writer.drain()
         # Parsing has its own configured timeout. Losing a client must not imply failure.
-        timeout = 600 if request.get("action") in {"upload", "import_file"} else 30
+        timeout = (
+            600
+            if request.get("action") in {"upload", "import_file", "import_study"}
+            else 30
+        )
         return json.loads(await asyncio.wait_for(reader.readline(), timeout))
     finally:
         writer.close()
-        await writer.wait_closed()
+        try:
+            await writer.wait_closed()
+        except OSError:
+            pass
 
 
 async def start(root: Path):
@@ -534,6 +633,9 @@ def main():
     sub.add_parser("start")
     sub.add_parser("shutdown")
     sub.add_parser("list")
+    imported = sub.add_parser("import_study")
+    imported.add_argument("study")
+    imported.add_argument("database", type=Path)
     sub.add_parser("providers")
     sub.add_parser("mcp-connections")
     sub.add_parser("mcp-discover").add_argument("name")
@@ -563,6 +665,10 @@ def main():
     export.add_argument("destination", type=Path)
     for action in ("status", "report", "reload", "usage"):
         sub.add_parser(action).add_argument("study")
+    delete = sub.add_parser("delete")
+    delete.add_argument("study")
+    delete.add_argument("--expected", required=True)
+    delete.add_argument("--confirm", action="store_true")
     control = sub.add_parser("control")
     control.add_argument("study")
     control.add_argument(
@@ -649,8 +755,13 @@ def main():
             "reconcile",
             "upload",
             "export",
+            "delete",
         ):
             request["study"] = args.study
+        if args.action == "import_study":
+            request.update(study=args.study, database=str(args.database.resolve()))
+        if args.action == "delete":
+            request.update(expected=args.expected, confirmed=args.confirm)
         if args.action == "export":
             request.update(
                 source=args.source, destination=str(args.destination.resolve())

@@ -229,3 +229,38 @@ class RoleHandoffTests(unittest.IsolatedAsyncioTestCase):
             "result"
         ]
         self.assertEqual("核对两种口径", producer["body"]["task"])
+
+    async def test_shared_scope_and_reader_deliverable_reach_actual_child_request(self):
+        await self.execute(
+            self.lead,
+            "delegate_work",
+            {
+                "role": "investigator",
+                "task": "核对结果",
+                "refs": [self.source.ref],
+                "shared_context": "统一使用登记人群，不能混用到会人数。",
+                "deliverable": "供读者判断参与情况的结果与证据。",
+            },
+        )
+        child = self.store.list("s", "work")[-1]
+        await self.execute(child, "read_source", {"ref": self.source.ref})
+        request = self.model.requests[-1]
+        self.assertEqual(child.body["shared_context"], request["shared_context"])
+        self.assertEqual(child.body["deliverable"], request["deliverable"])
+
+    async def test_report_measurement_matches_submitted_rendered_text(self):
+        result = await self.finding("登记17人", "核对人数")
+        writer = self.child("writer", "短报告", (result.ref,))
+        args = {
+            "text": "登记17人[[cite:" + self.source.ref + "]]。",
+            "evidence": [self.source.ref],
+        }
+        await self.execute(writer, "measure_text", args)
+        measured = self.store.list("s", "observation")[-1].body["result"]
+        await self.execute(writer, "draft_report", args)
+        report = self.store.list("s", "report")[-1]
+        self.assertEqual(len(report.body["text"]), measured["characters"])
+        self.assertEqual(
+            report.body["citation_body_length"], measured["body"]["characters"]
+        )
+        self.assertLess(measured["body"]["characters"], measured["characters"])

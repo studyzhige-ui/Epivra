@@ -29,6 +29,14 @@ class Scheduler:
         self.deadlines = {}
         self.active = {}
         self.waiting = {}
+        self.spacing = {}
+
+    def constrain(self, resource, interval):
+        """Public service spacing, shared by every work using this scheduler."""
+        import math
+        if not math.isfinite(interval) or interval <= 0:
+            raise ValueError("positive finite spacing required")
+        self.spacing[resource] = max(self.spacing.get(resource, 0), interval)
 
     def snapshot(self):
         resources = self.semaphores.keys() | self.deadlines.keys()
@@ -58,6 +66,8 @@ class Scheduler:
         )
         self.history[resource] = events
         delay = max(0, self.deadlines.get(resource, 0) - now)
+        if events and resource in self.spacing:
+            delay = max(delay, events[-1][0] + self.spacing[resource] - now)
         remaining = sum(n for _, n in events)
         for index in range(len(events) + 1):
             if (not rule.get("rpm") or len(events) - index < rule["rpm"]) and (

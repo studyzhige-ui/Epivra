@@ -12,6 +12,7 @@
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <link rel="stylesheet" href="/style.css" />
     <script src="/markdown-it.min.js" defer></script>
+    <script src="/katex.min.js" defer></script>
     <script src="/app.js" type="module"></script>
   </head>
   <body>
@@ -190,9 +191,11 @@
             ><button id="steer">调整方向</button
             ><button id="supplement" hidden>补充资料</button
             ><button id="reload-keys" hidden>重新载入密钥</button
-            ><button id="cancel" class="danger">取消研究</button>
+            ><button id="cancel" class="danger">取消研究</button
+            ><button id="delete-study" class="danger">删除研究</button>
           </div>
           <div class="tabs" role="tablist" aria-label="研究内容">
+            <button role="tab" id="tab-plan" aria-selected="false" data-tab="plan">研究方案</button>
             <button
               role="tab"
               id="tab-progress"
@@ -230,7 +233,12 @@
             aria-labelledby="tab-progress"
           >
             <div id="progress-summary" class="card"></div>
+            <div class="section-label"><span>工作与阶段成果</span><button id="refresh-progress" class="text-button">刷新进展</button></div>
             <div id="work-list"></div>
+          </div>
+          <div id="plan-panel" class="panel" role="tabpanel" aria-labelledby="tab-plan" hidden>
+            <div class="section-label"><span id="plan-state"></span><button id="plan-approve" class="primary" hidden>阅读并审批策略</button></div>
+            <article id="plan-text" class="card markdown"></article>
           </div>
           <div
             id="report-panel"
@@ -240,11 +248,21 @@
             hidden
           >
             <div class="report-actions">
-              <span class="muted">当前方向的已发布成果</span
-              ><button id="download-report" hidden>下载 Markdown ↓</button>
+              <span class="muted">当前方向的已发布成果</span>
+              <div id="report-tools" class="button-row" hidden>
+                <button id="reader-toggle" aria-pressed="false">展开阅读</button>
+                <button id="sources-toggle" aria-expanded="false">来源与依据</button>
+                <button id="copy-report">复制正文</button>
+                <select id="export-format" aria-label="导出格式"><option value="md">Markdown</option><option value="docx">Word</option><option value="html">HTML</option><option value="pdf">PDF / 打印</option></select>
+                <button id="download-report">导出 ↓</button>
+              </div>
             </div>
-            <article id="report-text" class="card markdown"></article>
-            <div id="report-sources"></div>
+            <p class="muted export-note">Word 保留公式的原始表达；PDF 使用浏览器打印另存为 PDF。</p>
+            <div class="reader-layout">
+              <details id="report-outline" class="report-outline" open><summary>报告目录</summary><nav id="report-toc" aria-label="报告目录"></nav></details>
+              <article id="report-text" class="card markdown"></article>
+              <aside id="report-source-panel" class="card source-panel" hidden><h3>来源与依据</h3><p class="muted">报告依据不等于所有已搜集资料。</p><div id="report-sources"></div></aside>
+            </div>
             <div id="analysis-files"></div>
           </div>
           <div
@@ -271,6 +289,10 @@
         </section>
       </main>
     </div>
+    <dialog id="source-dialog" aria-labelledby="source-title">
+      <div class="dialog-heading"><h2 id="source-title">来源详情</h2><button class="icon close-dialog" aria-label="关闭">×</button></div>
+      <div id="source-detail"></div>
+    </dialog>
     <dialog id="help-dialog" aria-labelledby="help-title">
       <div class="dialog-heading">
         <h2 id="help-title">使用 Epivra</h2>

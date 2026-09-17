@@ -61,7 +61,12 @@ class Workspace:
         return folder
 
     def clear_analysis_staging(self, job):
-        root = (self.store.path.parent / "analysis").resolve()
+        state = self.store.path.parent.resolve()
+        root = (state / "analysis").resolve()
+        if root != state / "analysis":
+            raise ValueError(
+                "analysis staging root must not redirect outside its location"
+            )
         folder = root / job.ref
         if folder.exists():
             if folder.is_symlink() or folder.resolve().parent != root:
@@ -174,6 +179,17 @@ class Workspace:
             )
         return await parse_isolated(name, raw, self.parse_timeout)
 
+    @staticmethod
+    def web_source_info(source):
+        """The same usable source handle for newly acquired and reused text."""
+        return {
+            "ref": source.ref,
+            "url": source.body["origin"],
+            "title": source.body.get("title", ""),
+            "read": {"ref": source.ref},
+            "characters": len(source.body["text"]),
+        }
+
     def web_snapshot(self, study: str, decoded: dict, acquisition: dict) -> dict:
         """Persist extracted text with its successful acquisition, never raw envelopes."""
         work, step = acquisition["work"], acquisition["step"]
@@ -203,13 +219,7 @@ class Workspace:
                     {**item, "acquisition": dict(acquisition)},
                     (work, step),
                 )
-                sources.append(
-                    {
-                        "ref": source.ref,
-                        "url": item["origin"],
-                        "characters": len(item["text"]),
-                    }
-                )
+                sources.append(self.web_source_info(source))
         return {"sources": sources, "failures": decoded["failures"]}
 
     def _root(self, study: str, root: str) -> Path:

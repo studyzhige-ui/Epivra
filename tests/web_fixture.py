@@ -6,11 +6,15 @@ Stop with Host.shutdown against that temporary root. Never loads account keys.
 
 import asyncio
 import json
+import sys
 import tempfile
+import threading
 from pathlib import Path
 
 from epivra import cli_settings
+from epivra.citations import render
 from epivra.host import Host
+from epivra.webui import App, Server
 from epivra.workspace import Workspace
 
 
@@ -71,6 +75,47 @@ async def main():
             "approve",
             {"plan": plan.ref},
         )
+        lead = host.store._put(
+            "completed-example",
+            "work",
+            {"role": "lead", "task": "决定调查与交付方向", "direction": c.direction},
+            (c.direction,),
+        )
+        work = host.store._put(
+            "completed-example",
+            "work",
+            {
+                "role": "investigator",
+                "task": "核对两项试点的观察窗口与适用限制",
+                "direction": c.direction,
+                "owner": lead.ref,
+            },
+            (c.direction, lead.ref),
+        )
+        # Resolve the fixture quote against the same saved extraction.
+        text = host.store.get("completed-example", source.ref).body["text"]
+        note = host.store.put(
+            "completed-example",
+            "note",
+            {
+                "producer": work.ref,
+                "text": "确认观察窗口不一致。",
+                "source": source.ref,
+                "quote": "不同时间窗口不能直接比较总量。",
+                "offset": text.index("不同时间窗口"),
+            },
+            (work.ref, source.ref),
+        )
+        host.store.put(
+            "completed-example",
+            "work_result",
+            {
+                "producer": work.ref,
+                "text": "## 调查交付\n试点时间不同，不能以总人数排名。仍需补充成本和满意度。",
+                "refs": [source.ref],
+            },
+            (work.ref, source.ref),
+        )
         report = host.store.put(
             "completed-example",
             "report",
@@ -79,6 +124,18 @@ async def main():
                 "evidence": [source.ref],
             },
             (c.direction, source.ref),
+        )
+        rendered = render(
+            report.body["text"]
+            + f"\n\n## 引用与公式\n\n原文依据 [[cite:{note.ref}]]。\n\n日均值为 $120/30=4$。\n\n$$\n\\frac{{120}}{{30}} = 4\n$$\n\n### 后续核查\n比较不能替代因果判断。",
+            [source.ref],
+            lambda ref: host.store.get("completed-example", ref),
+        )
+        report = host.store.put(
+            "completed-example",
+            "report",
+            {**rendered, "evidence": [source.ref]},
+            (c.direction, source.ref, note.ref),
         )
         host.store._put(
             "completed-example",
@@ -96,7 +153,16 @@ async def main():
             json.dumps({"root": str(root), "file": str(material)}, ensure_ascii=False),
             flush=True,
         )
-        await host.serve()
+        server = Server(App(root), 0) if "--web" in sys.argv else None
+        if server:
+            threading.Thread(target=server.serve_forever, daemon=True).start()
+            print(server.url + "&lang=zh-CN", flush=True)
+        try:
+            await host.serve()
+        finally:
+            if server:
+                server.shutdown()
+                server.server_close()
 
 
 if __name__ == "__main__":

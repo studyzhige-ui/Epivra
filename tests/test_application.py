@@ -382,7 +382,7 @@ class WorkflowTests(unittest.IsolatedAsyncioTestCase):
                     ),
                 ).to_json()
 
-        harness = Harness(store, Model(), context_chars=8000)
+        harness = Harness(store, Model(), context_chars=12000)
         await harness.step("s", work.ref)
         body = store.list("s", "observation")[-1].body["result"]
         self.assertEqual("rare counterevidence", body["text"])

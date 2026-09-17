@@ -143,8 +143,11 @@ def render(text, evidence, resolve):
     footer = []
     for number, source in enumerate(unique, 1):
         origin = str(source.body.get("origin") or f"Source {number}")
+        title = source.body.get("title") or source.body.get("name") or origin
+        if not isinstance(title, str):
+            title = origin
         label = re.sub(
-            r"([\\`*{}\[\]<>_])", r"\\\1", origin.replace("\n", " ").replace("\r", " ")
+            r"([\\`*{}\[\]<>_])", r"\\\1", title.replace("\n", " ").replace("\r", " ")
         )
         if urlsplit(origin).scheme in {"http", "https"}:
             url = (

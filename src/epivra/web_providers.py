@@ -1,6 +1,6 @@
 """Search and reader protocols. Each invocation sends exactly one request."""
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from html.parser import HTMLParser
 from urllib.parse import parse_qs, urlsplit
 
@@ -28,6 +28,35 @@ CONNECTIONS = {
 }
 SEARCH = ("tavily", "exa", "brave", "perplexity", "bocha", "duckduckgo")
 READERS = ("jina", "tavily", "exa")
+
+
+class TavilyKeyPool(JsonAPI):
+    """One request per invocation; explicit rejection retries belong to Harness."""
+
+    def __init__(self, origin, key, client=None, **kwargs):
+        super().__init__(origin, "", client, **kwargs)
+        self.replace_key(key)
+
+    def replace_key(self, key):
+        keys = list(dict.fromkeys(k.strip() for k in key.split(",") if k.strip()))
+        if not keys:
+            raise ValueError("credential required")
+        self._keys, self._disabled, self._cursor = keys, set(), 0
+
+    async def request(self, method, path, **kwargs):
+        available = [i for i in range(len(self._keys)) if i not in self._disabled]
+        if not available:
+            return {"http_status": 432, "key_pool_exhausted": True}
+        slot = next((i for i in available if i >= self._cursor), available[0])
+        self._cursor = (slot + 1) % len(self._keys)
+        # A request-local wrapper prevents concurrent calls from sharing auth state.
+        api = JsonAPI(self.origin, self._keys[slot], self._client)
+        raw = await api.request(method, path, **kwargs)
+        raw["credential_slot"] = slot + 1
+        if raw.get("http_status") in {401, 432, 433}:
+            self._disabled.add(slot)
+            raw["credential_retry"] = len(self._disabled) < len(self._keys)
+        return raw
 
 
 class _DuckResults(HTMLParser):
@@ -64,7 +93,37 @@ class WebProvider:
         self.resource, self.api = name, api
         self.identity = identity("web-protocol-v1", name, api.account)
 
+    def validate_search(self, args):
+        filters = {"include_domains", "exclude_domains", "start_date", "end_date"}
+        if filters & args.keys() and self.resource != "tavily":
+            raise ValueError(
+                "structured domain/date filters are supported by tavily only"
+            )
+        for key in ("start_date", "end_date"):
+            if key in args:
+                value = date.fromisoformat(args[key])
+                if value.isoformat() != args[key]:
+                    raise ValueError("expected YYYY-MM-DD")
+        if args.get("start_date", "") > args.get("end_date", "9999-12-31"):
+            raise ValueError("reversed date range")
+        for key, maximum in (("include_domains", 300), ("exclude_domains", 150)):
+            if key in args:
+                values = args[key]
+                if (
+                    not isinstance(values, list)
+                    or len(values) > maximum
+                    or any(
+                        not isinstance(v, str)
+                        or not v.strip()
+                        or "://" in v
+                        or any(c.isspace() for c in v)
+                        for v in values
+                    )
+                ):
+                    raise ValueError("expected domain list within provider limit")
+
     async def search(self, args):
+        self.validate_search(args)
         query, name = args["query"], self.resource
         if name == "tavily":
             raw = await Tavily(self.api).search(args)
@@ -239,7 +298,7 @@ def connect(name, keys, client=None):
     key = keys.get(key_name, "")
     if name not in {"jina", "duckduckgo"} and not key:
         raise ValueError(f"{key_name} required")
-    api = JsonAPI(
+    api = (TavilyKeyPool if name == "tavily" else JsonAPI)(
         origin,
         key,
         client,

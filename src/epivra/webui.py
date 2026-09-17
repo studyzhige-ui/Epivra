@@ -20,6 +20,7 @@ from .locale import LANGUAGES, configure, current_language, set_language, tr
 from .model_catalog import OFFICIAL_PROVIDERS
 from .model_discovery import DiscoveryError, discover
 from .models import freeze_model_settings
+from .report_export import word_report
 from .web_providers import CONNECTIONS, READERS, SEARCH
 
 DEFAULT_FIELDS = {
@@ -37,9 +38,13 @@ DEFAULT_FIELDS = {
     "mcp_servers",
 }
 COMMANDS = {
+    "delete": {"study", "expected", "confirmed"},
     "overview": set(),
     "status": {"study"},
-    "report": {"study"},
+    "report": {"study", "expected"},
+    "progress": {"study"},
+    "work_detail": {"study", "work"},
+    "source_text": {"study", "source", "offset"},
     "sources": {"study"},
     "usage": {"study"},
     "reload": {"study"},
@@ -50,6 +55,8 @@ COMMANDS = {
     "mcp_discover": {"name"},
 }
 ASSETS = {
+    "/reader.js": ("reader.js", "text/javascript; charset=utf-8"),
+    "/katex.min.js": ("katex.min.js", "text/javascript; charset=utf-8"),
     "/messages.json": ("messages.json", "application/json; charset=utf-8"),
     "/i18n.js": ("i18n.js", "text/javascript; charset=utf-8"),
     "/epivra-icon.svg": ("epivra-icon.svg", "image/svg+xml"),
@@ -93,6 +100,13 @@ class App:
     def send(self, data):
         action = data["action"]
         result = asyncio.run(self.sender(self.root, data))
+        if action == "delete" and result.get("deleted") is False:
+            raise WebError(
+                tr(
+                    "研究已停止，但资源清理尚未完成。请检查本地工具或Docker状态后重试删除；记录暂时保留。"
+                ),
+                503,
+            )
         # A status error is a research blocker, not a failed read.
         if result.get("error") and not (action == "status" and "control" in result):
             messages = {
@@ -274,8 +288,11 @@ class Handler(BaseHTTPRequestHandler):
             if isinstance(data, bytes)
             else json.dumps(data, ensure_ascii=False).encode()
         )
-        self.send_headers(len(raw), content_type, status)
-        self.wfile.write(raw)
+        try:
+            self.send_headers(len(raw), content_type, status)
+            self.wfile.write(raw)
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            self.close_connection = True
 
     def send_headers(self, size, content_type, status=200):
         self.send_response(status)
@@ -351,6 +368,7 @@ class Handler(BaseHTTPRequestHandler):
                 "/api/key",
                 "/api/pick",
                 "/api/file",
+                "/api/report-export",
             }:
                 raise WebError(tr("未找到此入口。"), 404)
             if self.headers.get_content_type() != "application/json":
@@ -361,6 +379,12 @@ class Handler(BaseHTTPRequestHandler):
             if not isinstance(data, dict):
                 raise WebError(tr("请求应为对象。"))
             app = self.server.app
+            if path == "/api/report-export":
+                if set(data) != {"study", "expected"} or not data["expected"]:
+                    raise WebError(tr("导出需要当前报告版本。"))
+                report = app.call({"action": "report", **data})
+                self.reply(word_report(report), content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+                return
             if path == "/api/file":
                 self.download(data)
                 return
@@ -392,8 +416,8 @@ class Handler(BaseHTTPRequestHandler):
             )
         except (ValueError, KeyError, TypeError):
             self.reply({"error": tr("参数或配置无效，请检查后重试。")}, 400)
-        except (BrokenPipeError, ConnectionResetError):
-            pass
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            self.close_connection = True
         except OSError:
             self.reply(
                 {"error": tr("无法访问文件或研究宿主，请检查本地路径与宿主状态。")}, 503

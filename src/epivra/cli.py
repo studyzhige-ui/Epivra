@@ -388,6 +388,22 @@ class Workbench:
                     status.get("source_count", 0),
                 )
             )
+            if status.get("approved"):
+                elapsed = (status.get("timing") or {}).get("elapsed_seconds")
+                duration = (
+                    tr(
+                        "{0}小时 {1}分 {2}秒",
+                        int(elapsed // 3600),
+                        int(elapsed // 60) % 60,
+                        int(elapsed) % 60,
+                    )
+                    if elapsed is not None
+                    else tr("未记录")
+                )
+                self.ui.show(tr("研究耗时：{0}", duration))
+                self.ui.show(
+                    tr("从首次批准策略到交付的总经过时间，包含暂停、等待与离线时间。")
+                )
             if status.get("error"):
                 self.ui.show(
                     tr(
@@ -408,24 +424,47 @@ class Workbench:
             if status.get("published"):
                 options.insert(0, ("report", tr("阅读与导出报告")))
             if not status.get("cancelled"):
-                options += [
-                    (
-                        "resume" if status.get("paused") else "pause",
-                        tr("继续研究") if status.get("paused") else tr("暂停研究"),
-                    ),
-                    ("steer", tr("调整研究方向")),
-                ]
+                if not status.get("published"):
+                    options += [
+                        (
+                            "resume" if status.get("paused") else "pause",
+                            tr("继续研究") if status.get("paused") else tr("暂停研究"),
+                        ),
+                    ]
+                options += [("steer", tr("调整研究方向"))]
                 if status.get("paused") and not status.get("running"):
                     options += [
                         ("upload", tr("补充资料文件")),
                         ("reload", tr("重新载入密钥")),
                     ]
-                options += [("cancel", tr("取消研究"))]
+                if not status.get("published"):
+                    options += [("cancel", tr("取消研究"))]
+            options += [
+                (
+                    "delete",
+                    tr("删除研究")
+                    if status.get("published") or status.get("cancelled")
+                    else tr("终止并删除"),
+                )
+            ]
             options += [("files", tr("导出计算文件")), ("usage", tr("查看用量"))]
             action = await self.ui.choose(tr("下一步"), options)
             if action is None:
                 return
-            if action == "approve":
+            if action == "delete":
+                if await self.ui.confirm(
+                    tr(
+                        "删除将终止此研究并永久清除其报告、资料副本和过程记录。用户原文件、已导出文件及其他研究不受影响。已提交的外部调用可能仍产生费用。确认删除？"
+                    )
+                ):
+                    await self.call(
+                        "delete",
+                        study=study,
+                        expected=status["control"],
+                        confirmed=True,
+                    )
+                    return
+            elif action == "approve":
                 plan = status["plans"][-1]
                 self.ui.page(strategy(plan["body"]))
                 if await self.ui.confirm(tr("按上面这份策略开始研究？")):
@@ -474,7 +513,7 @@ class Workbench:
                         tr(
                             "{0} / {1} · {2} 次调用 · 未知结果 {3} 次",
                             group["resource"],
-                            group["model"] or tr("搜索"),
+                            group["model"] or group.get("tool") or tr("工具调用"),
                             group["calls"],
                             group["unresolved_calls"],
                         )
@@ -482,14 +521,34 @@ class Workbench:
                     labels = {
                         "input_tokens": tr("输入 tokens"),
                         "output_tokens": tr("输出 tokens"),
+                        "total_tokens": tr("总 tokens"),
                         "cache_read_tokens": tr("缓存命中 tokens"),
-                        "search_credits": tr("搜索 credits"),
+                        "cache_write_tokens": tr("缓存写入 tokens"),
+                        "reasoning_tokens": tr("推理 tokens（子项）"),
+                        "search_credits": tr("服务 credits"),
+                        "reader_tokens": tr("读取 tokens"),
+                        "cost_usd": tr("供应商费用参考（USD）"),
                     }
                     for field, label in labels.items():
                         value = group["totals"].get(field)
-                        self.ui.show(
-                            f"  {label}：{value if value is not None else tr('未报告')}"
-                        )
+                        if field == "total_tokens" and any(
+                            group["totals"].get(k) is not None
+                            for k in ("input_tokens", "output_tokens")
+                        ):
+                            continue
+                        if value is not None:
+                            self.ui.show(f"  {label}：{value}")
+                            reported = group["reported_calls"][field]
+                            if reported < group["calls"]:
+                                self.ui.show(
+                                    tr(
+                                        "已返回用量：{0}/{1} 次调用",
+                                        reported,
+                                        group["calls"],
+                                    )
+                                )
+                    if not any(v is not None for v in group["totals"].values()):
+                        self.ui.show(tr("此接口未返回计量数据，仅记录调用次数。"))
             elif action == "report":
                 report = await self.call("report", study=study)
                 if not report.get("text"):

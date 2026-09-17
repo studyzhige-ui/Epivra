@@ -9,6 +9,10 @@
 python -m unittest discover -s tests
 python tools/check_architecture.py
 ruff check src tests tools evals
+# 可选：前端确定性回归需要 Node.js，应用运行本身不需要
+node tests/web_reader.cjs
+node tests/web_status.cjs
+node tests/web_usage.cjs
 ```
 
 ## 在线诊断
@@ -45,7 +49,9 @@ python tools/run_role_diagnostic.py --run-id delegation-control --trace .epivra/
 
 `mechanism_cases.py` 提供18项机制的36份短报告正反例，用于核查校准，不证明探索、改向、协作或恢复实际发生。`closed_loop_cases.json` 提供每项4份合成资料的小型完整任务。`research_scenarios/` 分开保存输入语料和评估数据，判分标签不进入 Agent 上下文。
 
-`research_case.py` 可生成30或100份来源，包含同源转载和关键独立证据。自动覆盖检查不能证明语义正确或长文理解能力；规模测试不超过100份文件。
+`research_case.py` 可生成30或100份来源，包含同源转载和关键独立证据。这些是已有夹具规模，不是产品的来源数量上限。自动覆盖检查不能证明语义正确或长文理解能力。
+
+`tools/run_benchmark10.py` 是 Windows 批量诊断工具，按正常题内并发、题间顺序运行。题单由调用者通过 `--queries path/to/cases.jsonl` 提供，不随工具上传；每行包含整数 `id` 和字符串 `prompt`。启动命令为 `python tools/run_benchmark10.py --run-id batch-version --queries path/to/cases.jsonl`，查看原运行状态使用 `--run-id batch-version --status`。启动会消耗模型/搜索额度并自动批准生成策略，只应用于明确授权的诊断题单。代码和输入进入冻结身份，不能用同一 run ID 静默切换版本。这不是公开榜单成绩，发布成功也不代表质量通过。
 
 先检查决定性结论和证据，再看风格。拒绝报告但理由错误不能算核查成功；没有发生的行为应标为未验证，不自动判通过或失败。保留争议判断以供人工复核，留出不参与调试的任务，不把模型自评当作真值。
 
