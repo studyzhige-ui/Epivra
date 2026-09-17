@@ -44,7 +44,7 @@ class RequestStorageTests(Fixture, unittest.IsolatedAsyncioTestCase):
         )
         self.restart(legacy=True)
         self.assertEqual(
-            2003, self.store.db.execute("PRAGMA user_version").fetchone()[0]
+            2004, self.store.db.execute("PRAGMA user_version").fetchone()[0]
         )
         await Harness(self.store, model).step("s", self.work.ref)
         self.assertEqual(0, model.calls)
@@ -152,8 +152,85 @@ class RequestStorageTests(Fixture, unittest.IsolatedAsyncioTestCase):
         step = self.store.put("other", "step", {"request": {}}, (work.ref,))
         with self.assertRaises(ValueError):
             self.store.admit(
-                "s", self.work.ref, self.c.epoch, "cross-study", {}, request_step=step.ref
+                "s",
+                self.work.ref,
+                self.c.epoch,
+                "cross-study",
+                {},
+                request_step=step.ref,
             )
         self.assertEqual(
             0, self.store.db.execute("SELECT count(*) FROM operations").fetchone()[0]
         )
+
+
+class CompletedImportTests(Fixture):
+    def published(self):
+        investigator = self.store.work(
+            "s", self.c.ref, "investigator", "Find", owner=self.work.ref
+        )
+        finding = self.store.put(
+            "s",
+            "work_result",
+            {"text": "Finding", "refs": [], "producer": investigator.ref},
+            (investigator.ref,),
+        )
+        writer = self.store.work(
+            "s", self.c.ref, "writer", "Write", (finding.ref,), self.work.ref
+        )
+        report = self.store.put(
+            "s",
+            "report",
+            {"text": "Result", "producer": writer.ref, "evidence": []},
+            (self.c.direction, writer.ref),
+        )
+        reviewer = self.store.work(
+            "s", self.c.ref, "reviewer", "Check", (report.ref,), self.work.ref
+        )
+        review = self.store.put(
+            "s",
+            "review",
+            {"accepted": True, "work": reviewer.ref},
+            (report.ref, reviewer.ref),
+        )
+        self.store.publish("s", self.work.ref, self.c.epoch, report.ref, review.ref)
+        self.store.admit("s", self.work.ref, self.c.epoch, "paid", {"input": "saved"})
+        self.store.settle("paid", {"output": "already paid"})
+
+    def test_import_preserves_ledger_and_rejects_partial_existing_copy(self):
+        self.published()
+        target = Store(self.path.with_name("target.db"))
+        try:
+            self.assertTrue(target.import_completed(self.path, "s")["imported"])
+            self.assertTrue(target.import_completed(self.path, "s")["already_imported"])
+            self.assertEqual("succeeded", target.operation_status("s", "paid"))
+            target.db.execute("DELETE FROM operations WHERE id='paid'")
+            with self.assertRaisesRegex(Conflict, "ledger differ"):
+                target.import_completed(self.path, "s")
+        finally:
+            target.close()
+
+    def test_historical_publication_does_not_complete_new_direction(self):
+        self.published()
+        self.command("steer", {"request": "Changed scope"})
+        target = Store(self.path.with_name("target.db"))
+        try:
+            with self.assertRaisesRegex(ValueError, "completed"):
+                target.import_completed(self.path, "s")
+            self.assertEqual(0, target.latest_sequence("s", ("control",)))
+        finally:
+            target.close()
+
+    def test_foreign_ledger_reference_rolls_back_whole_import(self):
+        self.published()
+        other = self.store.create("other", "different study", {})
+        self.store.db.execute(
+            "UPDATE operations SET direction=? WHERE id='paid'", (other.direction,)
+        )
+        target = Store(self.path.with_name("target.db"))
+        try:
+            with self.assertRaisesRegex(ValueError, "ledger references"):
+                target.import_completed(self.path, "s")
+            self.assertEqual(0, target.latest_sequence("s", ("control",)))
+        finally:
+            target.close()

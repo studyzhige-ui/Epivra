@@ -4,15 +4,17 @@ from __future__ import annotations
 
 import asyncio
 import math
+import re
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any, Protocol
 
 from .analysis_runtime import AnalysisRuntime
 from .calculation import calculate
 from .citations import render as render_citations
-from .context import assemble, source_ranges
+from .context import assemble, fit_provider, page, source_ranges
 from .domain import (
     Artifact,
     Call,
@@ -23,7 +25,7 @@ from .domain import (
     encode,
     identity,
 )
-from .prompts import ROLES, TOOLS
+from .prompts import ROLES, TOOLS, WRITING_GUIDES
 from .review import text_metrics, units
 from .scheduling import Scheduler
 from .storage import Store
@@ -79,6 +81,30 @@ def object_schema(properties: dict[str, Any]) -> dict[str, Any]:
 STRING = {"type": "string", "minLength": 1}
 STRINGS = {"type": "array", "items": STRING}
 BUILTINS = {
+    "read_context": (
+        "all",
+        object_schema(
+            {
+                "section": {
+                    "type": "string",
+                    "enum": [
+                        "inputs",
+                        "catalogs",
+                        "delegated_work",
+                        "clarifications",
+                        "review_inputs",
+                        "review_evidence",
+                    ],
+                },
+                "offset": {"type": "integer", "minimum": 0},
+                "limit": {"type": "integer", "minimum": 1},
+            }
+        ),
+    ),
+    "read_writing_guide": (
+        "writer",
+        object_schema({"genre": {"type": "string", "enum": list(WRITING_GUIDES)}}),
+    ),
     "run_analysis": (
         "all",
         object_schema(
@@ -107,13 +133,21 @@ BUILTINS = {
                     "offset": {"type": "integer"},
                     "quote": STRING,
                     "limits": {"type": "string"},
+                    "selection": {
+                        **STRING,
+                        "description": "Exact selection returned by read_source; supplies source and original quote without transcription.",
+                    },
                 }
             ),
-            "required": ["text", "source", "quote", "limits"],
+            "required": ["text"],
+            "oneOf": [{"required": ["selection"]}, {"required": ["source", "quote"]}],
         },
     ),
     "calculate": ("all", object_schema({"expression": STRING})),
-    "measure_text": ("writer", object_schema({"text": STRING})),
+    "measure_text": (
+        "writer",
+        {**object_schema({"text": STRING, "evidence": STRINGS}), "required": ["text"]},
+    ),
     "wait_for_work": ("lead", object_schema({"refs": STRINGS})),
     "pin_evidence": ("all", object_schema({"refs": STRINGS})),
     "delegate_work": (
@@ -128,6 +162,14 @@ BUILTINS = {
                     "task": STRING,
                     "refs": STRINGS,
                     "review_mode": {"type": "string", "enum": ["final", "check"]},
+                    "shared_context": {
+                        "type": "string",
+                        "description": "Evidence-based common scope/definitions for this work; do not prescribe unresearched conclusions.",
+                    },
+                    "deliverable": {
+                        "type": "string",
+                        "description": "User-facing purpose and required coverage; internal audit logs are not report sections.",
+                    },
                 }
             ),
             "required": ["role", "task", "refs"],
@@ -285,19 +327,45 @@ BUILTINS = {
 }
 
 
-def validate(value: Any, schema: dict[str, Any]) -> None:
+for _name in ("read_source", "read_artifact_range", "read_report"):
+    _page = BUILTINS[_name][1]
+    _page["required"] = [
+        key for key in _page["required"] if key not in {"offset", "limit"}
+    ]
+    _page["properties"]["offset"].update(minimum=0, default=0)
+    _page["properties"]["limit"].update(
+        minimum=1,
+        description="Desired maximum page size; the host may return a smaller complete page with next_offset.",
+    )
+
+
+def validate(value: Any, schema: dict[str, Any], path: str = "arguments") -> None:
     """Validate the deliberately small tool-schema subset used by this slice."""
     kind = schema["type"]
     if kind == "object":
         if not isinstance(value, dict):
             raise ValueError("expected object")
         props = schema["properties"]
+        alternatives = schema.get("oneOf")
+        if (
+            alternatives
+            and sum(
+                set(option.get("required", ())).issubset(value)
+                for option in alternatives
+            )
+            != 1
+        ):
+            raise ValueError(f"{path}: select exactly one documented argument form")
         if not set(schema.get("required", ())).issubset(value) or set(value) - set(
             props
         ):
-            raise ValueError("unexpected or missing fields")
+            missing = sorted(set(schema.get("required", ())) - set(value))
+            extra = sorted(set(value) - set(props))
+            raise ValueError(
+                f"{path}: missing fields {missing}; unexpected fields {extra}"
+            )
         for key in value:
-            validate(value[key], props[key])
+            validate(value[key], props[key], f"{path}.{key}")
     elif kind == "array":
         if not isinstance(value, list):
             raise ValueError("expected array")
@@ -316,6 +384,8 @@ def validate(value: Any, schema: dict[str, Any]) -> None:
     elif kind == "integer":
         if type(value) is not int:
             raise ValueError("expected integer")
+        if value < schema.get("minimum", value) or value > schema.get("maximum", value):
+            raise ValueError(f"{path}: outside declared range")
     else:
         raise ValueError("unsupported schema type")
     if "enum" in schema and value not in schema["enum"]:
@@ -370,6 +440,7 @@ class Harness:
                 for k, v in result.items()
                 if k
                 in {
+                    "read_context",
                     "delegate_work",
                     "answer_clarification",
                     "wait_for_work",
@@ -387,6 +458,7 @@ class Harness:
                 for k, v in result.items()
                 if k
                 in {
+                    "read_context",
                     "propose_plan",
                     "discover_local",
                     "read_catalog",
@@ -421,11 +493,72 @@ class Harness:
             units(reports[0].body["text"]),
         )
 
-    def _request(self, study: str, work: Artifact) -> dict[str, Any]:
+    def _request(
+        self,
+        study: str,
+        work: Artifact,
+        *,
+        memory_override=None,
+        pins_override=None,
+        prepare_wire=True,
+        section=None,
+        offset=0,
+        limit=20,
+    ) -> dict[str, Any]:
+        from .domain import ContextCapacity
+
+        options = dict(
+            memory_override=memory_override,
+            pins_override=pins_override,
+            prepare_wire=prepare_wire,
+            section=section,
+            offset=offset,
+            limit=limit,
+        )
+        try:
+            return self._assemble_request(study, work, **options)
+        except ContextCapacity:
+            if section is not None:
+                raise
+            # Recover only previously accepted projections, never downgrade the
+            # field currently being validated for a new write.
+            for field, kind in (
+                ("pins_override", "evidence_anchor"),
+                ("memory_override", "memory"),
+            ):
+                if options[field] is not None:
+                    continue
+                originals = self._steps(study, kind, work.ref, limit=1)
+                if not originals:
+                    continue
+                options[field] = {
+                    "ref": originals[-1].ref,
+                    "body_omitted": True,
+                    "reason": "archived_context_exceeds_current_window",
+                    "instruction": "Read this complete original with read_artifact_range before replacing its working projection; retain relevant evidence and the current task and direction.",
+                }
+                try:
+                    return self._assemble_request(study, work, **options)
+                except ContextCapacity:
+                    continue
+            raise
+
+    def _assemble_request(
+        self,
+        study: str,
+        work: Artifact,
+        *,
+        memory_override=None,
+        pins_override=None,
+        prepare_wire=True,
+        section=None,
+        offset=0,
+        limit=20,
+    ) -> dict[str, Any]:
         direction = self.store.get(study, work.body["direction"])
         control = self.store.control(study)
         plan = self.store.get(study, control.plan) if control.plan else None
-        anchors = self._steps(study, "evidence_anchor", work.ref)
+        anchors = self._steps(study, "evidence_anchor", work.ref, limit=1)
         catalogs = {}
         for item in self.store.list(study, "catalog"):
             catalogs[item.body["root"]] = {
@@ -438,7 +571,12 @@ class Harness:
             "provider": self.model.identity,
             "system": ROLES[work.body["role"]],
             "role": work.body["role"],
+            "work_ref": work.ref,
+            "direction_ref": direction.ref,
             "task": work.body["task"],
+            "shared_context": work.body.get("shared_context", ""),
+            "deliverable": work.body.get("deliverable", ""),
+            "current_date": datetime.now(timezone.utc).date().isoformat(),
             "direction": direction.body,
             "research_scope": {
                 "brief": plan.body.get("brief")
@@ -450,7 +588,7 @@ class Harness:
                     "ref": plan.ref,
                     "current_direction": direction.ref in plan.parents,
                 },
-                "available_sources": len(self.store.list(study, "source")),
+                "available_sources": self.store.count(study, "source"),
                 "source_lookup": "find_artifacts(kind='source', query='', after=0)",
             },
             "inputs": [
@@ -476,7 +614,9 @@ class Harness:
                 for child in self.store.list(study, "work")
                 if child.body["owner"] == work.ref
             ],
-            "pinned_evidence": anchors[-1].body["refs"] if anchors else [],
+            "pinned_evidence": pins_override
+            if pins_override is not None
+            else (anchors[-1].body["refs"] if anchors else []),
             "tools": self._schema(
                 work.body["role"],
                 {
@@ -496,10 +636,10 @@ class Harness:
                 "total_units": len(parts),
                 "inputs": self._relations(study, report),
             }
-        candidates = [
-            x for x in self.store.list(study, "observation") if work.ref in x.parents
-        ]
-        candidates.extend(self._steps(study, "note", work.ref))
+        candidates = self._steps(study, "observation", work.ref, limit=64)
+        candidates.extend(self._steps(study, "note", work.ref, limit=64))
+        if plan is not None and direction.ref in plan.parents:
+            candidates.append(plan)
         candidates.extend(
             self.store.get(study, ref)
             for ref in self._handoff_inputs(study, work)
@@ -535,6 +675,56 @@ class Harness:
             }
             for q in questions
         ]
+        directories = {
+            key: mandatory.pop(key)
+            for key in ("inputs", "catalogs", "delegated_work", "clarifications")
+        }
+        if work.body["role"] == "reviewer":
+            directories["review_inputs"] = mandatory["review_progress"].pop("inputs")
+            directories["review_evidence"] = mandatory["review_progress"].pop(
+                "evidence"
+            )
+        if section is not None:
+            if section not in directories:
+                raise ValueError("context section unavailable to this work")
+            return page(directories[section], offset, limit, self.context_chars // 3)
+        memories = self._steps(study, "memory", work.ref, limit=1)
+        active_memory = (
+            memory_override
+            if memory_override is not None
+            else (memories[-1] if memories else None)
+        )
+        mandatory["navigation"] = {
+            key: {"offset": 0, "total": len(items), "next_offset": 0 if items else None}
+            for key, items in directories.items()
+        }
+        for key in directories:
+            if key.startswith("review_"):
+                mandatory["review_progress"][key.removeprefix("review_")] = []
+            else:
+                mandatory[key] = []
+        # Reserve the complete task and memory before allocating any growing directory.
+        essential = assemble(mandatory, [], active_memory, self.context_chars)
+        allocation = min(
+            self.context_chars // 32,
+            max(0, self.context_chars - len(encode(essential)) - 256)
+            // len(directories),
+        )
+        for key, items in directories.items():
+            first = (
+                page(items, 0, 20, allocation)
+                if allocation >= 256
+                else {"items": [], **mandatory["navigation"][key]}
+            )
+            mandatory["navigation"][key] = {
+                k: v for k, v in first.items() if k != "items"
+            }
+            if key.startswith("review_"):
+                mandatory["review_progress"][key.removeprefix("review_")] = first[
+                    "items"
+                ]
+            else:
+                mandatory[key] = first["items"]
         for q in questions:
             candidates.append(q)
             if q.ref in answers:
@@ -552,17 +742,19 @@ class Harness:
             if item.kind == "work_result" and item.body.get("producer")
         )
         candidates = list({a.ref: a for a in candidates}.values())
-        memories = self._steps(study, "memory", work.ref)
         request = assemble(
             mandatory,
             candidates,
-            memories[-1] if memories else None,
+            active_memory,
             self.context_chars,
+            direct_refs=[item["ref"] for item in directories["inputs"]],
         )
         prepare = getattr(self.model, "prepare", None)
         if prepare:
+            request = fit_provider(request, prepare)
+        if prepare and prepare_wire:
             previous = None
-            steps = self._steps(study, "step", work.ref)
+            steps = self._steps(study, "step", work.ref, limit=1)
             if steps:
                 last = steps[-1]
                 if "wire" in last.body["request"]:
@@ -573,8 +765,7 @@ class Harness:
                         ),
                         "observations": [
                             {**a.body, "_ref": a.ref}
-                            for a in self._steps(study, "observation", work.ref)
-                            if a.body.get("step") == last.ref
+                            for a in self.store.related(study, "observation", last.ref)
                         ],
                     }
                     if any("error" in o for o in previous["observations"]):
@@ -687,17 +878,17 @@ class Harness:
             self.store.require_work(study, work, epoch)
             key = next_key
 
-    def _steps(self, study: str, kind: str, work: str) -> list[Artifact]:
-        return [
-            a
-            for a in self.store.list(study, kind)
-            if (
-                a.body.get("producer") == work
-                if kind
-                in {"work_result", "note", "memory", "evidence_anchor", "work_wait"}
-                else work in a.parents
-            )
-        ]
+    def _steps(self, study: str, kind: str, work: str, *, limit=None) -> list[Artifact]:
+        return self.store.related(
+            study,
+            kind,
+            work,
+            producer=kind
+            in {"work_result", "note", "memory", "evidence_anchor", "work_wait"},
+            # Only step has one parent; multi-parent artifacts are sorted by ref.
+            first_parent=kind == "step",
+            limit=limit,
+        )
 
     def _handoff_inputs(self, study: str, work: Artifact) -> tuple[str, ...]:
         questions = {q.ref for q in self.store.clarifications(study, work=work.ref)}
@@ -742,8 +933,15 @@ class Harness:
             work = self.store.require_work(study, work_ref, control.epoch)
             if self.finished(study, work_ref):
                 return "finished"
-            steps = self._steps(study, "step", work_ref)
-            done = {a.body["step"] for a in self._steps(study, "step_done", work_ref)}
+            steps = self._steps(study, "step", work_ref, limit=1)
+            done = (
+                {
+                    a.body["step"]
+                    for a in self.store.related(study, "step_done", steps[-1].ref)
+                }
+                if steps
+                else set()
+            )
             pending = [s for s in steps if s.ref not in done]
             if self.waiting(study, work_ref) and not pending:
                 return "waiting"
@@ -760,7 +958,7 @@ class Harness:
                     study,
                     "step",
                     {
-                        "number": len(steps),
+                        "number": steps[-1].body["number"] + 1 if steps else 0,
                         "epoch": control.epoch,
                         "progress": self._progress(study),
                         "request": self._request(study, work),
@@ -775,13 +973,17 @@ class Harness:
             }:
                 raise NotAllowed("pending work requires its original tool bindings")
             direction = self.store.get(study, work.body["direction"])
-            if step.body["request"]["tools"] != self._schema(
+            current_schema = self._schema(
                 work.body["role"],
                 {
                     **direction.body["policy"],
                     "_approved": control.approved,
                     "_review_mode": work.body.get("review_mode", "final"),
                 },
+            )
+            if any(
+                current_schema.get(name) != spec
+                for name, spec in step.body["request"]["tools"].items()
             ):
                 raise NotAllowed("pending work requires its original tool contracts")
             raw = await self._invoke(
@@ -876,7 +1078,7 @@ class Harness:
                     raise prefetch_errors[index]
                 previous = [
                     a
-                    for a in self._steps(study, "observation", work_ref)
+                    for a in self.store.related(study, "observation", step.ref)
                     if a.body.get("step") == step.ref and a.body.get("index") == index
                 ]
                 if previous:
@@ -1083,7 +1285,7 @@ class Harness:
         )
 
     def _check_repeated(self, study, work, epoch):
-        recent = self._steps(study, "step_done", work)[-3:]
+        recent = self._steps(study, "step_done", work, limit=3)
         if len(recent) != 3 or not recent[0].body.get("failure"):
             return
         steps = [self.store.get(study, a.body["step"]) for a in recent]
@@ -1100,9 +1302,7 @@ class Harness:
     def _done(self, study: str, work: str, step: str, failure=None) -> None:
         if failure is None:
             observations = [
-                a.body
-                for a in self._steps(study, "observation", work)
-                if a.body.get("step") == step
+                a.body for a in self.store.related(study, "observation", step)
             ]
             failures = [a.get("failure") for a in observations]
             if failures and all(failures):
@@ -1120,13 +1320,28 @@ class Harness:
         self.store.require_work(study, work.ref, epoch)
         direction = work.body["direction"]
         args = call.arguments
+        if call.name in {"read_source", "read_artifact_range", "read_report"}:
+            args = {
+                "offset": 0,
+                "limit": 20 if call.name == "read_report" else self.context_chars // 3,
+                **args,
+            }
         parents = (work.ref, direction, step)
+        if call.name == "read_context":
+            return self._request(
+                study,
+                work,
+                section=args["section"],
+                offset=args["offset"],
+                limit=args["limit"],
+            )
         if call.name == "pin_evidence":
             refs = list(dict.fromkeys(args["refs"]))
             if len(encode(refs)) > self.context_chars // 4:
                 raise ValueError("pinned evidence exceeds context allocation")
             if any(self.store.get(study, ref).kind != "source" for ref in refs):
                 raise ValueError("evidence anchors must name source snapshots")
+            self._request(study, work, pins_override=refs, prepare_wire=False)
             item = self.store.put(
                 study,
                 "evidence_anchor",
@@ -1161,6 +1376,8 @@ class Harness:
                 tuple(args["refs"]),
                 work.ref,
                 review_mode=args.get("review_mode", "final"),
+                shared_context=args.get("shared_context", ""),
+                deliverable=args.get("deliverable", ""),
             )
             return {"work": child.ref}
         if call.name == "request_clarification":
@@ -1195,6 +1412,22 @@ class Harness:
                 raise ValueError(
                     "memory too large; preserve critical facts and references"
                 )
+            prospective = Artifact(
+                identity("memory-preview", args),
+                study,
+                "memory",
+                {**args, "producer": work.ref},
+                parents,
+                0,
+            )
+            try:
+                self._request(
+                    study, work, memory_override=prospective, prepare_wire=False
+                )
+            except ValueError as exc:
+                raise ValueError(
+                    "memory update exceeds remaining task context; shorten it or keep details in notes; previous memory retained"
+                ) from exc
             item = self.store.put(
                 study,
                 "memory",
@@ -1214,8 +1447,10 @@ class Harness:
                 )
             body = encode(artifact.body)
             offset, limit = args["offset"], args["limit"]
-            if offset < 0 or not 1 <= limit <= self.context_chars // 3:
+            if offset < 0 or limit < 1:
                 raise ValueError("invalid artifact range")
+            offset = min(offset, len(body))
+            limit = min(limit, self.context_chars // 3)
             return {
                 "ref": artifact.ref,
                 "kind": artifact.kind,
@@ -1225,6 +1460,7 @@ class Harness:
                 "offset": offset,
                 "end": min(len(body), offset + limit),
                 "total": len(body),
+                "next_offset": offset + limit if offset + limit < len(body) else None,
             }
         if call.name == "discover_local":
             catalog = self.workspace.discover(study, args["root"])
@@ -1265,18 +1501,51 @@ class Harness:
             }
         if call.name == "read_source":
             source = self.store.get(study, args["ref"])
+            if source.kind == "note":
+                note = source
+                source = self.store.get(study, note.body.get("source", ""))
+                quote, start = note.body.get("quote"), note.body.get("offset")
+                if (
+                    source.ref not in note.parents
+                    or not isinstance(quote, str)
+                    or not quote
+                    or type(start) is not int
+                    or start < 0
+                    or source.body.get("text", "")[start : start + len(quote)] != quote
+                ):
+                    raise ValueError("note must bind an exact source passage")
+                if "offset" not in call.arguments:
+                    args["offset"] = start
             if source.kind != "source":
                 raise ValueError("expected source")
             text = source.body["text"]
             offset, limit = args["offset"], args["limit"]
-            if offset < 0 or not 1 <= limit <= self.context_chars // 3:
+            if offset < 0 or limit < 1:
                 raise ValueError("invalid source range")
+            offset = min(offset, len(text))
+            limit = min(limit, self.context_chars // 3)
+            end = min(len(text), offset + limit)
+            # Selections bind exact original paragraphs. Labels are a preview,
+            # not a replacement for the returned original text.
+            selections = []
+            for match in re.finditer(
+                r"\S[^\n]*(?:\n(?!\s*\n)[^\n]+)*", text[offset:end]
+            ):
+                start, stop = offset + match.start(), offset + match.end()
+                selections.append(
+                    {
+                        "selection": f"{source.ref}:{start}:{stop}",
+                        "preview": text[start:stop][:100],
+                    }
+                )
             return {
                 "ref": source.ref,
                 "kind": "source",
                 "offset": offset,
                 "end": min(len(text), offset + limit),
                 "total": len(text),
+                "next_offset": end if end < len(text) else None,
+                "selections": selections,
                 "text": text[offset : offset + limit],
                 "origin": source.body.get("origin"),
                 "coverage": source.body.get("coverage"),
@@ -1300,10 +1569,14 @@ class Harness:
                     "execution and provider-private records are not research materials"
                 )
             if len(encode(artifact.body)) > self.context_chars // 2:
-                return {
-                    "error": "use read_artifact_range to retrieve this body",
-                    "ref": artifact.ref,
-                }
+                return self._builtin(
+                    study,
+                    work,
+                    epoch,
+                    step,
+                    index,
+                    Call("read_artifact_range", {"ref": artifact.ref}),
+                )
             return {
                 "ref": artifact.ref,
                 "kind": artifact.kind,
@@ -1313,6 +1586,36 @@ class Harness:
         if call.name == "calculate":
             return calculate(args["expression"])
         if call.name == "record_evidence":
+            if "selection" in args:
+                if any(key in args for key in ("source", "quote", "offset")):
+                    raise ValueError("use selection OR source/quote, not both")
+                selected = args["selection"]
+                issued = any(
+                    selected == item.get("selection")
+                    for observation in self._steps(study, "observation", work.ref)
+                    if observation.body.get("tool") == "read_source"
+                    and isinstance(observation.body.get("result"), dict)
+                    for item in observation.body.get("result", {}).get("selections", [])
+                    if isinstance(item, dict)
+                )
+                if not issued:
+                    raise ValueError(
+                        "selection must come from this work's read_source result"
+                    )
+                source_ref, start_text, end_text = selected.split(":")
+                source = self.store.get(study, source_ref)
+                start, end = int(start_text), int(end_text)
+                args = {
+                    "text": args["text"],
+                    "limits": args.get("limits", ""),
+                    "source": source.ref,
+                    "quote": source.body["text"][start:end],
+                    "offset": start,
+                }
+            elif not all(key in args for key in ("source", "quote")):
+                raise ValueError(
+                    "choose a read_source selection or provide source and exact quote"
+                )
             source = self.store.get(study, args["source"])
             if source.kind != "source":
                 raise ValueError("expected source snapshot")
@@ -1353,7 +1656,24 @@ class Harness:
                 (work.ref, item.ref),
             )
         elif call.name == "measure_text":
-            return text_metrics(args["text"])
+            if "evidence" not in args:
+                return text_metrics(args["text"])
+            rendered = render_citations(
+                args["text"], args["evidence"], lambda ref: self.store.get(study, ref)
+            )
+            return {
+                **text_metrics(rendered["text"]),
+                "scope": "rendered report including generated references",
+                "body": text_metrics(
+                    rendered["text"][: rendered["citation_body_length"]]
+                ),
+            }
+        elif call.name == "read_writing_guide":
+            return {
+                "genre": args["genre"],
+                "guidance": WRITING_GUIDES[args["genre"]],
+                "status": "advisory; user requirements take precedence",
+            }
         elif call.name == "draft_report":
             rendered = render_citations(
                 args["text"], args["evidence"], lambda ref: self.store.get(study, ref)
@@ -1389,8 +1709,10 @@ class Harness:
         elif call.name == "read_report":
             report, parts = self._review(study, work)
             offset, limit = args["offset"], args["limit"]
-            if offset < 0 or not 1 <= limit <= 20:
+            if offset < 0 or limit < 1:
                 raise ValueError("invalid report page")
+            offset = min(offset, len(parts))
+            limit = min(limit, 20)
             return {
                 "report": report.ref,
                 "units": parts[offset : offset + limit],

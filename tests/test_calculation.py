@@ -4,6 +4,20 @@ from epivra.calculation import calculate
 
 
 class CalculationTests(unittest.TestCase):
+    def test_fractional_power_growth_discount_and_real_domain(self):
+        for expression, expected in (
+            ("(1.4641)^(1/4)-1", 0.1),
+            ("100/(1.05**2)", 90.70294785),
+            ("9^0.5", 3),
+        ):
+            result = calculate(expression)
+            self.assertAlmostEqual(float(result["decimal"]), expected, places=5)
+        self.assertIsNone(calculate("2^(1/2)")["exact"])
+        self.assertEqual("-8", calculate("(-2)^3")["exact"])
+        for expression in ("(-2)^0.5", "0^0", "0^-1", "10^1000000"):
+            with self.assertRaises(ValueError):
+                calculate(expression)
+
     def test_decimal_inputs_are_exact_and_repeating_results_are_labeled(self):
         self.assertEqual("3/10", calculate("0.1 + 0.2")["exact"])
         self.assertEqual("22", calculate("(20+22+24)/3")["exact"])

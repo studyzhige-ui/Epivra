@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-from .adapters import ProviderFailure
+from .adapters import ProviderFailure, rate_limit_delay
 from .domain import Conflict, RepeatedFailure
 from .harness import Harness
 from .storage import Store
@@ -49,9 +49,14 @@ class ResearchService:
                 await asyncio.sleep(0)
 
     async def _drive(self, study: str) -> None:
+        active: dict[str, asyncio.Task] = {}
+        delivered = set()
+        epoch = self.store.control(study).epoch
         try:
             while True:
                 c = self.store.control(study)
+                if c.epoch != epoch:
+                    raise Conflict("control changed while steps were active")
                 if c.paused or c.cancelled:
                     return
                 publications = [
@@ -103,6 +108,8 @@ class ResearchService:
                         for result in self.harness._steps(
                             study, "work_result", child.ref
                         ):
+                            if result.ref in delivered:
+                                continue
                             self.store.observation(
                                 study,
                                 root.ref,
@@ -115,6 +122,7 @@ class ResearchService:
                                 },
                                 (result.ref,),
                             )
+                            delivered.add(result.ref)
                         if child.ref in self.work_errors:
                             self.store.observation(
                                 study,
@@ -131,7 +139,7 @@ class ResearchService:
                                 },
                                 (child.ref,),
                             )
-                    waits = self.harness._steps(study, "work_wait", root.ref)
+                    waits = self.harness._steps(study, "work_wait", root.ref, limit=1)
                     waiting = bool(
                         waits and any(w.ref in waits[-1].body["refs"] for w in pending)
                     )
@@ -147,26 +155,41 @@ class ResearchService:
                     ] + ([] if waiting else [root])
 
                     def last_step(w):
-                        steps = self.harness._steps(study, "step", w.ref)
-                        return steps[-1].seq if steps else -1
+                        return self.store.step_sequence(study, w.ref)
 
                     ready.sort(key=last_step)
-                    outcomes = await asyncio.gather(
-                        *(
-                            self._run_child(study, w.ref)
-                            if w.body["owner"]
-                            else self.harness.step(study, w.ref)
-                            for w in ready[: self.concurrency]
-                        ),
-                        return_exceptions=True,
+                    for w in ready:
+                        if len(active) >= self.concurrency:
+                            break
+                        if w.ref not in active:
+                            active[w.ref] = asyncio.create_task(
+                                self._run_child(study, w.ref)
+                                if w.body["owner"]
+                                else self.harness.step(study, w.ref)
+                            )
+                    if not active:
+                        return
+                    done, _ = await asyncio.wait(
+                        active.values(),
+                        timeout=0.25,
+                        return_when=asyncio.FIRST_COMPLETED,
                     )
+                    outcomes = []
+                    for ref, task in tuple(active.items()):
+                        if task in done:
+                            del active[ref]
+                            outcomes.append(task.exception())
                     for outcome in outcomes:
-                        if isinstance(outcome, BaseException):
+                        if outcome is not None:
                             raise outcome
                     continue
                 await self.harness.step(study, work.ref)
                 # Let control messages run even when every operation was replayed.
                 await asyncio.sleep(0)
+        except asyncio.CancelledError:
+            for task in active.values():
+                task.cancel()
+            raise
         except Conflict:
             raise
         except Exception as exc:
@@ -174,6 +197,12 @@ class ResearchService:
             self.errors[study] = (
                 str(exc) if isinstance(exc, ProviderFailure) else type(exc).__name__
             )
+
+        finally:
+            # Control changes stop admission; already sent responses settle before
+            # another epoch starts. Host shutdown cancels and retains unknowns.
+            if active:
+                await asyncio.gather(*active.values(), return_exceptions=True)
 
     def status(self, study: str) -> dict[str, Any]:
         c = self.store.control(study)
@@ -272,6 +301,15 @@ def online_service(
         value["properties"]["provider"] = {"type": "string", "enum": names}
         if field == "url":
             value["properties"]["force_refresh"] = {"type": "boolean"}
+        elif "tavily" in names:
+            value["properties"].update(
+                {
+                    "include_domains": {"type": "array", "items": STRING},
+                    "exclude_domains": {"type": "array", "items": STRING},
+                    "start_date": STRING,
+                    "end_date": STRING,
+                }
+            )
         return value
 
     async def search(args):
@@ -291,13 +329,7 @@ def online_service(
             ):
                 return {
                     "reused": {
-                        "sources": [
-                            {
-                                "ref": source.ref,
-                                "url": source.body["origin"],
-                                "characters": len(source.body["text"]),
-                            }
-                        ],
+                        "sources": [workspace.web_source_info(source)],
                         "failures": [],
                     }
                 }
@@ -332,7 +364,10 @@ def online_service(
             continue
         tools[name] = Tool(
             (
-                "Find source URLs. Snippets are leads, not original evidence. "
+                "Find source URLs across the public web. Snippets are leads, not original evidence. "
+                "Choose queries and authoritative sites for the evidence needed; switch when results add no information. "
+                "Only tavily supports include_domains/exclude_domains and YYYY-MM-DD start_date/end_date "
+                "(publication or update date); other providers reject these fields. "
                 if not reading
                 else "Read a public URL into a citable source; saved text is reused unless force_refresh. "
             )
@@ -349,13 +384,82 @@ def online_service(
             ),
             check=(lambda args: select(args, readers).validate_extract(args))
             if reading
-            else None,
+            else (lambda args: select(args, searches).validate_search(args)),
             parallel_safe=True,
             resource=names[0],
             resource_map={n: n for n in names},
             cooldown=lambda raw: providers[raw["provider"]].retry_delay(raw, 0),
+            retry_delay=lambda raw, attempt: (
+                0
+                if raw.get("credential_retry")
+                and raw.get("http_status") in {401, 432, 433}
+                else None
+            ),
             reuse=reuse if reading else None,
         )
+    public_clients = []
+    if policy.get("network") and policy.get("public_sources"):
+        from .public_sources import (
+            ORIGINS,
+            PublicSource,
+            request,
+            spacing,
+        )
+        from .public_sources import (
+            TOOLS as PUBLIC_TOOLS,
+        )
+        from .scheduling import Scheduler
+
+        scheduler = scheduler or Scheduler(history=store.admissions())
+        public = {name: PublicSource(name) for name in ORIGINS}
+        public_clients = [p.api for p in public.values()]
+        for name in public:
+            # Product pacing (not an assertion that every API has a 1 RPS limit).
+            resource = "public:" + name
+            scheduler.limits[resource] = {
+                **scheduler.limits.get(resource, {}),
+                "concurrency": 1,
+            }
+            scheduler.constrain(resource, 1.0)
+
+        async def public_invoke(args, *, name, tool_name):
+            raw = await public[name].invoke(tool_name, args)
+            scheduler.constrain("public:" + name, spacing(raw))
+            return raw
+
+        def public_observe(raw, acq, *, name):
+            try:
+                decoded = public[name].decode(raw)
+            except (ProviderFailure, ValueError, KeyError, TypeError, SyntaxError):
+                return {
+                    "error": "public_source_failed",
+                    "provider": name,
+                    "http_status": raw.get("http_status"),
+                    "instruction": "No usable evidence obtained; revise query or use another permitted source.",
+                }
+            snapshots = workspace.web_snapshot(study, decoded, acq)
+            return {
+                **{
+                    k: v for k, v in decoded.items() if k not in {"sources", "failures"}
+                },
+                **snapshots,
+            }
+
+        for tool_name, (name, description, parameters) in PUBLIC_TOOLS.items():
+            tools[tool_name] = Tool(
+                description,
+                parameters,
+                lambda args, n=name, t=tool_name: public_invoke(
+                    args, name=n, tool_name=t
+                ),
+                identity="public-source-v1",
+                permission="network",
+                check=lambda args, t=tool_name: request(t, args),
+                observe=lambda raw, acq, n=name: public_observe(raw, acq, name=n),
+                resource="public:" + name,
+                parallel_safe=True,
+                cooldown=lambda raw: rate_limit_delay(raw, 0) or spacing(raw),
+            )
     mcp_connections = []
     if policy.get("mcp"):
         from .mcp_tools import connect_tools
@@ -366,5 +470,6 @@ def online_service(
     return ResearchService(store, harness), [
         model_api,
         *mcp_connections,
+        *public_clients,
         *(p.api for p in providers.values()),
     ]

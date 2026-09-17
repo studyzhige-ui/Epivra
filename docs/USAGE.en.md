@@ -151,6 +151,14 @@ Epivra does not automatically import the old project's `.deep-research-agent/` d
 
 ## 7. Troubleshooting and current limits
 
+### Long tasks and recovery
+
+Growing directories and large materials enter the model window through bounded pages, with the original request and current approved scope retained first. Memory and evidence anchors are checked against the full context allowance before saving. Oversized working sets from older versions retain their originals and expose references for paged recovery. Retrievable material is not proof that the model has read or understood it.
+
+Pause or redirect stops new calls from the previous control epoch; already sent requests still need to settle. Recovery reuses saved responses. Unknown outcomes block automatic resubmission: resolve the reported issue before resuming instead of creating a duplicate study. Incompatible model or tool contracts may prevent continuing old work; back up the workspace before upgrading.
+
+Provider caching is an optimization, not a recovery dependency. Usage reports show provider-reported cache counters; missing values are not zero. Explicit caching is not enabled for every interface.
+
 - **Model discovery fails:** check the key, region, account permissions, and network. Listing and inference permissions may differ.
 - **A new key has no effect:** check for an overriding environment variable. Reload credentials for paused tasks before resuming.
 - **Scanned materials fail:** verify that the documents extension and complete local model directory are installed.
@@ -158,3 +166,28 @@ Epivra does not automatically import the old project's `.deep-research-agent/` d
 - **Research is blocked:** follow the task's message, fix the cause, and resume instead of creating a duplicate task.
 
 Features are integrated, but live provider verification and cross-topic/long-document evaluations still have coverage gaps. Research conclusions are not guaranteed correct; review important sources, limitations, and uncertainty. Engineering tests do not replace research quality evaluation.
+
+## Included public sources and research strategy
+
+New network-enabled studies automatically offer Crossref (publication metadata), PubMed (biomedical discovery and records/abstracts), Europe PMC (life-science literature and available abstracts), and World Bank (indicator definitions and observations). These four channels require no API keys. Models and paid search services still use their own credentials. Local-only studies do not access these channels; existing studies retain their original tool bindings.
+
+Investigators choose channels for the question rather than searching every service. Metadata and abstracts are not full text, and missing indicator values are not zero. Original records, dates and provenance are preserved. World Bank data queries require indicator codes; agents can browse the catalogue or verify a definition first. Public services can throttle or fail; errors remain explicit so agents can revise their approach.
+
+Tavily supports structured domain and publication/update-date filters; these options are rejected for providers without that support. Initial strategies briefly propose focus, time scope, methods and deliverables. With no specified genre, writers organize findings freely. For an explicit genre they can read short writing guides; user templates take precedence. Strategies and guides do not guarantee correct conclusions: evidence-based research and review remain necessary.
+
+### Research elapsed time
+
+The Web study header, CLI study details and MCP status response expose elapsed time from first strategy approval to publication of the current result. This includes pauses, provider waiting and offline time. Cancellation stops the clock; changing direction retains the original start. It is neither compute time nor an estimated completion time. Older studies without complete timestamps show “Not recorded”; file modification times are not used to reconstruct a duration.
+
+### Cancel and delete
+
+Cancel stops research while keeping its records. Completed studies offer “Adjust direction” and “Delete study”; ongoing studies also offer “Stop and delete”. Web and CLI require confirmation. MCP delete_research requires explicit user authorization, the observed control version and confirmed=true.
+
+Deletion stops study agents, parsing tasks and dedicated tool connections, cleans its analysis containers/staging, then removes report, source-copy, usage and execution records. Cleanup failure retains the deletion intent for retry; host restart continues cleanup. User originals, exported copies, shared models/settings and other studies are retained. Already submitted external calls cannot be recalled or unbilled. Export anything you wish to retain before deleting.
+
+### Usage by function
+
+Usage is grouped by provider, model and function (for example, Tavily search versus extraction). Only reported metrics are displayed: zero is retained and missing data is not treated as zero. Partial reporting includes the number of covered calls. Jina Reader tokens are separate from LLM input/output; literature endpoints without metering show call counts only. Exa dollar amounts are provider references, not settled invoices. HTTP errors and unknown outcomes are separate; call counts do not imply successfully retrieved sources.
+
+
+The Web workbench keeps the research plan available and offers expandable public findings, a report outline, expanded reading, citation excerpts and saved source text. Export supports Markdown, Word, standalone HTML and PDF/Print (Save as PDF in the browser). Word preserves original formula notation. Export does not rerun research.

@@ -10,6 +10,42 @@ from epivra.usage import counters, summarize
 
 
 class UsageTests(unittest.TestCase):
+    def test_reader_and_cost_projection_and_function_grouping(self):
+        with tempfile.TemporaryDirectory() as folder:
+            store = Store(Path(folder) / "research.db")
+            try:
+                c = store.create("s", "Research", {})
+                work = store.work("s", c.ref, "lead", "Work")
+                cases = [
+                    ("jina", "fetch_web", {"data": {"usage": {"tokens": 40684}}}),
+                    ("tavily", "web_search", {"usage": {"credits": 1}}),
+                    ("tavily", "fetch_web", {"usage": {"credits": 0}}),
+                    ("tavily", "fetch_web", {}),
+                    ("exa", "web_search", {"costDollars": {"total": 0.005}}),
+                    ("public:pubmed", "search_pubmed", {}),
+                ]
+                for i, (resource, tool, data) in enumerate(cases):
+                    store.admit(
+                        "s",
+                        work.ref,
+                        c.epoch,
+                        str(i),
+                        {"tool": tool},
+                        admission={"resource": resource},
+                    )
+                    store.settle(str(i), {"value": {"http_status": 200, "data": data}})
+                groups = summarize(store.usage_records("s"))
+                self.assertEqual(5, len(groups))
+                self.assertEqual(40684, groups[0]["totals"]["reader_tokens"])
+                self.assertIsNone(groups[0]["totals"]["input_tokens"])
+                self.assertEqual(0, groups[2]["totals"]["search_credits"])
+                self.assertEqual(1, groups[2]["reported_calls"]["search_credits"])
+                self.assertEqual(2, groups[2]["calls"])
+                self.assertEqual(0.005, groups[3]["totals"]["cost_usd"])
+                self.assertTrue(all(v is None for v in groups[4]["totals"].values()))
+            finally:
+                store.close()
+
     def test_native_and_chat_counts_do_not_double_count_cache_or_reasoning(self):
         claude = counters(
             {
@@ -92,6 +128,12 @@ class UsageTests(unittest.TestCase):
                 self.assertEqual(2, len(rows))
                 self.assertEqual(13, rows[0]["usage"]["total_tokens"])
                 self.assertIsNone(rows[1]["usage"]["total_tokens"])
+                queries = []
+                store.db.set_trace_callback(queries.append)
+                self.assertEqual(rows, store.usage_records("s"))
+                store.db.set_trace_callback(None)
+                self.assertEqual(1, len(queries))
+                self.assertNotIn("json_extract", queries[0])
                 self.assertEqual(1, len(store.admissions()))
                 self.assertEqual(13, summarize(rows)[0]["totals"]["total_tokens"])
                 c = store.command("s", "pause", c.ref, "pause")
@@ -101,6 +143,24 @@ class UsageTests(unittest.TestCase):
                 rows = store.usage_records("s")
                 self.assertEqual(2, len(rows))
                 self.assertEqual(26, sum(r["usage"]["total_tokens"] for r in rows))
+            finally:
+                store.close()
+
+    def test_non_object_tool_results_remain_in_ledger(self):
+        with tempfile.TemporaryDirectory() as folder:
+            store = Store(Path(folder) / "research.db")
+            try:
+                c = store.create("s", "Research", {})
+                work = store.work("s", c.ref, "lead", "Investigate")
+                for index, value in enumerate(("text", True, [1, 2], None, 7)):
+                    operation = str(index)
+                    store.admit("s", work.ref, c.epoch, operation, {"tool": "example"})
+                    self.assertEqual(index + 1, len(store.usage_records("s")))
+                    store.settle(operation, {"value": value})
+                    row = store.usage_records("s")[-1]
+                    self.assertEqual("succeeded", row["status"])
+                    self.assertIsNone(row["http_status"])
+                    self.assertTrue(all(v is None for v in row["usage"].values()))
             finally:
                 store.close()
 

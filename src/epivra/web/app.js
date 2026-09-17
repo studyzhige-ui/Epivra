@@ -1,4 +1,5 @@
 import { t, localized, language, setLanguage } from "./i18n.js";
+import { addMath, renderReport, standalone } from "./reader.js";
 /* The browser presents Host facts. It owns no research state machine. */
 "use strict";
 const $ = (id) => document.getElementById(id);
@@ -22,6 +23,10 @@ const labels = localized({
   bocha: "博查",
   duckduckgo: "DuckDuckGo",
   jina: "Jina Reader",
+  pubmed: "PubMed",
+  crossref: "Crossref",
+  europe_pmc: "Europe PMC",
+  world_bank: "World Bank",
 });
 const coverageLabels = localized({
   text_extracted_not_reviewed: "已提取正文 · 尚未核查",
@@ -55,6 +60,7 @@ const md = window.markdownit({
   linkify: false,
   typographer: false,
 });
+addMath(md);
 // Emit classes rather than inline styles so strict CSP also preserves alignment.
 for (const tag of ["th_open", "td_open"]) {
   md.renderer.rules[tag] = (tokens, index, options, env, renderer) => {
@@ -66,8 +72,11 @@ for (const tag of ["th_open", "td_open"]) {
     return renderer.renderToken(tokens, index, options);
   };
 }
-md.renderer.rules.image = (tokens, index) =>
-  t("<span class=\"muted\">图示：{0}（请查看对应资料原件）</span>", md.utils.escapeHtml(tokens[index].content || t("图片")));
+md.renderer.rules.image = (tokens, index) => {
+  const image = tokens[index], alt = md.utils.escapeHtml(image.content || t("图片"));
+  const src = md.utils.escapeHtml(image.attrGet("src") || "");
+  return `<span class="muted">${alt} — ${src}</span>`;
+};
 let mcpLoaded = false;
 let config,
   active = null,
@@ -141,6 +150,7 @@ function markdown(target, text) {
   }
 }
 function stage(s) {
+  if (s.deleting) return t("正在删除");
   if (s.cancelled) return t("已取消");
   if (s.published) return t("已完成");
   if (s.error) return t("需要处理");
@@ -159,6 +169,7 @@ function options(id, values, selected, names = labels) {
   if (selected && values.includes(selected)) $(id).value = selected;
 }
 function selectTab(name) {
+  if (name !== "report") setReader(false);
   tab = name;
   for (const button of document.querySelectorAll("[data-tab]")) {
     const selected = button.dataset.tab === name;
@@ -188,6 +199,7 @@ async function refreshList() {
     );
     button.append(node("strong", s.request), node("small", stage(s)));
     button.title = s.request;
+    button.dataset.study = s.study;
     button.onclick = () => {
       if (!mutating) openStudy(s.study).catch((e) => notice(e.message));
     };
@@ -195,8 +207,14 @@ async function refreshList() {
   }
 }
 async function openStudy(id) {
+  setReader(false);
+  $("source-dialog").close();
+  sourceRead++;
   statusSerial++;
   active = id;
+  for (const button of document.querySelectorAll(".study-link")) {
+    button.classList.toggle("selected", button.dataset.study === id);
+  }
   status = report = null;
   sessionStorage.setItem("research-study", id);
   $("welcome").hidden = true;
@@ -213,10 +231,25 @@ async function openStudy(id) {
 function renderStatus(s) {
   const previous = status;
   status = s;
+  if (previous?.direction !== s.direction) {
+    sourceRead++;
+    $("source-dialog").close();
+    $("work-list").replaceChildren();
+    $("work-list").dataset.signature = "";
+  }
+  renderPlan(s);
   $("study-title").textContent = s.request;
   $("study-stage").textContent = stage(s);
   $("study-meta").textContent =
     t("{0} / {1} · 资料 {2} 份 · {3}", labels[s.policy.provider] || s.policy.provider, s.policy.model, s.source_count, s.policy.network ? t("允许联网") : t("本地资料与授权工具"));
+  const elapsed = s.timing?.elapsed_seconds;
+  if (s.approved) {
+    const duration = typeof elapsed === "number"
+      ? t("{0}小时 {1}分 {2}秒", Math.floor(elapsed / 3600), Math.floor(elapsed / 60) % 60, Math.floor(elapsed) % 60)
+      : t("未记录");
+    $("study-meta").textContent += " · " + t("研究耗时：{0}", duration);
+    $("study-meta").title = t("从首次批准策略到交付的总经过时间，包含暂停、等待与离线时间。");
+  } else $("study-meta").title = "";
   $("blocker").hidden =
     !s.error && !s.analysis_cleanup_error && !s.unsettled_operations?.length;
   $("blocker").textContent = s.unsettled_operations?.length
@@ -231,7 +264,10 @@ function renderStatus(s) {
   $("approve").hidden = s.cancelled || s.approved || !s.plans?.length;
   $("pause-resume").hidden = s.cancelled || s.published;
   $("pause-resume").textContent = s.paused ? t("继续研究") : t("暂停研究");
-  $("steer").hidden = $("cancel").hidden = s.cancelled;
+  $("steer").hidden = s.cancelled;
+  $("cancel").hidden = s.cancelled || s.published;
+  $("delete-study").textContent = s.deleting ? t("重试删除")
+    : s.published || s.cancelled ? t("删除研究") : t("终止并删除");
   $("supplement").hidden = $("reload-keys").hidden =
     s.cancelled || !s.paused || s.running;
   let message = s.cancelled
@@ -249,21 +285,7 @@ function renderStatus(s) {
     node("strong", stage(s)),
     node("p", message, "muted"),
   );
-  const signature = JSON.stringify([language, s.work || []]);
-  if ($("work-list").dataset.signature !== signature) {
-    $("work-list").dataset.signature = signature;
-    $("work-list").replaceChildren(node("h3", t("已分配的研究工作")));
-    if (!s.work?.length)
-      $("work-list").append(node("p", t("尚未分配调查工作。"), "muted"));
-    for (const w of s.work || []) {
-      const row = node("div", undefined, "work-item");
-      row.append(
-        node("span", roles[w.role] || w.role, "work-role"),
-        node("p", w.task),
-      );
-      $("work-list").append(row);
-    }
-  }
+  if (tab === "progress") loadProgress().catch(e => notice(e.message));
   renderUsage(s.usage || []);
   if (
     !previous ||
@@ -271,7 +293,9 @@ function renderStatus(s) {
     previous.published !== s.published
   ) {
     report = null;
-    $("download-report").hidden = true;
+    $("report-tools").hidden = true;
+    $("report-toc").replaceChildren();
+    $("report-source-panel").hidden = true;
     $("report-text").replaceChildren(
       node("p", t("当前方向尚无已发布报告。"), "muted"),
     );
@@ -280,51 +304,105 @@ function renderStatus(s) {
     else if (tab === "report") loadPanel().catch((e) => notice(e.message));
   }
 }
-async function refreshStudy() {
+const statusReads = new Map();
+async function refreshStudy(fresh = false) {
   const id = active,
     serial = ++statusSerial;
   if (!id) return;
-  const s = await call("status", { study: id });
+  if (fresh || !statusReads.has(id)) {
+    const pending = call("status", { study: id }).finally(() => {
+      if (statusReads.get(id) === pending) statusReads.delete(id);
+    });
+    statusReads.set(id, pending);
+  }
+  let s;
+  try {
+    s = await statusReads.get(id);
+  } catch (error) {
+    if (active !== id || serial !== statusSerial) return;
+    throw error;
+  }
   if (active === id && serial === statusSerial) renderStatus(s);
 }
 function renderUsage(groups) {
   $("usage-list").replaceChildren();
   if (!groups.length)
     $("usage-list").append(node("p", t("暂无调用用量。"), "muted"));
-  for (const g of groups) {
+  const providers = new Map();
+  for (const group of groups) {
+    if (!providers.has(group.resource)) providers.set(group.resource, []);
+    providers.get(group.resource).push(group);
+  }
+  for (const entries of providers.values()) {
+    const functions = {
+      web_search: t("网页搜索"), fetch_web: t("网页提取"),
+      search_pubmed: t("文献检索"), read_pubmed: t("文献读取"),
+      search_crossref: t("文献检索"), search_europe_pmc: t("文献检索"),
+      world_bank_indicators: t("指标查询"), query_world_bank: t("数据查询"),
+    };
+    const provider = entries[0].resource.replace(/^public:/, "");
     const card = node("div", undefined, "card usage-card");
+    const total = (key) => entries.reduce((sum, g) => sum + (g[key] || 0), 0);
+    const counts = [t("{0} 次调用", total("calls"))];
+    if (total("unresolved_calls")) counts.push(t("{0} 次未知结果", total("unresolved_calls")));
+    if (total("http_error_calls")) counts.push(t("{0} 次 HTTP 错误", total("http_error_calls")));
     card.append(
-      node("strong", `${g.resource} / ${g.model || t("搜索或工具")}`),
-      node(
-        "p",
-        t("{0} 次调用 · {1} 次未知结果", g.calls, g.unresolved_calls),
-        "muted",
-      ),
+      node("strong", (labels[provider] || provider) + (entries.length === 1 && entries[0].model ? " / " + entries[0].model : "")),
+      node("p", counts.join(" · "), "muted"),
     );
     const metrics = node("div", undefined, "usage-metrics");
-    for (const [key, label] of Object.entries({
-      input_tokens: t("输入 tokens"),
-      output_tokens: t("输出 tokens"),
-      cache_read_tokens: t("缓存命中 tokens"),
-      reasoning_tokens: t("推理 tokens（子项）"),
-      search_credits: t("搜索 credits"),
-    })) {
-      const metric = node("div");
-      const value = g.totals[key];
-      metric.append(
-        node("strong", value == null ? "—" : value.toLocaleString()),
-        node("small", label),
-      );
-      metrics.append(metric);
+    const groupSizes = [];
+    for (const g of entries) {
+      const before = metrics.childElementCount;
+      const name = g.model || functions[g.tool] || g.tool || t("工具调用");
+      if (entries.length > 1 || (!g.model && !Object.values(g.totals).some(v => v != null))) {
+        const count = node("div");
+        count.append(node("strong", g.calls.toLocaleString()), node("small", t("{0}次数", name)));
+        metrics.append(count);
+      }
+      for (const [key, label] of Object.entries({
+        input_tokens: t("输入 tokens"),
+        output_tokens: t("输出 tokens"),
+        total_tokens: t("总 tokens"),
+        cache_read_tokens: t("缓存命中 tokens"),
+        cache_write_tokens: t("缓存写入 tokens"),
+        reasoning_tokens: t("推理 tokens（子项）"),
+        search_credits: t("服务 credits"),
+        reader_tokens: t("读取 tokens"),
+        cost_usd: t("供应商费用参考（USD）"),
+      })) {
+        const value = g.totals[key];
+        if (value == null) continue;
+        if (key === "total_tokens" && (g.totals.input_tokens != null || g.totals.output_tokens != null)) continue;
+        const metric = node("div");
+        metric.append(
+          node("strong", value.toLocaleString(undefined, {maximumFractionDigits: 8})),
+          node("small", entries.length > 1
+            ? (key === "search_credits" ? name + " credits" : name + " · " + label)
+            : label),
+        );
+        const reported = g.reported_calls?.[key];
+        if (reported != null && reported < g.calls)
+          metric.append(node("small", t("已返回用量：{0}/{1} 次调用", reported, g.calls), "muted"));
+        metrics.append(metric);
+      }
+      groupSizes.push(metrics.childElementCount - before);
     }
-    card.append(metrics);
+    if (entries.every(g => !g.model)) {
+      if (groupSizes.length === 2 && groupSizes.every(size => size === 2))
+        metrics.className = "usage-metrics usage-paired";
+      else if (metrics.childElementCount <= 2)
+        metrics.className = "usage-metrics usage-compact";
+    }
+    if (metrics.childElementCount) card.append(metrics);
+    else card.append(node("p", t("此接口未返回计量数据，仅记录调用次数。"), "muted"));
     $("usage-list").append(card);
   }
 }
-function sourceRows(target, sources, id) {
+function sourceRows(target, sources, id, previewable = true) {
   target.replaceChildren();
   if (!sources.length) target.append(node("p", t("暂无资料。"), "muted"));
-  for (const s of sources) {
+  for (const [index, s] of sources.entries()) {
     const row = node("div", undefined, "source-row"),
       detail = node("div");
     const origin =
@@ -332,7 +410,7 @@ function sourceRows(target, sources, id) {
         ? s.origin
         : JSON.stringify(s.origin || s.name || s.ref);
     detail.append(
-      node("div", s.name || origin),
+      node("div", target.id === "source-list" ? `${index + 1}. ${s.title || s.name || origin}` : s.title || s.name || origin),
       node("small", coverageLabels[s.coverage] || t("资料原件"), "muted"),
     );
     if (/^https?:\/\//i.test(origin)) {
@@ -345,7 +423,12 @@ function sourceRows(target, sources, id) {
     const download = node("button", t("下载原件 ↓"));
     download.onclick = () =>
       act(download, () => downloadSource(id, s.ref, s.name || origin));
-    row.append(detail, download);
+    const preview = node("button", t("查看正文"));
+    preview.onclick = () => showSource(id, s).catch(e => notice(e.message));
+    const actions = node("div", undefined, "button-row");
+    if (previewable) actions.append(preview);
+    actions.append(download);
+    row.append(detail, actions);
     target.append(row);
   }
 }
@@ -361,9 +444,7 @@ async function loadPanel() {
         return;
       report = result;
       if (result.text) {
-        markdown($("report-text"), result.text);
-        $("download-report").hidden = false;
-        sourceRows($("report-sources"), result.sources || [], id);
+        renderReader();
       } else
         $("report-text").textContent = t("当前方向尚无已发布报告，请刷新状态。");
     }
@@ -376,8 +457,145 @@ async function loadPanel() {
     const result = await call("sources", { study: id });
     if (id === active && control === status?.control && tab === selected)
       sourceRows($("source-list"), result.sources, id);
+  } else if (selected === "progress") {
+    await loadProgress();
   }
 }
+
+function renderPlan(s) {
+  const signature = JSON.stringify([language, s.direction, s.approved, s.plans]);
+  if ($("plan-text").dataset.signature === signature) return;
+  $("plan-text").dataset.signature = signature;
+  const plan = s.plans?.find(p => p.ref === s.approved_plan) || s.plans?.at(-1);
+  $("plan-state").textContent = !plan ? t("当前方向的方案") : s.approved ? t("已批准的研究方案") : t("待审批的研究方案");
+  $("plan-approve").hidden = !plan || s.approved || s.cancelled;
+  if (plan) renderPlanBody($("plan-text"), plan);
+  else $("plan-text").replaceChildren(node("p", s.approved
+    ? t("当前方向尚未保存新方案；已批准的研究授权继续有效。")
+    : t("方案生成后将保留在这里，研究期间与完成后均可查看。"), "muted"));
+}
+let progressPending = null, progressRead = 0, sourceRead = 0;
+async function loadProgress() {
+  const id = active, direction = status?.direction;
+  if (!id || !status || tab !== "progress") return;
+  const key = id + direction;
+  if (progressPending?.key === key) return progressPending.promise;
+  const serial = ++progressRead;
+  const promise = (async () => {
+    let result;
+    try { result = await call("progress", {study: id}); }
+    catch (error) {
+      if (serial === progressRead && id === active && direction === status?.direction && tab === "progress") {
+        $("work-list").dataset.signature = "";
+        $("work-list").replaceChildren(node("p", t("进度读取失败，请刷新重试。若刚更新程序，请确认后台研究宿主也已更新。"), "alert"));
+      }
+      throw error;
+    }
+    if (serial !== progressRead || id !== active || direction !== status?.direction || tab !== "progress") return;
+    const signature = JSON.stringify([language, id, result]);
+    if ($("work-list").dataset.signature === signature) return;
+    const opened = new Set(Array.from($("work-list").querySelectorAll("details[open]"), el => el.dataset.ref));
+    $("work-list").dataset.signature = signature;
+    $("work-list").replaceChildren();
+    const states = {delivered:t("已交付"), blocked:t("需要处理"), clarification:t("等待负责人澄清"), waiting:t("等待依赖成果"), pending:t("已安排，尚未交付")};
+    if (!result.work.length) $("work-list").append(node("p", t("尚未分配调查工作。"), "muted"));
+    for (const w of result.work) {
+      const row = node("details", undefined, "work-card card"), summary = node("summary");
+      row.dataset.ref = w.ref;
+      summary.append(node("span", roles[w.role] || w.role, "work-role"), node("strong", w.task), node("small", states[w.state], "badge"));
+      const body = node("div", undefined, "work-body markdown");
+      row.append(summary, body);
+      let loaded = false;
+      row.ontoggle = async () => {
+        if (!row.open || loaded) return;
+        loaded = true;
+        body.replaceChildren(node("p", t("正在读取阶段成果…"), "muted"));
+        try {
+          const detail = await call("work_detail", {study: id, work: w.ref});
+          if (id !== active || direction !== status?.direction || !row.isConnected) return;
+          body.replaceChildren();
+          if (w.question) body.append(node("p", w.question, "alert"));
+          if (w.error) body.append(node("p", w.error, "alert"));
+          if (!detail.entries.length) body.append(node("p", t("尚无公开阶段成果；交付后可在这里查看。"), "muted"));
+          for (const entry of detail.entries) {
+            const section = node("section");
+            markdown(section, entry.text);
+            if (entry.quote) section.append(node("blockquote", entry.quote));
+            if (typeof entry.accepted === "boolean") section.prepend(node("strong", entry.accepted ? t("该版本核查通过") : t("该版本需要修订")));
+            if (entry.report) section.append(node("small", t("对应报告：{0}", entry.report), "muted"));
+            for (const issue of entry.defects || []) section.append(node("p", issue, "alert"));
+            for (const comment of entry.comments || []) section.append(node("p", comment));
+            body.append(section);
+          }
+        } catch (e) { loaded = false; body.textContent = e.message; }
+      };
+      $("work-list").append(row);
+      row.open = opened.has(w.ref);
+    }
+  })().finally(() => { if (progressPending?.promise === promise) progressPending = null; });
+  progressPending = {key, promise};
+  return promise;
+}
+
+function setReader(expanded) {
+  document.body.classList.toggle("reading", expanded);
+  $("reader-toggle").textContent = expanded ? t("退出展开阅读") : t("展开阅读");
+  $("reader-toggle").setAttribute("aria-pressed", String(expanded));
+}
+function renderReader() {
+  renderReport(md, $("report-text"), $("report-toc"), report, citation => {
+    const source = report.sources.find(s => s.ref === citation.source);
+    if (source) showSource(active, source, citation).catch(e => notice(e.message));
+  }, copyText);
+  $("report-text").append(node("p", "Epivra · " + report.ref, "print-provenance"));
+  $("report-tools").hidden = false;
+  const sources = (report.sources || []).map(s => {
+    const citation = report.citations?.find(c => c.source === s.ref);
+    return {...s, title: citation ? `[${citation.number}] ${s.title || s.name || s.origin || t("资料原件")}` : s.title};
+  });
+  sourceRows($("report-sources"), sources, active);
+}
+async function copyText(text) {
+  try { await navigator.clipboard.writeText(text); notice(t("已复制。")); }
+  catch { notice(t("复制失败，请选择正文后手动复制。")); }
+}
+async function showSource(id, source, citation = null) {
+  const serial = ++sourceRead, direction = status?.direction;
+  const target = $("source-detail");
+  $("source-title").textContent = citation ? t("引用 {0}", citation.number) : t("来源详情");
+  target.replaceChildren(node("p", t("正在读取资料…"), "muted"));
+  if (!$("source-dialog").open) $("source-dialog").showModal();
+  const start = Math.max(0, (citation?.quotes?.[0]?.offset || 0) - 300);
+  let pageRead = 0;
+  async function page(offset) {
+    const pageSerial = ++pageRead;
+    const data = await call("source_text", {study:id, source:source.ref, offset});
+    if (pageSerial !== pageRead || serial !== sourceRead || id !== active || direction !== status?.direction || !$("source-dialog").open) return;
+    target.replaceChildren();
+    const rows = node("div"); sourceRows(rows, [source], id, false);
+    target.append(rows, node("p", coverageLabels[data.coverage] || data.coverage || t("资料原件"), "muted"));
+    for (const quote of citation?.quotes || []) target.append(node("blockquote", quote.text, "source-quote"));
+    target.append(node("p", t("提取正文 · 字符 {0}–{1} / {2}", data.offset, data.next_offset, data.total), "muted"));
+    const text = node("pre", data.text || t("未保存可预览正文，请下载原件。"), "source-text");
+    target.append(text);
+    const nav = node("div", undefined, "button-row");
+    for (const [label, offset, disabled] of [[t("上一页"), Math.max(0, data.offset-12000), data.offset===0], [t("下一页"), data.next_offset, data.next_offset>=data.total]]) {
+      const button = node("button", label); button.disabled = disabled;
+      button.onclick = () => page(offset).catch(e => notice(e.message)); nav.append(button);
+    }
+    target.append(nav);
+  }
+  await page(start);
+}
+$("reader-toggle").onclick = () => setReader(!document.body.classList.contains("reading"));
+document.addEventListener("keydown", e => { if (e.key === "Escape" && !document.querySelector("dialog[open]")) setReader(false); });
+$("sources-toggle").onclick = () => {
+  $("report-source-panel").hidden = !$("report-source-panel").hidden;
+  $("sources-toggle").setAttribute("aria-expanded", String(!$("report-source-panel").hidden));
+};
+$("copy-report").onclick = () => { if (report) copyText(report.text); };
+$("refresh-progress").onclick = () => loadProgress().catch(e => notice(e.message));
+$("plan-approve").onclick = () => $("approve").click();
 function saveBlob(blob, name) {
   const url = URL.createObjectURL(blob),
     link = node("a");
@@ -413,7 +631,7 @@ const control = (id, expected, command, payload = {}) =>
     command_id: crypto.randomUUID(),
   });
 async function afterControl(id) {
-  if (active === id) await refreshStudy();
+  if (active === id) await refreshStudy(true);
   await refreshList();
 }
 
@@ -543,6 +761,9 @@ $("create-form").onsubmit = (e) => {
 };
 $("new-study").onclick = () => {
   if (mutating) return;
+  setReader(false);
+  sourceRead++;
+  $("source-dialog").close();
   statusSerial++;
   active = null;
   status = report = null;
@@ -567,9 +788,16 @@ $("approve").onclick = () => {
   if (!status?.plans?.length || mutating) return;
   const plan = status.plans.at(-1);
   approval = { id: active, expected: status.control, ref: plan.ref };
-  markdown($("approval-text"), plan.body.text);
+  renderPlanBody($("approval-text"), plan);
+  $("approval-hint").textContent = status.paused
+    ? t("研究当前暂停。批准策略不会自动恢复；之后选择继续研究开始执行。")
+    : t("确认后，Epivra 将按此策略自主研究并交付成果，无需逐步确认。你仍可主动暂停或调整方向；若遇到额度不足等阻断，会提示你处理。");
+  $("approval-dialog").showModal();
+};
+function renderPlanBody(target, plan) {
+  markdown(target, plan.body.text);
   if (plan.body.brief) {
-    $("approval-text").append(node("h3", t("研究范围与前提")));
+    target.append(node("h3", t("研究范围与前提")));
     const names = {
       subject: t("研究对象"),
       given_context: t("已知背景"),
@@ -593,14 +821,10 @@ $("approve").onclick = () => {
               ? t("{0}；依据：{1}", modes[value.mode] || value.mode, value.basis || "")
               : JSON.stringify(value);
       p.append(document.createTextNode(display));
-      $("approval-text").append(p);
+      target.append(p);
     }
   }
-  $("approval-hint").textContent = status.paused
-    ? t("研究当前暂停。批准策略不会自动恢复；之后选择继续研究开始执行。")
-    : t("确认后，Epivra 将按此策略自主研究并交付成果，无需逐步确认。你仍可主动暂停或调整方向；若遇到额度不足等阻断，会提示你处理。");
-  $("approval-dialog").showModal();
-};
+}
 $("confirm-approval").onclick = () =>
   act($("confirm-approval"), async () => {
     const shown = approval;
@@ -648,18 +872,54 @@ $("cancel").onclick = () =>
       await afterControl(id);
     }
   });
+$("delete-study").onclick = () =>
+  act($("delete-study"), async () => {
+    const id = active, expected = status.control;
+    if (!confirm(t("删除将终止此研究并永久清除其报告、资料副本和过程记录。用户原文件、已导出文件及其他研究不受影响。已提交的外部调用可能仍产生费用。确认删除？"))) return;
+    try {
+      await call("delete", {study: id, expected, confirmed: true});
+    } catch (error) {
+      if (active === id) await refreshStudy(true).catch(() => {});
+      throw error;
+    }
+    if (active === id) {
+      statusSerial++;
+      active = null;
+      status = report = null;
+      sessionStorage.removeItem("research-study");
+      $("welcome").hidden = false;
+      $("study-view").hidden = true;
+      $("breadcrumb").textContent = t("工作台 / 新建研究");
+    }
+    await refreshList();
+  });
 $("reload-keys").onclick = () =>
   act($("reload-keys"), async () => {
     await call("reload", { study: active });
     notice(t("已重新载入密钥。研究配置不变，可继续接续研究。"));
   });
-$("download-report").onclick = () => {
-  if (report?.text)
-    saveBlob(
-      new Blob([report.text], { type: "text/markdown;charset=utf-8" }),
-      t("研究报告.md"),
-    );
-};
+$("download-report").onclick = () => act($("download-report"), async () => {
+  if (!report?.text) return;
+  const saved = report, id = active, format = $("export-format").value;
+  // Recheck the precise publication before exporting, including a control change
+  // made by another client since the last background status refresh.
+  await call("report", {study:id, expected:saved.ref});
+  if (id !== active || report?.ref !== saved.ref) return;
+  const name = t("研究报告") + "-" + saved.ref.slice(-8);
+  if (format === "pdf") {
+    window.print();
+  } else if (format === "docx") {
+    const response = await fetch("/api/report-export", {
+      method:"POST", headers:{"X-Research-Token":token, "X-Epivra-Language":language, "Content-Type":"application/json"},
+      body:JSON.stringify({study:id, expected:saved.ref}),
+    });
+    if (!response.ok) throw new Error((await response.json()).error || t("导出失败。"));
+    saveBlob(await response.blob(), name + ".docx");
+  } else {
+    const text = format === "html" ? standalone($("report-text"), status.request, saved.ref) : saved.text;
+    saveBlob(new Blob([text], {type:format === "html" ? "text/html;charset=utf-8" : "text/markdown;charset=utf-8"}), name + "." + format);
+  }
+});
 let supplement = null;
 $("supplement").onclick = () => {
   supplement = { id: active, expected: status.control };
@@ -1039,8 +1299,7 @@ $("language").onchange = async (event) => {
   renderMaterials();
   if (status) renderStatus(status);
   if (report?.text) {
-    markdown($("report-text"), report.text);
-    sourceRows($("report-sources"), report.sources || [], active);
+    renderReader();
   } else if (status && !status.published) {
     $("report-text").replaceChildren(node("p", t("当前方向尚无已发布报告。"), "muted"));
   }

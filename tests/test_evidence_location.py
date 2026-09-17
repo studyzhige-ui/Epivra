@@ -50,6 +50,48 @@ class EvidenceLocationTests(unittest.IsolatedAsyncioTestCase):
             **extra,
         }
 
+    async def test_paging_and_selection_preserve_exact_original_without_copying(self):
+        raw = "标题😀\n\n包含“原文引号”与\n换行。\n\n" + "其他资料。" * 5000
+        source = self.store.put("s", "source", {"text": raw})
+        page = await self.execute(
+            Call("read_source", {"ref": source.ref, "limit": 28000})
+        )
+        self.assertEqual(raw[: page["end"]], page["text"])
+        self.assertIsNotNone(page["next_offset"])
+        choice = page["selections"][1]["selection"]
+        result = await self.execute(
+            Call("record_evidence", {"selection": choice, "text": "Finding"})
+        )
+        note = self.store.get("s", result["ref"])
+        self.assertEqual("包含“原文引号”与\n换行。", note.body["quote"])
+        self.assertEqual(source.ref, note.body["source"])
+        other = self.store.work(
+            "s", self.c.ref, "investigator", "Other work", owner=self.lead.ref
+        )
+        denied = await self.execute(
+            Call("record_evidence", {"selection": choice, "text": "Finding"}), other
+        )
+        self.assertIn("error", denied)
+        unread = await self.execute(
+            Call(
+                "record_evidence", {"selection": f"{source.ref}:0:2", "text": "Finding"}
+            )
+        )
+        self.assertIn("error", unread)
+
+    async def test_large_artifact_first_read_is_a_page_not_an_error(self):
+        item = self.store.put("s", "note", {"text": "Data " * 9000})
+        page = await self.execute(Call("read_artifact", {"ref": item.ref}))
+        self.assertNotIn("error", page)
+        self.assertEqual("canonical-json", page["encoding"])
+        tail = await self.execute(
+            Call(
+                "read_artifact_range",
+                {"ref": item.ref, "offset": page["next_offset"], "limit": 30000},
+            )
+        )
+        self.assertEqual(page["end"], tail["offset"])
+
     def test_quote_contract_requires_content_and_makes_offset_optional(self):
         schema = BUILTINS["record_evidence"][1]
         args = {
@@ -60,7 +102,7 @@ class EvidenceLocationTests(unittest.IsolatedAsyncioTestCase):
         }
         validate(args, schema)
         validate({**args, "offset": 0}, schema)
-        for key in ("source", "quote", "text", "limits"):
+        for key in ("source", "quote", "text"):
             with self.subTest(missing=key), self.assertRaises(ValueError):
                 validate({k: v for k, v in args.items() if k != key}, schema)
 
@@ -140,3 +182,22 @@ class EvidenceLocationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("error", result)
         self.assertEqual([0, 1], result["candidate_offsets"])
         self.assertEqual([], self.store.list("s", "note"))
+
+    async def test_note_reads_bound_original_without_turning_other_records_into_sources(
+        self,
+    ):
+        source = self.store.put("s", "source", {"text": "前言。证据原文。"})
+        result = await self.execute(
+            Call("record_evidence", self.arguments(source, "证据原文。"))
+        )
+        page = await self.execute(Call("read_source", {"ref": result["ref"]}))
+        self.assertEqual(source.ref, page["ref"])
+        self.assertEqual("证据原文。", page["text"])
+        wrong = self.store.put(
+            "s",
+            "note",
+            {"source": source.ref, "quote": "不存在", "offset": 0},
+            (source.ref,),
+        )
+        rejected = await self.execute(Call("read_source", {"ref": wrong.ref}))
+        self.assertIn("error", rejected)

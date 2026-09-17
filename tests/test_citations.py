@@ -38,6 +38,22 @@ class CitationTests(unittest.TestCase):
         self.assertNotIn("#source-", report["text"])
         self.assertEqual([self.b.ref, self.a.ref, self.b.ref], report["citations"])
 
+    def test_saved_title_is_used_without_changing_source_binding(self):
+        source = self.store.put(
+            "s",
+            "source",
+            {
+                "text": "Evidence",
+                "title": "Research [2026]",
+                "origin": "https://example.org/paper",
+            },
+        )
+        report = self.report(f"Finding [[cite:{source.ref}]].", [source.ref])
+        self.assertIn(
+            r"[Research \[2026\]](<https://example.org/paper>)", report["text"]
+        )
+        self.assertEqual([source.ref], report["citations"])
+
     def test_source_and_two_passages_share_source_number(self):
         note = self.store.put(
             "s",

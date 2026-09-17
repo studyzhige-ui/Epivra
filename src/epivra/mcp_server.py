@@ -79,6 +79,20 @@ def build(root, allow_approval=False, sender=send, language="zh-CN"):
     @server.tool(
         structured_output=True,
         description=text(
+            "删除研究：需要用户明确确认，终止执行并永久清理研究记录；不删除用户原文件。"
+        ),
+    )
+    async def delete_research(
+        study: str, expected: str, confirmed: bool = False
+    ) -> dict[str, object]:
+        """Delete a study only after explicit user confirmation; pass its observed control version."""
+        if not confirmed:
+            raise ToolError(text("删除研究需要明确确认。"))
+        return await call("delete", study=study, expected=expected, confirmed=True)
+
+    @server.tool(
+        structured_output=True,
+        description=text(
             "使用已读取的控制版本和唯一命令ID暂停、恢复、改向或取消。审批需要安装级授权和精确策略引用。"
         ),
     )

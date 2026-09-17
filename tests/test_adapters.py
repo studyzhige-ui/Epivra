@@ -42,6 +42,41 @@ def response(finish="tool_calls", arguments='{"value":"ok"}'):
 
 
 class AdapterTests(unittest.IsolatedAsyncioTestCase):
+    async def test_prompt_upgrade_rebuilds_without_mutating_frozen_prefix(self):
+        from copy import deepcopy
+
+        first = self.model.prepare(self.context, None)
+        original = deepcopy(first)
+        changed = {**self.context, "system": "Revised research instructions"}
+        wire = self.model.prepare(
+            changed,
+            {
+                "request": first["payload"],
+                "response": response(),
+                "observations": [{"index": 0, "result": "read", "_ref": "obs"}],
+            },
+        )
+        self.assertEqual("rebuilt", wire["window_mode"])
+        self.assertEqual(changed["system"], wire["payload"]["messages"][0]["content"])
+        self.assertEqual(original, first)
+
+    async def test_runtime_changes_preserve_contract_cache_prefix(self):
+        from epivra.adapters import encode_state
+
+        state = {
+            "role": "investigator",
+            "direction": {"request": "flood adaptation"},
+            "task": "Compare measures",
+            "context": [],
+            "current_date": "2026-09-16",
+        }
+        first = encode_state(state)
+        second = encode_state(
+            {**state, "context": [{"ref": "new"}], "current_date": "2026-09-17"}
+        )
+        self.assertEqual(first.split(',"context":')[0], second.split(',"context":')[0])
+        self.assertEqual(state, json.loads(first))
+
     async def test_long_reasoning_does_not_reset_a_small_research_task(self):
         first = self.model.prepare(self.context, None)
         raw = response()
@@ -108,7 +143,11 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
                 ),
                 (
                     "/extract",
-                    {"urls": ["https://example.com/paper"], "format": "markdown", "include_usage": True},
+                    {
+                        "urls": ["https://example.com/paper"],
+                        "format": "markdown",
+                        "include_usage": True,
+                    },
                 ),
             ],
         )
@@ -303,6 +342,19 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
                         await api.chat_stream("/chat/completions", {})
 
     async def test_rejection_preserves_only_safe_retry_metadata(self):
+        class ErrorStream(httpx.AsyncByteStream):
+            async def __aiter__(self):
+                yield b'{"error":{"code":"insufficient_quota"}}'
+
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(
+                lambda r: httpx.Response(429, stream=ErrorStream())
+            )
+        ) as client:
+            raw = await JsonAPI("https://fixture.test", "key", client).chat_stream(
+                "/chat/completions", {}
+            )
+            self.assertEqual(raw, {"http_status": 429, "error_kind": "quota"})
         async with httpx.AsyncClient(
             transport=httpx.MockTransport(
                 lambda r: httpx.Response(

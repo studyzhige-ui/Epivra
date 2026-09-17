@@ -7,7 +7,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import httpx
 
@@ -20,6 +20,17 @@ from epivra.storage import Store
 
 
 class HostTests(unittest.IsolatedAsyncioTestCase):
+    async def test_disconnected_ipc_client_closes_without_secondary_error(self):
+        host = Host.__new__(Host)
+        host.dispatch = AsyncMock(return_value={"studies": []})
+        reader = Mock(readline=AsyncMock(return_value=b'{"action":"list"}\n'))
+        writer = Mock()
+        writer.drain = AsyncMock(side_effect=ConnectionResetError())
+        writer.wait_closed = AsyncMock(side_effect=ConnectionResetError())
+        await host.connection(reader, writer)
+        host.dispatch.assert_awaited_once()
+        writer.close.assert_called_once()
+
     async def test_project_models_are_discovered_and_explicit_path_wins(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)

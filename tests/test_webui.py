@@ -9,17 +9,95 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from urllib.parse import urlencode
 
 import httpx
 
 from epivra import cli_settings
 from epivra.host import Host, send
-from epivra.webui import App, Server
+from epivra.webui import App, Handler, Server
 
 
 class WebTests(unittest.IsolatedAsyncioTestCase):
+    async def test_report_export_is_version_bound_and_rejects_client_text(self):
+        study = (await self.call("create", request="Export fixture")).json()["study"]
+        c = self.host.store.control(study)
+        report = self.host.store.put(
+            study,
+            "report",
+            {"text": "# 中文报告\n\nA | B\n---|---\n甲|12", "evidence": []},
+            (c.direction,),
+        )
+        self.host.store._put(
+            study, "publication", {"report": report.ref}, (c.direction, report.ref)
+        )
+        data = {"study": study, "expected": report.ref}
+        response = await self.http.post("/api/report-export", json=data)
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.content.startswith(b"PK"))
+        invalid = await self.http.post(
+            "/api/report-export", json={**data, "text": "injected"}
+        )
+        self.assertEqual(invalid.status_code, 400)
+        self.host.store.command(
+            study, "steer-export", c.ref, "steer", {"request": "new"}
+        )
+        stale = await self.http.post("/api/report-export", json=data)
+        self.assertEqual(stale.status_code, 409)
+
+    async def test_delete_requires_confirmation_and_removes_only_selected_study(self):
+        first = (await self.call("create", request="Delete fixture")).json()["study"]
+        second = (await self.call("create", request="Keep fixture")).json()["study"]
+        status = (await self.call("status", study=first)).json()
+        self.assertEqual(
+            400,
+            (
+                await self.call("delete", study=first, expected=status["control"])
+            ).status_code,
+        )
+        result = await self.call(
+            "delete", study=first, expected=status["control"], confirmed=True
+        )
+        self.assertTrue(result.json()["deleted"])
+        self.assertEqual(
+            [second],
+            [s["study"] for s in (await self.call("overview")).json()["studies"]],
+        )
+
+    async def test_disconnected_response_is_not_replied_to_twice(self):
+        for exception in (
+            ConnectionAbortedError,
+            ConnectionResetError,
+            BrokenPipeError,
+        ):
+            for during_headers in (True, False):
+                handler = Handler.__new__(Handler)
+                handler.send_headers = Mock(
+                    side_effect=exception() if during_headers else None
+                )
+                handler.wfile = Mock()
+                handler.wfile.write.side_effect = exception()
+                handler.reply({"error": "response"}, 503)
+                self.assertTrue(handler.close_connection)
+                handler.send_headers.assert_called_once()
+
+    async def test_overview_and_status_do_not_load_source_bodies(self):
+        created = await self.call("create", request="Read-only display")
+        study = created.json()["study"]
+        self.host.store.put(study, "source", {"text": "large source" * 1000})
+        original = self.host.store.list
+
+        def guarded(study, kind):
+            self.assertNotEqual(kind, "source")
+            return original(study, kind)
+
+        with patch.object(self.host.store, "list", side_effect=guarded):
+            overview = await self.call("overview")
+            self.assertNotIn("work", overview.json()["studies"][0])
+            status = await self.call("status", study=study)
+            self.assertEqual(status.json()["source_count"], 1)
+
     async def test_error_language_is_per_request(self):
         en, zh = await asyncio.gather(
             self.http.post(

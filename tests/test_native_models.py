@@ -95,6 +95,44 @@ def gemini_response(finish="STOP"):
 
 
 class NativeModelTests(unittest.IsolatedAsyncioTestCase):
+    async def test_changed_system_rebuilds_native_window_with_intact_original(self):
+        from types import SimpleNamespace
+
+        for model, response in (
+            (
+                Anthropic(
+                    SimpleNamespace(account="fixture"),
+                    "fixture",
+                    max_tokens=1000,
+                    context_tokens=100000,
+                ),
+                anthropic_response(),
+            ),
+            (
+                Gemini(
+                    SimpleNamespace(account="fixture"),
+                    "fixture",
+                    max_tokens=1000,
+                    context_tokens=100000,
+                ),
+                gemini_response(),
+            ),
+        ):
+            first = model.prepare(context(), None)
+            original = deepcopy(first)
+            changed = {**context(), "system": "New approved research instructions"}
+            wire = model.prepare(
+                changed,
+                {
+                    "request": first["payload"],
+                    "response": response,
+                    "observations": [{"index": 0, "result": "read", "_ref": "obs"}],
+                },
+            )
+            self.assertEqual("rebuilt", wire["window_mode"])
+            self.assertEqual(original, first)
+            self.assertNotIn("opaque-signature", json.dumps(wire))
+
     async def asyncSetUp(self):
         self.client = httpx.AsyncClient(
             transport=httpx.MockTransport(lambda request: httpx.Response(200, json={}))

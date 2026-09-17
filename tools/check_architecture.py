@@ -23,6 +23,7 @@ LAYERS = (
                 "scheduling",
                 "usage",
                 "web_providers",
+                "public_sources",
                 "document_parser",
                 "materials",
                 "review",
@@ -47,13 +48,18 @@ LAYERS = (
                 "mcp_server",
                 "mcp_tools",
                 "webui",
+                "presentation",
+                "report_export",
             }
         ),
     ),
 )
 ALLOWED = {
+    "report_export": set(),
+    "presentation": {"domain", "citations"},
     "locale": set(),
     "webui": {
+        "report_export",
         "locale",
         "host",
         "cli_settings",
@@ -77,6 +83,7 @@ ALLOWED = {
     "terminal": {"locale"},
     "cli_settings": {"adapters", "model_catalog", "web_providers"},
     "host": {
+        "presentation",
         "locale",
         "mcp_client",
         "usage",
@@ -98,6 +105,7 @@ ALLOWED = {
     "materials": {"domain", "document_parser"},
     "document_parser": set(),
     "web_providers": {"adapters", "domain"},
+    "public_sources": {"adapters"},
     "scheduling": set(),
     "adapters": {"domain"},
     "__init__": set(),
@@ -125,6 +133,8 @@ ALLOWED = {
         "review",
     },
     "application": {
+        "public_sources",
+        "scheduling",
         "mcp_tools",
         "web_providers",
         "domain",

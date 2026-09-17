@@ -11,8 +11,8 @@ from copy import deepcopy
 from typing import Any
 from urllib.parse import quote
 
-from .adapters import JsonAPI, ProviderFailure, rate_limit_delay
-from .domain import encode, identity
+from .adapters import JsonAPI, ProviderFailure, encode_state, rate_limit_delay
+from .domain import ContextCapacity, encode, identity
 
 
 def _state(context):
@@ -47,10 +47,10 @@ class _Native:
 
     @staticmethod
     def retry_on_resume(raw):
-        return (
-            raw.get("http_status") in {401, 402, 403}
-            or raw.get("error_kind") in {"quota", "authentication"}
-        )
+        return raw.get("http_status") in {401, 402, 403} or raw.get("error_kind") in {
+            "quota",
+            "authentication",
+        }
 
     def __init__(self, api, model, max_tokens, context_tokens, stream, options):
         if stream:
@@ -83,6 +83,10 @@ class _Native:
         state = _state(context)
         payload = self._payload(context, state)
         mode, calls = "new", []
+        if previous and {
+            k: v for k, v in previous["request"].items() if k != self.history_key
+        } != {k: v for k, v in payload.items() if k != self.history_key}:
+            previous, mode = None, "rebuilt"
         if previous:
             try:
                 decoded = self.decode(previous["response"])
@@ -149,7 +153,7 @@ class _Native:
             estimated = len(encode(payload).encode("utf-8"))
             mode = "rebuilt"
         if estimated + self.max_tokens > self.context_tokens:
-            raise ValueError("essential context exceeds provider window")
+            raise ContextCapacity("essential context exceeds provider window")
         return {
             "payload": payload,
             "window_mode": mode,
@@ -211,7 +215,7 @@ class Anthropic(_Native):
                     "description": spec["description"],
                     "input_schema": spec["parameters"],
                 }
-                for name, spec in context["tools"].items()
+                for name, spec in sorted(context["tools"].items())
             ],
             "max_tokens": self.max_tokens,
             **deepcopy(self.options),
@@ -230,7 +234,7 @@ class Anthropic(_Native):
         ]
         return {
             "role": "user",
-            "content": [*blocks, {"type": "text", "text": encode(state)}],
+            "content": [*blocks, {"type": "text", "text": encode_state(state)}],
         }
 
     def _public_values(self, message):
@@ -343,7 +347,7 @@ class Gemini(_Native):
                             "description": spec["description"],
                             "parametersJsonSchema": spec["parameters"],
                         }
-                        for name, spec in context["tools"].items()
+                        for name, spec in sorted(context["tools"].items())
                     ]
                 }
             ],
@@ -366,7 +370,7 @@ class Gemini(_Native):
             }
             for call, result in zip(calls, outputs)
         ]
-        return {"role": "user", "parts": [*parts, {"text": encode(state)}]}
+        return {"role": "user", "parts": [*parts, {"text": encode_state(state)}]}
 
     def _public_values(self, message):
         return [

@@ -8,10 +8,12 @@ FIELDS = (
     "cache_write_tokens",
     "reasoning_tokens",
     "search_credits",
+    "reader_tokens",
+    "cost_usd",
 )
 
 
-def counters(raw):
+def counters(raw, resource=None):
     data = raw.get("data", {}) if isinstance(raw, dict) else {}
     if not isinstance(data, dict):
         data = {}
@@ -83,12 +85,19 @@ def counters(raw):
         ):
             result["total_tokens"] = result["input_tokens"] + result["output_tokens"]
     result["search_credits"] = usage.get("credits")
+    if resource == "jina":
+        document = data.get("data")
+        reader_usage = document.get("usage") if isinstance(document, dict) else None
+        if isinstance(reader_usage, dict):
+            result["reader_tokens"] = reader_usage.get("tokens")
+    if resource == "exa" and isinstance(data.get("costDollars"), dict):
+        result["cost_usd"] = data["costDollars"].get("total")
     return {
         key: value
         if type(value) in (int, float)
         and value >= 0
         and value < float("inf")
-        and (key == "search_credits" or type(value) is int)
+        and (key in {"search_credits", "cost_usd"} or type(value) is int)
         else None
         for key in FIELDS
         for value in [result.get(key)]
@@ -98,20 +107,25 @@ def counters(raw):
 def summarize(records):
     groups = {}
     for row in records:
-        key = (row["resource"], row["model"])
+        key = (row["resource"], row["model"], row.get("tool"))
         group = groups.setdefault(
             key,
             {
                 "resource": key[0],
                 "model": key[1],
+                "tool": key[2],
                 "calls": 0,
                 "unresolved_calls": 0,
+                "http_error_calls": 0,
                 "totals": {k: None for k in FIELDS},
                 "reported_calls": {k: 0 for k in FIELDS},
             },
         )
         group["calls"] += 1
         group["unresolved_calls"] += row["status"] == "unknown"
+        group["http_error_calls"] += (
+            isinstance(row.get("http_status"), int) and row["http_status"] >= 400
+        )
         for field, value in row["usage"].items():
             if value is not None:
                 group["totals"][field] = (group["totals"][field] or 0) + value

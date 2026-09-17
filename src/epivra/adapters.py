@@ -10,7 +10,23 @@ from typing import Any
 
 import httpx
 
-from .domain import encode, identity
+from .domain import ContextCapacity, encode, identity
+
+
+def encode_state(state):
+    """Canonical values with a stable contract prefix before changing runtime data."""
+    first = (
+        "role",
+        "direction_ref",
+        "direction",
+        "task",
+        "shared_context",
+        "deliverable",
+        "work_ref",
+    )
+    keys = [k for k in first if k in state] + sorted(set(state) - set(first))
+    return "{" + ",".join(encode(k) + ":" + encode(state[k]) for k in keys) + "}"
+
 
 DEFAULT_MODEL = "deepseek-flash"
 
@@ -217,10 +233,20 @@ class JsonAPI:
         # Error bodies can echo request data. Keep only safe status metadata.
         if response.status_code != 200:
             return self._rejection(response)
+        limits = {
+            k: response.headers[k]
+            for k in (
+                "x-rate-limit-limit",
+                "x-rate-limit-interval",
+                "x-concurrency-limit",
+            )
+            if k in response.headers
+        }
+        metadata = {"rate_limits": limits} if limits else {}
         if text:
-            return {"http_status": 200, "data": {"html": response.text}}
+            return {"http_status": 200, "data": {"html": response.text}, **metadata}
         try:
-            return {"http_status": 200, "data": response.json()}
+            return {"http_status": 200, "data": response.json(), **metadata}
         except ValueError:
             return {"http_status": 200, "malformed_json": True}
 
@@ -236,6 +262,7 @@ class JsonAPI:
             headers=self._headers(),
         ) as response:
             if response.status_code != 200:
+                await response.aread()
                 return self._rejection(response)
             state = _ChatStream()
             event = []
@@ -321,9 +348,33 @@ class ChatCompletions:
             for k, v in context.items()
             if k not in {"system", "tools", "tool_versions", "provider"}
         }
-        current = {"role": "user", "content": encode(state)}
+        current = {"role": "user", "content": encode_state(state)}
         messages = [{"role": "system", "content": context["system"]}, current]
         mode = "new"
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": name,
+                    "description": spec["description"],
+                    "parameters": spec["parameters"],
+                },
+            }
+            for name, spec in sorted(context["tools"].items())
+        ]
+        if previous:
+            old = previous["request"]
+            if (
+                not old.get("messages")
+                or old["messages"][0] != messages[0]
+                or {k: v for k, v in old.items() if k != "messages"}
+                != {
+                    k: v
+                    for k, v in self._payload(messages, tools).items()
+                    if k != "messages"
+                }
+            ):
+                previous, mode = None, "rebuilt"
         if previous:
             try:
                 usable = self.decode(previous["response"])["complete"]
@@ -431,17 +482,6 @@ class ChatCompletions:
                         current,
                     ]
                     mode = "continued"
-        tools = [
-            {
-                "type": "function",
-                "function": {
-                    "name": name,
-                    "description": spec["description"],
-                    "parameters": spec["parameters"],
-                },
-            }
-            for name, spec in context["tools"].items()
-        ]
         payload = self._payload(messages, tools)
         estimated = self._input_tokens(
             payload, previous if mode == "continued" else None
@@ -449,12 +489,12 @@ class ChatCompletions:
         if estimated + self.max_tokens > self.context_tokens:
             payload["messages"] = [
                 {"role": "system", "content": context["system"]},
-                {"role": "user", "content": encode(state)},
+                {"role": "user", "content": encode_state(state)},
             ]
             mode = "rebuilt"
             estimated = self._input_tokens(payload, None)
         if estimated + self.max_tokens > self.context_tokens:
-            raise ValueError("essential context exceeds provider window")
+            raise ContextCapacity("essential context exceeds provider window")
         return {
             "payload": payload,
             "window_mode": mode,
@@ -613,6 +653,16 @@ class Tavily:
                 "include_answer": False,
                 "include_raw_content": False,
                 "include_usage": True,
+                **{
+                    key: args[key]
+                    for key in (
+                        "include_domains",
+                        "exclude_domains",
+                        "start_date",
+                        "end_date",
+                    )
+                    if key in args
+                },
             },
         )
 

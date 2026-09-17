@@ -13,7 +13,15 @@ Epivra researches questions using the public web and your materials. Approve the
 - **Combine web and local materials** — search the web, upload files, or authorize folders and MCP resources.
 - **Choose your providers** — use 12 official model providers and multiple search and reading services.
 - **Work through Web, CLI, or MCP** — English and Simplified Chinese interfaces share the same local research records.
-- **Keep the evidence** — retain sources, research artifacts, and usage records; export Markdown and run optional data analysis.
+- **Keep the evidence** — retain sources, research artifacts, and usage records; export Markdown, Word, or HTML, use browser PDF/printing, and run optional data analysis.
+
+## How research proceeds
+
+Epivra draws on human research practices such as clarifying questions, evaluating evidence, selecting methods, checking counterevidence, and revising conclusions. These inform role responsibilities, tools, and artifact handoffs. The research path adapts to findings: the lead decides what to investigate, revisit, synthesize, or revise. Complete investigation results can go directly to writing.
+
+The research kernel is the set of methods, instructions, and material contracts that organize research judgment. It spans role instructions, tool semantics, context, and original artifact handoffs; it is not another model. All roles share a custom Harness, with authorization, the call ledger, scheduling, and recovery enforced by code. Internal agents collaborate through persistent work and artifact references, without A2A; MCP connects external tools and clients.
+
+The kernel influences how the model uses evidence, but quality also depends on the model, materials, tools, and actual context. Independent review and traceable citations do not guarantee correct judgments. Evaluate the conclusions, supporting evidence, and review reasoning together.
 
 ## Quick start
 
@@ -51,6 +59,7 @@ Use `--lang zh-CN` for Simplified Chinese, or set `EPIVRA_LANG`. Interface langu
 |---|---|
 | Models | OpenAI, Claude, Gemini, Grok, DeepSeek, Qwen, Kimi, GLM, Doubao, MiniMax, Hunyuan, ERNIE |
 | Search | Tavily, Exa, Brave, Perplexity, Bocha; DuckDuckGo fallback |
+| Included public sources | Crossref, PubMed, Europe PMC, World Bank; no API keys required for these channels |
 | Web reading | Jina, Tavily, Exa |
 | Materials | Text, CSV/TSV, text-layer PDFs, XLSX; optional Docling document parsing and OCR |
 | Analysis | Optional Docker Python sandbox for statistics, data processing, and charts |
