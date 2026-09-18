@@ -295,7 +295,9 @@ class WorkflowTests(unittest.IsolatedAsyncioTestCase):
         store.command(
             "s", "approve", c.ref, "approve", {"plan": store.list("s", "plan")[-1].ref}
         )
-        await asyncio.wait_for(service.run("s"), 5)
+        # This verifies a full artifact/SQLite/subprocess workflow, not latency.
+        # Retain a hang guard without imposing a 5-second CI performance target.
+        await asyncio.wait_for(service.run("s"), 60)
         self.assertFalse(service.errors)
         self.assertEqual(1, len(store.list("s", "publication")))
         self.assertEqual(1, len(store.list("s", "source")))

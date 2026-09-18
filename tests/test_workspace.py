@@ -13,18 +13,23 @@ from epivra.workspace import Workspace
 
 class WorkspaceTests(unittest.TestCase):
     def test_unavailable_subdirectory_does_not_hide_accessible_files(self):
-        locked = self.corpus / "locked"
+        # Deliberately use a different spelling of the same directory. Windows
+        # runner temp paths can similarly use short names before root.resolve().
+        locked = self.corpus / ".." / "corpus" / "locked"
         locked.mkdir()
         (self.corpus / "valid.txt").write_text("original", encoding="utf-8")
         iterdir = Path.iterdir
+        denied = []
 
         def listing(path):
-            if path == locked:
+            if path.resolve() == locked.resolve():
+                denied.append(path)
                 raise PermissionError("inaccessible fixture")
             return iterdir(path)
 
         with patch.object(Path, "iterdir", listing):
             catalog = self.workspace.discover("s", str(self.corpus))
+        self.assertEqual(1, len(denied), "permission failure must actually be injected")
         entries = {e["path"]: e["status"] for e in catalog.body["entries"]}
         self.assertEqual({"locked": "unavailable", "valid.txt": "available"}, entries)
 
