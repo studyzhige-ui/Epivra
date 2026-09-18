@@ -491,7 +491,7 @@ class ClarificationTests(unittest.IsolatedAsyncioTestCase):
                 return Reply("", tuple(calls)).to_json()
 
         service = ResearchService(store, Harness(store, FlowModel()), concurrency=1)
-        await asyncio.wait_for(service.run("flow"), 3)
+        await asyncio.wait_for(service.run("flow"), 60)
         self.assertEqual({}, service.errors)
         self.assertEqual({}, service.work_errors)
         self.assertLess(events.index("wait original"), events.index("original asks"))

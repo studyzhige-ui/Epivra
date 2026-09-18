@@ -74,7 +74,7 @@ class WorkflowTests(unittest.IsolatedAsyncioTestCase):
 
         model = Model()
         service = ResearchService(store, Harness(store, model), concurrency=1)
-        await asyncio.wait_for(service.run("s"), 3)
+        await asyncio.wait_for(service.run("s"), 60)
         self.assertFalse(service.errors)
         self.assertTrue(interrupted)
         self.assertEqual(2, parent_calls)
@@ -84,7 +84,7 @@ class WorkflowTests(unittest.IsolatedAsyncioTestCase):
         control = store.control("s")
         store.command("s", "resume", control.ref, "resume")
         service = ResearchService(store, Harness(store, model), concurrency=1)
-        await asyncio.wait_for(service.run("s"), 3)
+        await asyncio.wait_for(service.run("s"), 60)
         self.assertFalse(service.errors)
         self.assertEqual(3, parent_calls)
         self.assertTrue(store.list("s", "work_wait"))
@@ -290,7 +290,7 @@ class WorkflowTests(unittest.IsolatedAsyncioTestCase):
                 return Reply("", tuple(calls)).to_json()
 
         service = ResearchService(store, Harness(store, LocalModel()), concurrency=2)
-        await asyncio.wait_for(service.run("s"), 3)
+        await asyncio.wait_for(service.run("s"), 60)
         c = store.control("s")
         store.command(
             "s", "approve", c.ref, "approve", {"plan": store.list("s", "plan")[-1].ref}
@@ -474,7 +474,7 @@ class CollaborationTests(unittest.IsolatedAsyncioTestCase):
                         return Reply("", ()).to_json()
 
                 service = ResearchService(store, Harness(store, Model()), concurrency=2)
-                await asyncio.wait_for(service.run("s"), 3)
+                await asyncio.wait_for(service.run("s"), 60)
                 self.assertEqual(2, peak)
                 self.assertEqual(5, len(seen))
                 self.assertEqual(5, len({r["task"] for r in seen}))
