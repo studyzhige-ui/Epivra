@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-import os
+import builtins
 import sqlite3
+import sys
 import time
 from contextlib import contextmanager
 from pathlib import Path
@@ -21,10 +22,13 @@ from .domain import (
     encode,
     identity,
 )
+from .local_security import protect
 
 
 class Store:
     def __init__(self, path: Path):
+        if path.is_symlink():
+            raise ValueError("database must not be a symbolic link")
         self.path = path.resolve()
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = self.path.with_suffix(self.path.suffix + ".lock").open("a+b")
@@ -34,7 +38,7 @@ class Store:
             self._lock.flush()
         self._lock.seek(0)
         try:
-            if os.name == "nt":
+            if sys.platform == "win32":
                 import msvcrt
 
                 msvcrt.locking(self._lock.fileno(), msvcrt.LK_NBLCK, 1)
@@ -47,6 +51,7 @@ class Store:
             raise OwnershipError("database already has a live host") from exc
         try:
             self.db = sqlite3.connect(self.path, isolation_level=None)
+            protect(self.path)
             self.db.row_factory = sqlite3.Row
             version = self.db.execute("PRAGMA user_version").fetchone()[0]
             existing = self.db.execute(
@@ -74,6 +79,12 @@ class Store:
                     ON artifacts(study, kind, json_extract(parents,'$[0]'), seq);
                 CREATE INDEX IF NOT EXISTS artifact_producer
                     ON artifacts(study, kind, json_extract(body,'$.producer'), seq);
+                CREATE INDEX IF NOT EXISTS source_origin
+                    ON artifacts(study,json_extract(body,'$.origin'),seq)
+                    WHERE kind='source';
+                CREATE INDEX IF NOT EXISTS source_digest
+                    ON artifacts(study,json_extract(body,'$.sha256'),json_extract(body,'$.format'),seq)
+                    WHERE kind='source';
                 CREATE TABLE IF NOT EXISTS commands (
                     study TEXT NOT NULL,
                     command_id TEXT NOT NULL,
@@ -231,8 +242,14 @@ class Store:
         try:
             yield
             self.db.execute("COMMIT")
-        except BaseException:
-            self.db.execute("ROLLBACK")
+        except BaseException as exc:
+            if self.db.in_transaction:
+                try:
+                    self.db.execute("ROLLBACK")
+                except sqlite3.Error as rollback_error:
+                    exc.add_note(
+                        "rollback also failed: " + type(rollback_error).__name__
+                    )
             raise
 
     @staticmethod
@@ -261,22 +278,126 @@ class Store:
             "SELECT * FROM artifacts WHERE study=? AND ref=?", (study, ref)
         ).fetchone()
         if row is None:
-            raise ValueError("artifact not found in this study")
+            raise ValueError(
+                f"artifact not found in this study: {str(ref)[:80]}; use an exact ref from read_context or find_artifacts"
+            )
         return self._artifact(row)
 
-    def list(self, study: str, kind: str) -> list[Artifact]:
-        return [
-            self._artifact(r)
-            for r in self.db.execute(
-                "SELECT * FROM artifacts WHERE study=? AND kind=? ORDER BY seq",
-                (study, kind),
-            )
-        ]
+    def list(self, study: str, kind: str) -> builtins.list[Artifact]:
+        return list(self.iter_artifacts(study, kind))
+
+    def iter_artifacts(self, study: str, kind: str) -> Iterator[Artifact]:
+        for row in self.db.execute(
+            "SELECT * FROM artifacts WHERE study=? AND kind=? ORDER BY seq",
+            (study, kind),
+        ):
+            yield self._artifact(row)
 
     def count(self, study: str, kind: str) -> int:
         return self.db.execute(
             "SELECT COUNT(*) FROM artifacts WHERE study=? AND kind=?", (study, kind)
         ).fetchone()[0]
+
+    def matching(self, study, kind, fields, *, limit=None):
+        """Filter immutable bodies in SQLite before loading/decoding originals."""
+        sql = "SELECT * FROM artifacts WHERE study=? AND kind=?"
+        args = [study, kind]
+        for key, value in fields.items():
+            if not key.isidentifier():
+                raise ValueError("invalid artifact field")
+            # Identifiers are checked above; literal paths let SQLite use the
+            # expression indexes. Values remain bound parameters.
+            sql += f" AND json_extract(body,'$.{key}')=?"
+            args.append(value)
+        sql += " ORDER BY seq"
+        if limit is not None:
+            sql += " DESC LIMIT ?"
+            args.append(limit)
+        return [self._artifact(row) for row in self.db.execute(sql, args)]
+
+    def catalog_index(self, study):
+        rows = self.db.execute(
+            "SELECT ref,json_extract(body,'$.root') AS root,"
+            "json_array_length(body,'$.entries') AS entries FROM artifacts "
+            "WHERE study=? AND kind='catalog' ORDER BY seq",
+            (study,),
+        )
+        latest = {}
+        for row in rows:
+            latest[row["root"]] = {
+                "ref": row["ref"],
+                "kind": "catalog",
+                "root": row["root"],
+                "entries": row["entries"],
+            }
+        return list(latest.values())
+
+    def catalog_page(self, study, ref, offset, limit):
+        import json
+
+        row = self.db.execute(
+            "SELECT json_array_length(body,'$.entries') AS total FROM artifacts "
+            "WHERE study=? AND ref=? AND kind='catalog'",
+            (study, ref),
+        ).fetchone()
+        if row is None:
+            raise ValueError("expected catalog")
+        entries = []
+        for item in self.db.execute(
+            "SELECT j.value FROM artifacts a,json_each(a.body,'$.entries') j "
+            "WHERE a.study=? AND a.ref=? ORDER BY j.key LIMIT ? OFFSET ?",
+            (study, ref, limit, offset),
+        ):
+            entry = json.loads(item[0])
+            source = self.db.execute(
+                "SELECT ref FROM artifacts WHERE study=? AND kind='source' "
+                "AND json_extract(body,'$.origin')=? "
+                "AND EXISTS(SELECT 1 FROM json_each(parents) WHERE value=?) ORDER BY seq DESC LIMIT 1",
+                (study, entry["path"], ref),
+            ).fetchone()
+            entries.append({**entry, "source_ref": source[0] if source else None})
+        end = offset + len(entries)
+        return {
+            "ref": ref,
+            "kind": "catalog",
+            "entries": entries,
+            "total": row["total"],
+            "next_offset": end if end < row["total"] else None,
+        }
+
+    def revisions(self, study, refs, direction):
+        replacements, pending, seen = {}, list(refs), set()
+        while pending:
+            ref = pending.pop()
+            if ref in seen:
+                continue
+            seen.add(ref)
+            dependency = self.db.execute(
+                "SELECT kind,parents FROM artifacts WHERE study=? AND ref=?",
+                (study, ref),
+            ).fetchone()
+            if dependency is not None and dependency["kind"] in {
+                "work_result",
+                "note",
+                "report",
+                "memory",
+                "evidence_anchor",
+                "clarification_answer",
+            }:
+                import json
+
+                pending.extend(json.loads(dependency["parents"]))
+            row = self.db.execute(
+                "SELECT * FROM artifacts WHERE study=? AND kind='work_result' "
+                "AND EXISTS(SELECT 1 FROM json_each(body,'$.supersedes') WHERE value=?) "
+                "AND EXISTS(SELECT 1 FROM json_each(parents) WHERE value=?) ORDER BY seq DESC LIMIT 1",
+                (study, ref, direction),
+            ).fetchone()
+            if row is not None:
+                item = self._artifact(row)
+                replacements[ref] = item.ref
+                pending.append(item.ref)
+        return replacements
 
     def step_sequence(self, study: str, work: str) -> int:
         """Scheduling needs sequence metadata, never a full frozen model request."""
@@ -295,7 +416,7 @@ class Store:
         producer=False,
         first_parent=False,
         limit=None,
-    ) -> list[Artifact]:
+    ) -> builtins.list[Artifact]:
         """Filter before decoding immutable bodies, especially frozen model requests."""
         predicate = (
             "json_extract(body,'$.producer')=?"
@@ -317,7 +438,7 @@ class Store:
 
     def search(
         self, study: str, kind: str, query: str, after: int, limit: int
-    ) -> list[Artifact]:
+    ) -> builtins.list[Artifact]:
         if after < 0 or not 1 <= limit <= 100:
             raise ValueError("invalid search cursor or page size")
         return [
@@ -330,7 +451,7 @@ class Store:
             )
         ]
 
-    def unsettled(self, study: str) -> list[dict[str, Any]]:
+    def unsettled(self, study: str) -> builtins.list[dict[str, Any]]:
         return [
             dict(r)
             for r in self.db.execute(
@@ -687,7 +808,7 @@ class Store:
         work: str | None = None,
         owner: str | None = None,
         open_only: bool = False,
-    ) -> list[Artifact]:
+    ) -> builtins.list[Artifact]:
         direction = self.control(study).direction
         answered = {
             a.body["question"] for a in self.list(study, "clarification_answer")
@@ -702,7 +823,13 @@ class Store:
         ]
 
     def ask(
-        self, study: str, work: str, epoch: int, text: str, refs: list[str], step: str
+        self,
+        study: str,
+        work: str,
+        epoch: int,
+        text: str,
+        refs: builtins.list[str],
+        step: str,
     ) -> Artifact:
         with self.transaction():
             item = self.require_work(study, work, epoch)
@@ -741,7 +868,7 @@ class Store:
         epoch: int,
         question: str,
         text: str,
-        refs: list[str],
+        refs: builtins.list[str],
     ) -> Artifact:
         with self.transaction():
             owner = self.require_work(study, work, epoch)
@@ -870,7 +997,7 @@ class Store:
             ).fetchone()
         )
         if not hasattr(self, "_usage_cache"):
-            self._usage_cache = {}
+            self._usage_cache: dict[str, Any] = {}
         cached = self._usage_cache.get(study)
         if cached and cached[0] == watermark:
             return cached[1]
@@ -1049,6 +1176,64 @@ class Store:
             self.require_work(study, work, epoch)
             return self._put(study, "observation", body, (work, *parents))
 
+    def require_report_delivery(self, study, work, report_ref):
+        """Prove input delivery from settled model requests, never model assertions."""
+        import json
+
+        from .review import public_inputs, units
+
+        report = self.get(study, report_ref)
+        parts = units(report.body["text"])
+        received = set()
+        rows = self.db.execute(
+            "SELECT DISTINCT a.*,o.result AS model_result FROM artifacts a JOIN operations o "
+            "ON o.request_step=a.ref AND o.study=a.study "
+            "WHERE a.study=? AND o.work=? AND o.status='succeeded' ORDER BY a.seq",
+            (study, work),
+        )
+        for row in rows:
+            raw = json.loads(row["model_result"])
+            if raw.get("http_status", 200) != 200 or raw.get("malformed_json"):
+                continue
+            request = self._artifact(row).body["request"]
+            entries = []
+            for value in public_inputs(request):
+                entries.extend(value.get("context", []))
+                if "observation_ref" in value and "result" in value:
+                    observation = self.get(study, value["observation_ref"])
+                    if (
+                        observation.kind == "observation"
+                        and observation.body.get("result") == value["result"]
+                    ):
+                        entries.append(
+                            {"kind": "observation", "body": observation.body}
+                        )
+            for entry in entries:
+                body = entry.get("body", {})
+                if entry.get("ref") == report_ref and body == report.body:
+                    return
+                if entry.get("kind") != "observation":
+                    continue
+                result = body.get("result", {})
+                if (
+                    body.get("tool") != "read_report"
+                    or result.get("report") != report_ref
+                ):
+                    continue
+                for unit in result.get("units", []):
+                    index = unit.get("unit")
+                    if (
+                        type(index) is int
+                        and 0 <= index < len(parts)
+                        and unit == parts[index]
+                    ):
+                        received.add(index)
+        if len(received) != len(parts):
+            missing = next(i for i in range(len(parts)) if i not in received)
+            raise ValueError(
+                f"whole report has not reached reviewer model input; read_report offset={missing} then review in a subsequent turn"
+            )
+
     def publish(
         self, study: str, work: str, epoch: int, report_ref: str, review_ref: str
     ) -> Artifact:
@@ -1059,6 +1244,10 @@ class Store:
             direction = self.control(study).direction
             report = self.get(study, report_ref)
             review = self.get(study, review_ref)
+            if review.kind != "review":
+                raise Conflict(
+                    "publication requires an accepting final review artifact; a check work_result is not a final review. Delegate reviewer with review_mode='final' for this report"
+                )
             if (
                 report.kind != "report"
                 or direction not in report.parents
@@ -1090,6 +1279,12 @@ class Store:
             ):
                 raise Conflict("review must come from a separate bound review work")
             validate_citations(report.body, lambda ref: self.get(study, ref))
+            revisions = self.revisions(study, [report.ref], direction)
+            if any(self.get(study, ref).seq > review.seq for ref in revisions.values()):
+                raise Conflict(
+                    "report premise changed after review; obtain a new final review"
+                )
+            self.require_report_delivery(study, reviewer.ref, report.ref)
             for ref in report.body["evidence"]:
                 source = self.get(study, ref)
                 if source.kind != "source":

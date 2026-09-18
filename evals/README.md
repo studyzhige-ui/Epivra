@@ -15,6 +15,8 @@ node tests/web_status.cjs
 node tests/web_usage.cjs
 ```
 
+GitHub Actions 还会在支持的 Python/操作系统矩阵上运行已配置的 mypy 检查并构建 wheel。
+
 ## 在线诊断
 
 以下命令调用模型 API 并消耗供应商额度。模型、工具合同、样例或实现改变时，使用新的 run ID。已成功的调用回放已有记录，不重发旧账本操作；模型原始协议记录保存在被忽略的本地目录。

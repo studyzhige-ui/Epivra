@@ -32,6 +32,10 @@ class RepeatedFailure(RuntimeError):
     """Repeated identical failures without progress; preserve work for correction."""
 
 
+class RecoveryExhausted(RuntimeError):
+    """Explicit provider rejections exhausted recovery for this control epoch."""
+
+
 class OwnershipError(RuntimeError):
     """Another host owns this database."""
 
@@ -48,6 +52,23 @@ def encode(value: Any) -> str:
 
 def identity(*values: Any) -> str:
     return hashlib.sha256(encode(values).encode()).hexdigest()
+
+
+def bounded_json(value, *, max_bytes=16 * 1024 * 1024, max_depth=64):
+    """Bound external structures before recursive encoders/schema validators."""
+    pending = [(value, 0)]
+    nodes = 0
+    while pending:
+        item, depth = pending.pop()
+        nodes += 1
+        if depth > max_depth or nodes > 1_000_000:
+            raise ValueError("JSON nesting or element capacity exceeded")
+        if isinstance(item, dict):
+            pending.extend((v, depth + 1) for v in item.values())
+        elif isinstance(item, list):
+            pending.extend((v, depth + 1) for v in item)
+    if len(encode(value).encode("utf-8")) > max_bytes:
+        raise ValueError("JSON byte capacity exceeded")
 
 
 @dataclass(frozen=True)
@@ -105,6 +126,8 @@ class Reply:
         calls = data.get("calls")
         if not isinstance(calls, list):
             raise ValueError("model calls must be a list")
+        if len(calls) > 1024:
+            raise ValueError("single response exceeds tool-call capacity")
         parsed = []
         for item in calls:
             if (

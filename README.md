@@ -76,7 +76,7 @@ The default model is `deepseek-flash`. Only official model endpoints are support
 
 ## Local data and privacy
 
-Research records live in `.epivra/`, credentials in `.env`, and local parsing models in `models/docling/`. These are excluded from Git. Icons and interface assets are packaged with the application.
+Research records live in `.epivra/`, credentials in `.env`, and local parsing models in `models/docling/`. These are excluded from Git. Epivra protects its private `.epivra/` state for the local owner and does not change permissions on user source directories. Icons and interface assets are packaged with the application.
 
 Local operation does not mean all data stays offline: online models, search services, and external tools receive the queries and materials needed for the task. Closing an interface does not stop background research; keep the computer and research host running.
 

@@ -6,7 +6,7 @@ import asyncio
 from typing import Any
 
 from .adapters import ProviderFailure, rate_limit_delay
-from .domain import Conflict, RepeatedFailure
+from .domain import Conflict, RecoveryExhausted, RepeatedFailure
 from .harness import Harness
 from .storage import Store
 from .usage import summarize
@@ -195,7 +195,9 @@ class ResearchService:
         except Exception as exc:
             # Never include provider request bodies or credential-bearing errors.
             self.errors[study] = (
-                str(exc) if isinstance(exc, ProviderFailure) else type(exc).__name__
+                str(exc)
+                if isinstance(exc, (ProviderFailure, RecoveryExhausted))
+                else type(exc).__name__
             )
 
         finally:
@@ -252,7 +254,9 @@ class ResearchService:
             if isinstance(exc, RepeatedFailure):
                 self.repeated_failures.add(work)
             self.work_errors[work] = (
-                str(exc) if isinstance(exc, ProviderFailure) else type(exc).__name__
+                str(exc)
+                if isinstance(exc, (ProviderFailure, RecoveryExhausted))
+                else type(exc).__name__
             )
 
     async def close(self) -> None:

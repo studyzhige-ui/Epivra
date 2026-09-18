@@ -12,6 +12,8 @@ LAYERS = (
         frozenset(
             {
                 "storage",
+                "local_security",
+                "diagnostics",
                 "prompts",
                 "context",
                 "workspace",
@@ -83,6 +85,7 @@ ALLOWED = {
     "terminal": {"locale"},
     "cli_settings": {"adapters", "model_catalog", "web_providers"},
     "host": {
+        "local_security",
         "presentation",
         "locale",
         "mcp_client",
@@ -111,7 +114,9 @@ ALLOWED = {
     "__init__": set(),
     "domain": set(),
     "prompts": set(),
-    "storage": {"domain", "usage", "citations"},
+    "storage": {"domain", "usage", "citations", "review", "local_security"},
+    "local_security": set(),
+    "diagnostics": {"domain", "review"},
     "citations": set(),
     "usage": set(),
     "context": {"domain"},

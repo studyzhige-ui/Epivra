@@ -20,8 +20,10 @@ from .domain import (
     Call,
     Conflict,
     NotAllowed,
+    RecoveryExhausted,
     RepeatedFailure,
     Reply,
+    bounded_json,
     encode,
     identity,
 )
@@ -48,6 +50,10 @@ class Tool:
     permission: str | None = None
     observe: Callable[[Any, dict[str, str]], Any] | None = None
     check: Callable[[dict[str, Any]], None] | None = None
+    validate_arguments: Callable[[dict[str, Any]], None] | None = None
+    invoke_received: (
+        Callable[[dict[str, Any], Callable[[Any], None]], Awaitable[Any]] | None
+    ) = None
     retry_delay: Callable[[Any, int], float | None] | None = None
     cooldown: Callable[[Any], float | None] | None = None
     retry_on_resume: Callable[[Any], bool] | None = None
@@ -80,6 +86,11 @@ def object_schema(properties: dict[str, Any]) -> dict[str, Any]:
 
 STRING = {"type": "string", "minLength": 1}
 STRINGS = {"type": "array", "items": STRING}
+REFERENCES = {
+    "type": "array",
+    "items": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "description": "Exact 64-character artifact refs returned by tools, not filenames, URLs, quotations or explanatory prose. Use [] when no reference exists.",
+}
 BUILTINS = {
     "read_context": (
         "all",
@@ -177,12 +188,43 @@ BUILTINS = {
     ),
     "finish_work": (
         "investigator",
-        object_schema(
-            {
-                "text": STRING,
-                "refs": STRINGS,
-            }
-        ),
+        {
+            **object_schema(
+                {
+                    "text": STRING,
+                    "refs": STRINGS,
+                    "supersedes": REFERENCES,
+                    "findings": {
+                        "type": "array",
+                        "items": {
+                            **object_schema(
+                                {
+                                    "statement": STRING,
+                                    "status": {
+                                        "type": "string",
+                                        "enum": [
+                                            "source_statement",
+                                            "observation",
+                                            "inference",
+                                            "assumption",
+                                            "prediction",
+                                        ],
+                                    },
+                                    "support": {
+                                        **REFERENCES,
+                                        "description": "Supporting source/note/work_result/report artifact refs only. A report ref supports observations about that report, not independent verification of its claims. Explain the evidence in statement; this field is not evidence prose.",
+                                    },
+                                    "conditions": STRINGS,
+                                    "not_supported": STRINGS,
+                                }
+                            ),
+                            "required": ["statement", "status", "support"],
+                        },
+                    },
+                }
+            ),
+            "required": ["text", "refs"],
+        },
     ),
     "save_memory": (
         "all",
@@ -371,13 +413,17 @@ def validate(value: Any, schema: dict[str, Any], path: str = "arguments") -> Non
             raise ValueError("expected array")
         if len(value) < schema.get("minItems", 0):
             raise ValueError("too few items")
-        for item in value:
-            validate(item, schema["items"])
+        for index, item in enumerate(value):
+            validate(item, schema["items"], f"{path}[{index}]")
     elif kind == "string":
         if not isinstance(value, str) or len(value.strip()) < schema.get(
             "minLength", 0
         ):
             raise ValueError("expected non-empty text")
+        if "pattern" in schema and not re.search(schema["pattern"], value):
+            raise ValueError(
+                f"{path}: expected an exact artifact ref (64 lowercase hexadecimal characters), not prose; copy the ref returned by tools"
+            )
     elif kind == "boolean":
         if type(value) is not bool:
             raise ValueError("expected boolean")
@@ -393,6 +439,16 @@ def validate(value: Any, schema: dict[str, Any], path: str = "arguments") -> Non
 
 
 class Harness:
+    def _validate_call(self, call, schema):
+        bounded_json(call.arguments)
+        tool = self.tools.get(call.name)
+        if tool is not None and tool.validate_arguments is not None:
+            tool.validate_arguments(call.arguments)
+        else:
+            validate(call.arguments, schema[call.name]["parameters"])
+        if tool is not None and tool.check is not None:
+            tool.check(call.arguments)
+
     def __init__(
         self,
         store: Store,
@@ -559,14 +615,6 @@ class Harness:
         control = self.store.control(study)
         plan = self.store.get(study, control.plan) if control.plan else None
         anchors = self._steps(study, "evidence_anchor", work.ref, limit=1)
-        catalogs = {}
-        for item in self.store.list(study, "catalog"):
-            catalogs[item.body["root"]] = {
-                "ref": item.ref,
-                "kind": "catalog",
-                "root": item.body["root"],
-                "entries": len(item.body["entries"]),
-            }
         mandatory = {
             "provider": self.model.identity,
             "system": ROLES[work.body["role"]],
@@ -576,7 +624,8 @@ class Harness:
             "task": work.body["task"],
             "shared_context": work.body.get("shared_context", ""),
             "deliverable": work.body.get("deliverable", ""),
-            "current_date": datetime.now(timezone.utc).date().isoformat(),
+            "current_date": direction.body["policy"].get("as_of_date")
+            or datetime.now(timezone.utc).date().isoformat(),
             "direction": direction.body,
             "research_scope": {
                 "brief": plan.body.get("brief")
@@ -595,7 +644,7 @@ class Harness:
                 {"ref": ref, "kind": self.store.get(study, ref).kind}
                 for ref in self._handoff_inputs(study, work)
             ],
-            "catalogs": list(catalogs.values()),
+            "catalogs": self.store.catalog_index(study),
             "delegated_work": [
                 {
                     "ref": child.ref,
@@ -611,8 +660,7 @@ class Harness:
                     ],
                     "finished": self.finished(study, child.ref),
                 }
-                for child in self.store.list(study, "work")
-                if child.body["owner"] == work.ref
+                for child in self.store.matching(study, "work", {"owner": work.ref})
             ],
             "pinned_evidence": pins_override
             if pins_override is not None
@@ -637,6 +685,8 @@ class Harness:
                 "inputs": self._relations(study, report),
             }
         candidates = self._steps(study, "observation", work.ref, limit=64)
+        if work.body["role"] == "reviewer":
+            candidates.append(report)
         candidates.extend(self._steps(study, "note", work.ref, limit=64))
         if plan is not None and direction.ref in plan.parents:
             candidates.append(plan)
@@ -693,6 +743,14 @@ class Harness:
             memory_override
             if memory_override is not None
             else (memories[-1] if memories else None)
+        )
+        revision_refs = list(self._handoff_inputs(study, work))
+        if isinstance(active_memory, Artifact):
+            revision_refs.extend(active_memory.body.get("refs", []))
+        revisions = self.store.revisions(study, revision_refs, direction.ref)
+        mandatory["input_revisions"] = revisions
+        candidates.extend(
+            self.store.get(study, ref) for ref in dict.fromkeys(revisions.values())
         )
         mandatory["navigation"] = {
             key: {"offset": 0, "total": len(items), "next_offset": 0 if items else None}
@@ -774,11 +832,7 @@ class Harness:
         return request
 
     def _attempt(self, study: str, operation: str):
-        retries = [
-            a
-            for a in self.store.list(study, "retry")
-            if a.body["operation"] == operation
-        ]
+        retries = self.store.matching(study, "retry", {"operation": operation}, limit=1)
         return retries[-1] if retries else None
 
     def _result(self, study: str, operation: str):
@@ -798,6 +852,7 @@ class Harness:
         retry_on_resume=None,
         resource="external",
         request_step=None,
+        invoke_received=None,
     ):
         retry = self._attempt(study, operation)
         attempt = retry.body["attempt"] if retry else 0
@@ -840,7 +895,13 @@ class Harness:
                         },
                     )
                     if raw is None:
-                        raw = await invoke()
+                        raw = (
+                            await invoke_received(
+                                lambda value: self.store.settle(key, value)
+                            )
+                            if invoke_received
+                            else await invoke()
+                        )
                         self.store.settle(key, raw)
             else:
                 raw = self.store.admit(
@@ -859,6 +920,15 @@ class Harness:
                 return raw
             if not math.isfinite(delay) or delay < 0:
                 raise ValueError("invalid provider retry delay")
+            epoch_attempt = (
+                retry.body.get("epoch_attempt", retry.body["attempt"])
+                if retry and retry.body.get("recovery_epoch", epoch) == epoch
+                else 0
+            )
+            if epoch_attempt >= 5:
+                raise RecoveryExhausted(
+                    "automatic recovery exhausted for this operation; explicit resume required"
+                )
             attempt += 1
             next_key = identity("retry", operation, attempt)
             retry = self.store.put(
@@ -869,6 +939,8 @@ class Harness:
                     "previous": key,
                     "next": next_key,
                     "attempt": attempt,
+                    "recovery_epoch": epoch,
+                    "epoch_attempt": epoch_attempt + 1,
                     "not_before": time.time() + delay,
                     "resource": resource,
                 },
@@ -896,6 +968,7 @@ class Harness:
         for answer in self.store.list(study, "clarification_answer"):
             if answer.body["question"] in questions:
                 refs.extend((answer.ref, *answer.body["refs"]))
+        refs.extend(self.store.revisions(study, refs, work.body["direction"]).values())
         return tuple(dict.fromkeys(refs))
 
     def _relations(self, study: str, item: Artifact) -> list[dict]:
@@ -1028,7 +1101,7 @@ class Harness:
                 self._done(study, work_ref, step.ref, identity("protocol", str(exc)))
                 return "continue"
             schema = step.body["request"]["tools"]
-            prefetched = set()
+            prefetched: set[int] = set()
             prefetch_errors = {}
             for index, call in enumerate(reply.calls):
                 if index not in prefetched:
@@ -1045,12 +1118,7 @@ class Harness:
                         ):
                             break
                         try:
-                            validate(
-                                candidate.arguments,
-                                schema[candidate.name]["parameters"],
-                            )
-                            if tool.check:
-                                tool.check(candidate.arguments)
+                            self._validate_call(candidate, schema)
                         except (ValueError, NotAllowed):
                             break
                         batch.append((j, candidate))
@@ -1096,12 +1164,10 @@ class Harness:
                 try:
                     if call.name not in schema:
                         raise NotAllowed("tool not available to this work")
-                    validate(call.arguments, schema[call.name]["parameters"])
-                    if call.name in self.tools and self.tools[call.name].check:
-                        self.tools[call.name].check(call.arguments)
+                    self._validate_call(call, schema)
                 except (ValueError, NotAllowed) as exc:
                     invalid = True
-                    result = {"error": str(exc)}
+                    result: Any = {"error": str(exc)}
                 else:
                     if call.name in BUILTINS:
                         try:
@@ -1117,6 +1183,15 @@ class Harness:
                                     "characters": len(source.body["text"]),
                                     "coverage": source.body["coverage"],
                                     "issues": source.body["issues"],
+                                }
+                            elif call.name == "discover_local":
+                                catalog = await self.workspace.discover_async(
+                                    study, call.arguments["root"]
+                                )
+                                result = {
+                                    "ref": catalog.ref,
+                                    "kind": "catalog",
+                                    "count": len(catalog.body["entries"]),
                                 }
                             elif call.name == "run_analysis":
                                 result = await self._analysis(
@@ -1225,6 +1300,13 @@ class Harness:
         async def invoke():
             return {"value": await tool.invoke(call.arguments)}
 
+        async def received(receive):
+            assert tool.invoke_received is not None
+            value = await tool.invoke_received(
+                call.arguments, lambda value: receive({"value": value})
+            )
+            return {"value": value}
+
         resource = (
             tool.resource_map.get(call.arguments.get("provider", ""), tool.resource)
             if tool.resource_map
@@ -1245,6 +1327,7 @@ class Harness:
             if tool.retry_on_resume
             else None,
             resource,
+            invoke_received=received if tool.invoke_received else None,
         )
         delay = tool.cooldown(raw["value"]) if tool.cooldown else None
         if delay is not None:
@@ -1394,6 +1477,30 @@ class Harness:
                 "resumed_work": self.store.get(study, args["question"]).body["work"],
             }
         if call.name == "finish_work":
+            for ref in args.get("supersedes", []):
+                old = self.store.get(study, ref)
+                producer = self.store.get(study, old.body.get("producer", ref))
+                if (
+                    old.kind != "work_result"
+                    or ref not in self._handoff_inputs(study, work)
+                    or producer.kind != "work"
+                    or producer.body["role"] != work.body["role"]
+                    or producer.body["direction"] != direction
+                ):
+                    raise ValueError(
+                        "revision must replace an assigned same-role result in this direction"
+                    )
+            for finding in args.get("findings", []):
+                for ref in finding["support"]:
+                    if self.store.get(study, ref).kind not in {
+                        "source",
+                        "note",
+                        "work_result",
+                        "report",
+                    }:
+                        raise ValueError(
+                            "finding support must name original research evidence"
+                        )
             binding = {}
             if work.body["role"] == "reviewer":
                 if work.body.get("review_mode", "final") != "check":
@@ -1404,7 +1511,17 @@ class Harness:
                 study,
                 "work_result",
                 {**args, "producer": work.ref, **binding},
-                (*parents, *self._handoff_inputs(study, work), *args["refs"]),
+                (
+                    *parents,
+                    *self._handoff_inputs(study, work),
+                    *args["refs"],
+                    *args.get("supersedes", []),
+                    *(
+                        ref
+                        for finding in args.get("findings", [])
+                        for ref in finding["support"]
+                    ),
+                ),
             )
             return {"ref": item.ref}
         if call.name == "save_memory":
@@ -1462,19 +1579,12 @@ class Harness:
                 "total": len(body),
                 "next_offset": offset + limit if offset + limit < len(body) else None,
             }
-        if call.name == "discover_local":
-            catalog = self.workspace.discover(study, args["root"])
-            return {
-                "ref": catalog.ref,
-                "kind": "catalog",
-                "count": len(catalog.body["entries"]),
-            }
         if call.name == "read_catalog":
             return self.workspace.catalog_page(
                 study, args["ref"], args["offset"], args["limit"]
             )
         if call.name == "find_artifacts":
-            page = self.store.search(
+            found = self.store.search(
                 study, args["kind"], args["query"], args["after"], args["limit"]
             )
             return {
@@ -1495,9 +1605,9 @@ class Harness:
                             else {}
                         ),
                     }
-                    for a in page
+                    for a in found
                 ],
-                "next_after": page[-1].seq if page else None,
+                "next_after": found[-1].seq if found else None,
             }
         if call.name == "read_source":
             source = self.store.get(study, args["ref"])
@@ -1624,7 +1734,7 @@ class Harness:
                 raise ValueError("evidence requires a nonempty original quote")
             start = args.get("offset")
             if start is None or start < 0 or text[start : start + len(quote)] != quote:
-                candidates = []
+                candidates: list[int] = []
                 position = text.find(quote)
                 while position != -1 and len(candidates) < 20:
                     candidates.append(position)
@@ -1712,22 +1822,33 @@ class Harness:
             if offset < 0 or limit < 1:
                 raise ValueError("invalid report page")
             offset = min(offset, len(parts))
-            limit = min(limit, 20)
+            shown: list[dict] = []
+            for part in parts[offset : offset + min(limit, 20)]:
+                if shown and len(encode([*shown, part])) > min(
+                    self.context_chars // 4, 6000
+                ):
+                    break
+                shown.append(part)
+            end = offset + len(shown)
             return {
                 "report": report.ref,
-                "units": parts[offset : offset + limit],
-                "evidence": report.body["evidence"],
-                "inputs": self._relations(study, report),
+                "units": shown,
+                "evidence": page(
+                    report.body["evidence"], 0, 20, self.context_chars // 32
+                )["items"],
+                "inputs": page(
+                    self._relations(study, report), 0, 20, self.context_chars // 32
+                )["items"],
+                "related_context": ["review_evidence", "review_inputs"],
                 "total": len(parts),
                 "text_metrics": text_metrics(report.body["text"]),
                 "displayed_units_metrics": text_metrics(
-                    "\n\n".join(p["text"] for p in parts[offset : offset + limit])
+                    "\n\n".join(p["text"] for p in shown)
                 ),
                 "unit_metrics": {
-                    str(p["unit"]): text_metrics(p["text"])
-                    for p in parts[offset : offset + limit]
+                    str(p["unit"]): text_metrics(p["text"]) for p in shown
                 },
-                "next_offset": offset + limit if offset + limit < len(parts) else None,
+                "next_offset": end if end < len(parts) else None,
             }
         elif call.name == "submit_review":
             if work.body.get("review_mode", "final") == "check":
@@ -1735,6 +1856,8 @@ class Harness:
                     "argument check cannot accept or reject the whole report"
                 )
             report, _ = self._review(study, work)
+            if not args["defects"]:
+                self.store.require_report_delivery(study, work.ref, report.ref)
             item = self.store.put(
                 study,
                 "review",

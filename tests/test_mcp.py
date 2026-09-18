@@ -36,6 +36,160 @@ from epivra.workspace import Workspace
 
 
 class MCPTests(unittest.IsolatedAsyncioTestCase):
+    async def test_cancelled_consumer_keeps_received_response_in_ledger(self):
+        from epivra.domain import identity
+        from epivra.harness import Tool
+
+        store = Store(self.root / "cancelled.db")
+        c = store.create("cancel", "Inspect", {})
+        p = store.put("cancel", "plan", {"text": "Inspect"}, (c.direction,))
+        c = store.command("cancel", "approve", c.ref, "approve", {"plan": p.ref})
+        lead = store.work("cancel", c.ref, "lead", "Coordinate")
+        work = store.work("cancel", c.ref, "investigator", "Inspect", (), lead.ref)
+        connection = MCPConnection(self.root, self.config)
+        raw = {"content": [{"type": "text", "text": "paid original"}]}
+
+        @asynccontextmanager
+        async def session(*args):
+            yield object()
+
+        count = 0
+
+        async def execute_and_cancel(*args):
+            nonlocal count
+            count += 1
+            consumer.cancel()
+            return raw
+
+        async def invoke(args):
+            return await connection.invoke({}, args)
+
+        async def received(args, receive):
+            return await connection.invoke({}, args, receive=receive)
+
+        class Model:
+            identity = "cancel-fixture"
+
+            async def complete(self, request):
+                return Reply("", (Call("lookup", {}),)).to_json()
+
+        tool = Tool(
+            "lookup",
+            {"type": "object", "properties": {}, "required": []},
+            invoke,
+            invoke_received=received,
+            roles=("investigator",),
+        )
+        try:
+            with (
+                patch("epivra.mcp_client.connection", session),
+                patch("epivra.mcp_client.execute", execute_and_cancel),
+            ):
+                harness = Harness(store, Model(), {"lookup": tool})
+                consumer = asyncio.create_task(harness.step("cancel", work.ref))
+                with self.assertRaises(asyncio.CancelledError):
+                    await consumer
+                step = store.related("cancel", "step", work.ref)[-1]
+                operation = identity("tool", step.ref, 0)
+                self.assertEqual(
+                    "succeeded",
+                    store.db.execute(
+                        "SELECT status FROM operations WHERE id=?", (operation,)
+                    ).fetchone()[0],
+                )
+                await connection.close()
+                store.close()
+                store = Store(self.root / "cancelled.db")
+                await Harness(store, Model(), {"lookup": tool}).step("cancel", work.ref)
+                self.assertEqual(1, count)
+                self.assertFalse(store.unsettled("cancel"))
+        finally:
+            await connection.close()
+            store.close()
+
+    async def test_full_schema_reaches_harness_and_invalid_arguments_do_not_send(self):
+        from mcp import types
+
+        shapes = [
+            ({"type": "number"}, 1.5, "bad"),
+            ({"type": ["string", "null"]}, None, 7),
+            ({"$ref": "#/$defs/value"}, 1.5, "bad"),
+            (
+                {"type": "object", "additionalProperties": {"type": "number"}},
+                {"extra": 1.5},
+                {"extra": "bad"},
+            ),
+            ({"enum": ["yes", 7]}, 7, "no"),
+        ]
+        for index, (shape, good, bad) in enumerate(shapes):
+            with self.subTest(shape=shape):
+                schema = {
+                    "type": "object",
+                    "properties": {"value": shape},
+                    "required": ["value"],
+                    "additionalProperties": False,
+                    "$defs": {"value": {"type": "number"}},
+                }
+                definition = {"name": "lookup", "inputSchema": schema}
+                client = AsyncMock()
+                client.list_tools.return_value = types.ListToolsResult(
+                    tools=[types.Tool.model_validate(definition)]
+                )
+                client.session.send_request.return_value = {
+                    "content": [{"type": "text", "text": "original evidence"}]
+                }
+
+                @asynccontextmanager
+                async def connection(config, root):
+                    yield client
+
+                store = Store(self.root / f"schema-{index}.db")
+                connections = []
+                try:
+                    frozen = {
+                        "test": {"connection": self.config, "definitions": [definition]}
+                    }
+                    c = store.create("s", "Check schema", {"mcp": frozen})
+                    plan = store.put("s", "plan", {"text": "plan"}, (c.direction,))
+                    c = store.command(
+                        "s", "approve", c.ref, "approve", {"plan": plan.ref}
+                    )
+                    lead = store.work("s", c.ref, "lead", "coordinate")
+                    work = store.work(
+                        "s", c.ref, "investigator", "lookup", (), lead.ref
+                    )
+                    name = alias("test", "tool:lookup")
+
+                    class Model:
+                        identity = "schema-fixture"
+                        value = good
+
+                        async def complete(inner, request):
+                            self.assertEqual(
+                                schema, request["tools"][name]["parameters"]
+                            )
+                            return Reply(
+                                "", (Call(name, {"value": inner.value}),)
+                            ).to_json()
+
+                    model = Model()
+                    tools, connections = connect_tools(store, "s", {"mcp": frozen})
+                    with patch("epivra.mcp_client.connection", connection):
+                        harness = Harness(store, model, tools)
+                        await harness.step("s", work.ref)
+                        self.assertEqual(1, client.session.send_request.await_count)
+                        self.assertEqual(1, store.count("s", "source"))
+                        model.value = bad
+                        await harness.step("s", work.ref)
+                        self.assertEqual(1, client.session.send_request.await_count)
+                        self.assertIn(
+                            "error", store.list("s", "observation")[-1].body["result"]
+                        )
+                finally:
+                    for item in connections:
+                        await item.close()
+                    store.close()
+
     async def asyncSetUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
@@ -262,7 +416,7 @@ class MCPTests(unittest.IsolatedAsyncioTestCase):
             tool = tools[alias("test", "tool:lookup")]
             with patch("urllib.request.urlopen") as fetch:
                 with self.assertRaises(ValueError):
-                    tool.check({"query": "x"})
+                    tool.validate_arguments({"query": "x"})
                 fetch.assert_not_called()
             result = Workspace(store).mcp_snapshot(
                 "s",

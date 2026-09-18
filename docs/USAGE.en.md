@@ -76,6 +76,8 @@ Epivra validates citations and numbers sources in order of first appearance. Rep
 
 After three consecutive rounds with no tool action, or the same protocol error or complete sequence of failed calls, and no successful operation or new research material, that work stops retrying automatically and retains its reason. The lead can change the method or obtain additional material. This type of block is reconsidered when new material arrives; you can also pause and resume after addressing the cause. Normal investigation, different operations, and necessary revisions have no fixed round limit. Paid calls with unknown outcomes are still never automatically resent.
 
+Normal research has no total call, token, cost, or elapsed-time cap. Explicit provider rejections have a separate recovery guard: one operation can be recovered at most five times within one control epoch. After that guard is reached, pause and resume explicitly before trying the operation again; this protects resources without limiting research depth.
+
 ## 4. Parsing and analysis
 
 The base installation handles text, CSV/TSV, text-layer PDFs, and XLSX. Spreadsheet formulas are read but not recalculated. For scanned PDFs, image OCR, DOCX/PPTX, and other complex materials:
@@ -85,6 +87,8 @@ python -m pip install -e ".[documents]"
 ```
 
 Local models are automatically discovered in `models/docling/`. After a fresh clone, follow the [model guide](../models/README.en.md) to download them. Missing dependencies, incomplete models, and parser failures are reported. OCR does not interpret charts; important figures and complex layouts still need review.
+
+A single material is limited to 256 MiB, parser output to 64 MiB, and an authorized directory snapshot to 100,000 entries. These are resource-protection limits, not research source-count limits; use smaller roots or split oversized materials when necessary.
 
 Statistics, charts, and Python analysis require Docker running Linux containers. Build the image once:
 
@@ -141,11 +145,11 @@ To expose Epivra through local HTTP MCP, set a separate `EPIVRA_MCP_TOKEN` envir
 | `src/epivra/` | Code, Web interface, icons, translations | Yes |
 | `models/docling/` | Local parsing models | No; instructions and manifest are tracked |
 | `.env` | API credentials | No |
-| `.epivra/` | Research database, materials, settings, recovery records | No |
+| `.epivra/` | Private research database, materials, settings, recovery records | No |
 | `mcp-servers.json` | Local external-tool connections | No |
 | `.venv/` | Python environment | No; reinstall dependencies |
 
-Before a backup, pause tasks and wait for in-flight work to finish. Run `epivra shutdown`, then copy the entire `.epivra/` directory. Back up credentials and MCP configuration separately and securely if needed. Do not copy only the database and omit material files. Stop the Web server separately in its terminal.
+Before a backup, pause tasks and wait for in-flight work to finish. Run `epivra shutdown`, then copy the entire `.epivra/` directory. Epivra protects this directory for the local owner; it does not change permissions on user source folders. Back up credentials and MCP configuration separately and securely if needed. Do not copy only the database and omit material files. Stop the Web server separately in its terminal.
 
 Epivra does not automatically import the old project's `.deep-research-agent/` data. Keep the old directory and use its previous installation to read historical research. Installation and research roots may differ; specify `--root` to avoid accidentally creating separate workspaces by launching from different directories.
 

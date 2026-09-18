@@ -3,7 +3,7 @@
 import json
 from pathlib import Path
 
-from .domain import identity
+from .domain import bounded_json, identity
 from .harness import Tool, object_schema
 from .mcp_client import MCPConnection, alias
 from .workspace import Workspace
@@ -33,6 +33,7 @@ def connect_tools(store, study, policy):
                 )
             )
         for definition, resource in definitions:
+            bounded_json(definition, max_bytes=1024 * 1024)
             grant = (
                 {"roles": ["investigator", "reviewer"], "write": False}
                 if resource
@@ -41,6 +42,9 @@ def connect_tools(store, study, policy):
 
             async def invoke(args, c=connection, d=definition, r=resource):
                 return await c.invoke(d, args, r)
+
+            async def received(args, receive, c=connection, d=definition, r=resource):
+                return await c.invoke(d, args, r, receive=receive)
 
             def observe(raw, acquisition, name=server, d=definition, r=resource):
                 if raw.get("isError"):
@@ -104,7 +108,8 @@ def connect_tools(store, study, policy):
                 roles=tuple(grant["roles"]),
                 identity=identity(json.dumps(frozen, sort_keys=True)),
                 observe=observe,
-                check=check,
+                validate_arguments=check,
+                invoke_received=received,
                 resource="mcp:" + server,
                 parallel_safe=False,
             )

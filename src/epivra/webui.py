@@ -247,7 +247,8 @@ class Server(ThreadingHTTPServer):
             self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
         super().server_bind()
 
-    def __init__(self, app, port=0, max_upload=256 * 1024 * 1024):
+    def __init__(self, app, port=0, max_upload=256 * 1024 * 1024, max_workers=16):
+        self.workers = threading.BoundedSemaphore(max_workers)
         self.app, self.token, self.max_upload = (
             app,
             secrets.token_urlsafe(32),
@@ -256,6 +257,22 @@ class Server(ThreadingHTTPServer):
         super().__init__(("127.0.0.1", port), Handler)
         self.authority = f"127.0.0.1:{self.server_port}"
         self.origin = f"http://{self.authority}"
+
+    def process_request(self, request, client_address):
+        if not self.workers.acquire(blocking=False):
+            self.shutdown_request(request)
+            return
+        try:
+            super().process_request(request, client_address)
+        except BaseException:
+            self.workers.release()
+            raise
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self.workers.release()
 
     @property
     def url(self):
@@ -383,7 +400,10 @@ class Handler(BaseHTTPRequestHandler):
                 if set(data) != {"study", "expected"} or not data["expected"]:
                     raise WebError(tr("导出需要当前报告版本。"))
                 report = app.call({"action": "report", **data})
-                self.reply(word_report(report), content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+                self.reply(
+                    word_report(report),
+                    content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                )
                 return
             if path == "/api/file":
                 self.download(data)

@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import math
 import os
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
@@ -161,7 +163,17 @@ class JsonAPI:
         auth_prefix: str = "Bearer ",
         headers: dict | None = None,
         credential_env: str | None = None,
+        deadline: float = 1800,
+        max_response_bytes: int = 64 * 1024 * 1024,
+        max_event_bytes: int = 4 * 1024 * 1024,
     ):
+        if not math.isfinite(deadline) or deadline <= 0:
+            raise ValueError("positive finite operation deadline required")
+        if min(max_response_bytes, max_event_bytes) < 1:
+            raise ValueError("positive response capacity required")
+        self.deadline = deadline
+        self.max_response_bytes = max_response_bytes
+        self.max_event_bytes = max_event_bytes
         self.origin, self._key = origin, key
         self.auth_header, self.auth_prefix = auth_header, auth_prefix
         self.headers = dict(headers or {})
@@ -223,13 +235,8 @@ class JsonAPI:
         return await self.request("POST", path, body=body)
 
     async def request(self, method, path, *, body=None, params=None, text=False):
-        response = await self._client.request(
-            method,
-            self.origin + path,
-            json=body,
-            params=params,
-            headers=self._headers(),
-        )
+        async with self._response(method, path, json=body, params=params) as response:
+            response = await self._read_response(response)
         # Error bodies can echo request data. Keep only safe status metadata.
         if response.status_code != 200:
             return self._rejection(response)
@@ -254,29 +261,81 @@ class JsonAPI:
         if self._owns_client:
             await self._client.aclose()
 
+    @asynccontextmanager
+    async def _response(self, method, path, **kwargs):
+        async with asyncio.timeout(self.deadline):
+            async with self._client.stream(
+                method, self.origin + path, headers=self._headers(), **kwargs
+            ) as response:
+                yield response
+
+    async def _chunks(self, response):
+        total = 0
+        async for chunk in response.aiter_bytes():
+            total += len(chunk)
+            if total > self.max_response_bytes:
+                raise IncompleteStream(
+                    "provider response exceeds byte limit; outcome unknown"
+                )
+            yield chunk
+
+    async def _read_response(self, response):
+        data = bytearray()
+        async for chunk in self._chunks(response):
+            data.extend(chunk)
+        headers = {
+            k: v
+            for k, v in response.headers.items()
+            if k.lower() not in {"content-encoding", "content-length"}
+        }
+        return httpx.Response(
+            response.status_code, headers=headers, content=bytes(data)
+        )
+
+    async def _lines(self, response):
+        pending = bytearray()
+        async for chunk in self._chunks(response):
+            pending.extend(chunk)
+            while b"\n" in pending:
+                line, _, tail = pending.partition(b"\n")
+                pending = bytearray(tail)
+                if len(line) > self.max_event_bytes:
+                    raise IncompleteStream(
+                        "provider stream line exceeds byte limit; outcome unknown"
+                    )
+                yield line.rstrip(b"\r").decode("utf-8")
+            if len(pending) > self.max_event_bytes:
+                raise IncompleteStream(
+                    "provider stream line exceeds byte limit; outcome unknown"
+                )
+        if pending:
+            yield pending.rstrip(b"\r").decode("utf-8")
+
     async def chat_stream(self, path: str, body: dict[str, Any]) -> dict:
-        async with self._client.stream(
-            "POST",
-            self.origin + path,
-            json=body,
-            headers=self._headers(),
-        ) as response:
+        async with self._response("POST", path, json=body) as response:
             if response.status_code != 200:
-                await response.aread()
+                response = await self._read_response(response)
                 return self._rejection(response)
             state = _ChatStream()
             event = []
+            event_bytes = 0
             try:
-                async for line in response.aiter_lines():
+                async for line in self._lines(response):
                     if line == "":
                         if not event:
                             continue
                         value = "\n".join(event)
                         event = []
+                        event_bytes = 0
                         if value == "[DONE]":
                             return state.result()
                         state.add(json.loads(value))
                     elif line.startswith("data:"):
+                        event_bytes += len(line.encode("utf-8"))
+                        if event_bytes > self.max_event_bytes:
+                            raise IncompleteStream(
+                                "provider event exceeds byte limit; outcome unknown"
+                            )
                         event.append(line[5:].removeprefix(" "))
                     # SSE comments/other fields carry no model content.
             except (ValueError, KeyError, TypeError, IndexError, AttributeError):

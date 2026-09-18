@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import shutil
@@ -10,7 +11,7 @@ from typing import Any
 
 from .analysis import filename
 from .domain import Artifact, NotAllowed
-from .materials import SUPPORTED_SUFFIXES, parse, parse_isolated
+from .materials import MAX_INPUT_BYTES, SUPPORTED_SUFFIXES, parse, parse_isolated
 from .storage import Store
 
 
@@ -163,7 +164,12 @@ class Workspace:
 
     async def _parse(self, study, name, raw):
         digest = hashlib.sha256(raw).hexdigest()
-        for prior in self.store.list(study, "source"):
+        for prior in self.store.matching(
+            study,
+            "source",
+            {"sha256": digest, "format": Path(name).suffix.lower()},
+            limit=1,
+        ):
             if (
                 prior.body.get("sha256") == digest
                 and prior.body.get("format") == Path(name).suffix.lower()
@@ -241,70 +247,88 @@ class Workspace:
 
     def discover(self, study: str, root: str) -> Artifact:
         directory = self._root(study, root)
+        return self.store.put(study, "catalog", self._scan(directory))
+
+    async def discover_async(self, study: str, root: str) -> Artifact:
+        directory = self._root(study, root)
+        body = await self._io(self._scan, directory)
+        return self.store.put(study, "catalog", body)
+
+    @staticmethod
+    async def _io(function, *args):
+        task = asyncio.create_task(asyncio.to_thread(function, *args))
+        cancelled = False
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                cancelled = True
+            except Exception:
+                break
+        if cancelled:
+            if not task.cancelled():
+                task.exception()
+            raise asyncio.CancelledError
+        return task.result()
+
+    @classmethod
+    def _scan(cls, directory):
         entries: list[dict[str, Any]] = []
         visited: set[Path] = set()
 
-        def walk(current: Path) -> None:
-            resolved = self._inside(directory, current)
-            if resolved in visited:
-                return
-            visited.add(resolved)
-            for path in sorted(current.iterdir(), key=lambda p: p.name):
-                relative = path.relative_to(directory).as_posix()
-                try:
-                    target = self._inside(directory, path)
-                    if target.is_dir():
-                        walk(path)
-                    elif target.is_file():
-                        stat = target.stat()
-                        entries.append(
-                            {
-                                "path": relative,
-                                "bytes": stat.st_size,
-                                "mtime_ns": stat.st_mtime_ns,
-                                "status": "available"
-                                if path.suffix.lower() in SUPPORTED_SUFFIXES
-                                else "unsupported",
-                            }
+        pending = [directory]
+        while pending:
+            current = pending.pop()
+            try:
+                resolved = cls._inside(directory, current)
+                if resolved in visited:
+                    continue
+                visited.add(resolved)
+                for path in current.iterdir():
+                    if len(entries) + len(visited) + len(pending) >= 100000:
+                        raise ValueError(
+                            "directory snapshot exceeds capacity; authorize smaller roots"
                         )
-                except (OSError, ValueError, NotAllowed):
-                    entries.append({"path": relative, "status": "unavailable"})
+                    relative = path.relative_to(directory).as_posix()
+                    try:
+                        target = cls._inside(directory, path)
+                        if target.is_dir():
+                            pending.append(path)
+                        elif target.is_file():
+                            stat = target.stat()
+                            entries.append(
+                                {
+                                    "path": relative,
+                                    "bytes": stat.st_size,
+                                    "mtime_ns": stat.st_mtime_ns,
+                                    "status": "available"
+                                    if path.suffix.lower() in SUPPORTED_SUFFIXES
+                                    else "unsupported",
+                                }
+                            )
+                    except (OSError, NotAllowed):
+                        entries.append({"path": relative, "status": "unavailable"})
+            except (OSError, NotAllowed):
+                if current == directory:
+                    raise
+                entries.append(
+                    {
+                        "path": current.relative_to(directory).as_posix(),
+                        "status": "unavailable",
+                    }
+                )
 
-        walk(directory)
-        return self.store.put(
-            study,
-            "catalog",
-            {
-                "root": str(directory),
-                "entries": entries,
-            },
-        )
+        return {
+            "root": str(directory),
+            "entries": sorted(entries, key=lambda x: x["path"]),
+        }
 
     def catalog_page(
         self, study: str, ref: str, offset: int, limit: int
     ) -> dict[str, Any]:
-        catalog = self.store.get(study, ref)
-        if catalog.kind != "catalog":
-            raise ValueError("expected catalog")
         if offset < 0 or not 1 <= limit <= 100:
             raise ValueError("invalid catalog page")
-        entries = catalog.body["entries"]
-        end = min(len(entries), offset + limit)
-        snapshots = {
-            source.body["origin"]: source.ref
-            for source in self.store.list(study, "source")
-            if catalog.ref in source.parents
-        }
-        return {
-            "ref": catalog.ref,
-            "kind": "catalog",
-            "entries": [
-                {**entry, "source_ref": snapshots.get(entry["path"])}
-                for entry in entries[offset:end]
-            ],
-            "total": len(entries),
-            "next_offset": end if end < len(entries) else None,
-        }
+        return self.store.catalog_page(study, ref, offset, limit)
 
     def snapshot(self, study: str, catalog_ref: str, relative: str) -> Artifact:
         try:
@@ -325,6 +349,12 @@ class Workspace:
             ) from exc
 
     def _load(self, study: str, catalog_ref: str, relative: str) -> Artifact | bytes:
+        loaded = self._load_target(study, catalog_ref, relative)
+        if isinstance(loaded, Artifact):
+            return loaded
+        return self._read_file(*loaded)
+
+    def _load_target(self, study, catalog_ref, relative):
         catalog = self.store.get(study, catalog_ref)
         if catalog.kind != "catalog":
             raise ValueError("expected catalog")
@@ -334,10 +364,14 @@ class Workspace:
         if not entry or entry["status"] != "available":
             raise ValueError("source was not readable in this catalog")
         root = self._root(study, catalog.body["root"])
-        for prior in self.store.list(study, "source"):
+        for prior in self.store.matching(study, "source", {"origin": relative}):
             if catalog_ref in prior.parents and prior.body.get("origin") == relative:
                 return prior
         target = self._inside(root, root / relative)
+        return root, target, relative, entry
+
+    @classmethod
+    def _read_file(cls, root, target, relative, entry):
         # The snapshot freezes bytes. Catalog changes require explicit rediscovery,
         # rather than silently substituting a newer file for the selected entry.
         with target.open("rb") as stream:
@@ -349,7 +383,11 @@ class Workspace:
                 entry["mtime_ns"],
             ):
                 raise ValueError("source changed since discovery; refresh catalog")
-            raw = stream.read()
+            if before.st_size > MAX_INPUT_BYTES:
+                raise ValueError("material exceeds input byte limit")
+            raw = stream.read(MAX_INPUT_BYTES + 1)
+            if len(raw) > MAX_INPUT_BYTES:
+                raise ValueError("material exceeds input byte limit")
             after = os.fstat(stream.fileno())
         if (before.st_size, before.st_mtime_ns, before.st_ino) != (
             after.st_size,
@@ -358,7 +396,7 @@ class Workspace:
         ):
             raise ValueError("source changed while reading")
         # Re-resolve to reject replacement by a link while opening.
-        if self._inside(root, root / relative) != target:
+        if cls._inside(root, root / relative) != target:
             raise NotAllowed("source target changed while reading")
         final = target.stat()
         if (final.st_dev, final.st_ino, final.st_size, final.st_mtime_ns) != (
@@ -374,7 +412,12 @@ class Workspace:
         self, study: str, catalog_ref: str, relative: str
     ) -> Artifact:
         try:
-            loaded = self._load(study, catalog_ref, relative)
+            target = self._load_target(study, catalog_ref, relative)
+            loaded = (
+                target
+                if isinstance(target, Artifact)
+                else await self._io(self._read_file, *target)
+            )
         except OSError:
             raise ValueError("local source unavailable; refresh catalog") from None
         if isinstance(loaded, Artifact):
@@ -423,7 +466,9 @@ class Workspace:
         self.store.control(study)
         name = Path(name).name
         digest = hashlib.sha256(raw).hexdigest()
-        for prior in self.store.list(study, "source"):
+        for prior in self.store.matching(
+            study, "source", {"sha256": digest, "origin": name}, limit=1
+        ):
             if prior.body.get("sha256") == digest and prior.body.get("origin") == name:
                 return prior
         return self._save(study, name, raw, parse(name, raw, self._options(study)))
@@ -491,7 +536,9 @@ class Workspace:
         digest = hashlib.sha256(raw).hexdigest()
         if self.store.control(study).ref != expected:
             raise ValueError("control changed before upload")
-        for prior in self.store.list(study, "source"):
+        for prior in self.store.matching(
+            study, "source", {"sha256": digest, "origin": name}, limit=1
+        ):
             if prior.body.get("sha256") == digest and prior.body.get("origin") == name:
                 return prior
         parsed = await self._parse(study, name, raw)

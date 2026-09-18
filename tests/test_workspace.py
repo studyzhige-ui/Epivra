@@ -3,6 +3,7 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from epivra.context import assemble
 from epivra.domain import Artifact, NotAllowed, encode
@@ -11,6 +12,22 @@ from epivra.workspace import Workspace
 
 
 class WorkspaceTests(unittest.TestCase):
+    def test_unavailable_subdirectory_does_not_hide_accessible_files(self):
+        locked = self.corpus / "locked"
+        locked.mkdir()
+        (self.corpus / "valid.txt").write_text("original", encoding="utf-8")
+        iterdir = Path.iterdir
+
+        def listing(path):
+            if path == locked:
+                raise PermissionError("inaccessible fixture")
+            return iterdir(path)
+
+        with patch.object(Path, "iterdir", listing):
+            catalog = self.workspace.discover("s", str(self.corpus))
+        entries = {e["path"]: e["status"] for e in catalog.body["entries"]}
+        self.assertEqual({"locked": "unavailable", "valid.txt": "available"}, entries)
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)

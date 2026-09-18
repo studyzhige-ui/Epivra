@@ -59,14 +59,14 @@ def fit_provider(request: dict, prepare) -> dict:
     except ContextCapacity:
         pass
     minimal = deepcopy(request)
-    additions = []
+    # Preserve actual research inputs before optional navigation directories.
+    additions = [("context", item) for item in reversed(minimal["context"])]
     for key, nav in minimal.get("navigation", {}).items():
         parent = minimal["review_progress"] if key.startswith("review_") else minimal
         field = key.removeprefix("review_") if key.startswith("review_") else key
         additions.extend((key, item) for item in parent[field])
         parent[field] = []
         nav["next_offset"] = nav["offset"] if nav["total"] else None
-    additions.extend(("context", item) for item in reversed(minimal["context"]))
     minimal["omitted_count"] += sum("body" in x for x in minimal["context"])
     minimal["context"] = []
     prepare(minimal, None)  # Essential capacity failures are actionable, never hidden.

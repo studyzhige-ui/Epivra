@@ -204,6 +204,12 @@ class StorageTests(Fixture):
             },
             (report.ref, review_work.ref),
         )
+        with self.assertRaisesRegex(ValueError, "has not reached"):
+            self.store.publish("s", self.work.ref, self.c.epoch, report.ref, review.ref)
+        request = {"context": [{"ref": report.ref, "kind": "report", "body": report.body}]}
+        step = self.store.put("s", "step", {"request": request}, (review_work.ref,))
+        self.store.admit("s", review_work.ref, self.c.epoch, "review-input", request, request_step=step.ref)
+        self.store.settle("review-input", {"complete": True, "text": "checked", "calls": []})
         published = self.store.publish(
             "s", self.work.ref, self.c.epoch, report.ref, review.ref
         )

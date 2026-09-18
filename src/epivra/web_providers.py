@@ -50,7 +50,17 @@ class TavilyKeyPool(JsonAPI):
         slot = next((i for i in available if i >= self._cursor), available[0])
         self._cursor = (slot + 1) % len(self._keys)
         # A request-local wrapper prevents concurrent calls from sharing auth state.
-        api = JsonAPI(self.origin, self._keys[slot], self._client)
+        api = JsonAPI(
+            self.origin,
+            self._keys[slot],
+            self._client,
+            auth_header=self.auth_header,
+            auth_prefix=self.auth_prefix,
+            headers=self.headers,
+            deadline=self.deadline,
+            max_response_bytes=self.max_response_bytes,
+            max_event_bytes=self.max_event_bytes,
+        )
         raw = await api.request(method, path, **kwargs)
         raw["credential_slot"] = slot + 1
         if raw.get("http_status") in {401, 432, 433}:

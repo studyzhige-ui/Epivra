@@ -15,6 +15,7 @@ from .adapters import credentials
 from .analysis import settings as analysis_settings
 from .analysis_runtime import AnalysisRuntime
 from .application import online_service
+from .local_security import private_directory, protect
 from .locale import LANGUAGES, configure, tr
 from .model_catalog import OFFICIAL_PROVIDERS
 from .models import freeze_model_settings
@@ -36,6 +37,7 @@ class Host:
     def __init__(self, root: Path, factory=None):
         self.root = root.resolve()
         self.state = self.root / ".epivra"
+        private_directory(self.state)
         self.store = Store(self.state / "research.db")
         try:
             limits_path = self.root / "provider-limits.json"
@@ -520,9 +522,12 @@ class Host:
                 self.connection, "127.0.0.1", 0, limit=4 * 1024 * 1024
             )
             port = server.sockets[0].getsockname()[1]
+            if temporary.exists() or temporary.is_symlink():
+                protect(temporary)
             temporary.write_text(
                 json.dumps({"port": port, "token": self.token}), encoding="utf-8"
             )
+            protect(temporary)
             temporary.replace(pointer)
             maintenance = asyncio.create_task(self.maintain_analyses())
             for row in self.store.db.execute(
@@ -594,7 +599,7 @@ async def start(root: Path):
     if await available():
         return {"already_running": True}
     state = root / ".epivra"
-    state.mkdir(parents=True, exist_ok=True)
+    private_directory(state)
     with (state / "host.log").open("ab") as log:
         process = subprocess.Popen(
             [

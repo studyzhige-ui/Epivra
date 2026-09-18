@@ -9,6 +9,8 @@ import json
 import os
 import subprocess
 import sys
+import weakref
+import zipfile
 from datetime import date, datetime, time
 from pathlib import Path
 
@@ -17,11 +19,24 @@ from .domain import encode
 
 TEXT_SUFFIXES = {".txt", ".md", ".json", ".yaml", ".yml", ".html"}
 SUPPORTED_SUFFIXES = TEXT_SUFFIXES | {".csv", ".tsv", ".pdf", ".xlsx"} | FORMATS
+MAX_INPUT_BYTES = 256 * 1024 * 1024
+MAX_OUTPUT_BYTES = 64 * 1024 * 1024
+MAX_ELEMENTS = 1_000_000
+_parse_slots = weakref.WeakKeyDictionary()
 
 
 async def parse_isolated(
     name: str, raw: bytes, timeout: float = 60, options=None
 ) -> dict:
+    if len(raw) > MAX_INPUT_BYTES:
+        raise ValueError("material exceeds input byte limit")
+    loop = asyncio.get_running_loop()
+    gate = _parse_slots.setdefault(loop, asyncio.Semaphore(2))
+    async with gate:
+        return await _parse_process(name, raw, timeout, options)
+
+
+async def _parse_process(name, raw, timeout, options):
     """Run native parsers outside the host; cancellation always reaps the child."""
     if timeout <= 0:
         raise ValueError("positive parse timeout required")
@@ -55,9 +70,31 @@ async def parse_isolated(
         env=environment,
         creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
     )
+
+    async def feed():
+        try:
+            for offset in range(0, len(raw), 65536):
+                process.stdin.write(raw[offset : offset + 65536])
+                await process.stdin.drain()
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        finally:
+            process.stdin.close()
+
+    async def read():
+        output = bytearray()
+        while chunk := await process.stdout.read(65536):
+            if len(output) + len(chunk) > MAX_OUTPUT_BYTES:
+                raise ValueError("material parser exceeds output byte limit")
+            output.extend(chunk)
+        return output
+
+    jobs = [asyncio.create_task(feed()), asyncio.create_task(read())]
     try:
         try:
-            output, _ = await asyncio.wait_for(process.communicate(raw), timeout)
+            async with asyncio.timeout(timeout):
+                _, output = await asyncio.gather(*jobs)
+                await process.wait()
         except TimeoutError:
             raise ValueError("material parsing timed out") from None
         if process.returncode:
@@ -70,15 +107,46 @@ async def parse_isolated(
             raise ValueError(response["error"])
         return response["result"]
     finally:
+        for job in jobs:
+            job.cancel()
         if process.returncode is None:
             try:
                 process.kill()
             except ProcessLookupError:
                 pass
-        await process.wait()
+
+        async def reap():
+            await asyncio.gather(*jobs, return_exceptions=True)
+            # A killed child can still have a paused, full stdout pipe. Drain it
+            # without retaining bytes before waiting for transport completion.
+            while await process.stdout.read(65536):
+                pass
+            await process.wait()
+
+        cleanup = asyncio.create_task(reap())
+        cancelled = False
+        while not cleanup.done():
+            try:
+                await asyncio.shield(cleanup)
+            except asyncio.CancelledError:
+                # Repeated cancellation must not leave the parser unreaped.
+                cancelled = True
+        cleanup.result()
+        if cancelled:
+            raise asyncio.CancelledError
 
 
 def parse(name: str, raw: bytes, options=None) -> dict:
+    if len(raw) > MAX_INPUT_BYTES:
+        raise ValueError("material exceeds input byte limit")
+    if zipfile.is_zipfile(io.BytesIO(raw)):
+        with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+            entries = archive.infolist()
+            if (
+                len(entries) > MAX_ELEMENTS
+                or sum(x.file_size for x in entries) > MAX_INPUT_BYTES
+            ):
+                raise ValueError("document expanded content exceeds parser capacity")
     options = options or {}
     mode = options.get("parser", "auto")
     suffix = Path(name).suffix.lower()
@@ -96,6 +164,11 @@ def parse(name: str, raw: bytes, options=None) -> dict:
     def append(text, locator, status="extracted"):
         nonlocal position
         block = text + "\n"
+        if (
+            len(segments) >= MAX_ELEMENTS
+            or position + len(block) > MAX_OUTPUT_BYTES // 4
+        ):
+            raise ValueError("material extraction exceeds parser capacity")
         segments.append(
             {
                 "start": position,

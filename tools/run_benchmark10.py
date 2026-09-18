@@ -11,11 +11,13 @@ import os
 import re
 import time
 from collections import Counter
+from datetime import datetime, timezone
 from pathlib import Path
 
 from epivra.adapters import JsonAPI, credentials
 from epivra.application import online_service
 from epivra.cli_settings import write
+from epivra.diagnostics import environment, windows
 from epivra.host import send, start
 from epivra.models import freeze_model_settings
 from epivra.scheduling import Scheduler
@@ -96,6 +98,7 @@ def instrument(api, path, study, index):
 
 
 def snapshot(store, study, folder, state):
+    save(folder / "window-manifest.json", list(windows(store, study)))
     selected = {
         "direction",
         "plan",
@@ -245,8 +248,12 @@ async def run(root, run_id, case_ids=None, *, queries):
                 "shared_provider_capacity": Scheduler().capacity,
                 "approval": "user_authorized_unchanged_plans",
                 "quality_assessment": "deferred",
+                "environment": environment(),
             }
             manifest_path = folder / "manifest.json"
+            prior = json.loads(manifest_path.read_text(encoding="utf-8")) if manifest_path.exists() else {}
+            manifest["as_of_date"] = prior.get("as_of_date", datetime.now(timezone.utc).date().isoformat())
+            policy["as_of_date"] = manifest["as_of_date"]
             if (
                 manifest_path.exists()
                 and json.loads(manifest_path.read_text(encoding="utf-8")) != manifest

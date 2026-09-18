@@ -149,15 +149,22 @@ async def connection(config, root):
 
 async def pages(method, field):
     values, cursor, seen = [], None, set()
+    size = 0
     while True:
         page = await method(cursor=cursor)
-        values.extend(getattr(page, field))
+        for value in getattr(page, field):
+            size += len(value.model_dump_json().encode("utf-8"))
+            if size > 16 * 1024 * 1024 or len(values) >= 10000:
+                raise ValueError("MCP catalog exceeds single-discovery capacity")
+            values.append(value)
         cursor = page.next_cursor
         if not cursor:
             return values
         if cursor in seen:
             raise ValueError("MCP pagination cursor repeated")
         seen.add(cursor)
+        if len(seen) >= 1000:
+            raise ValueError("MCP catalog exceeds pagination capacity")
 
 
 async def catalog(config, root):
@@ -294,9 +301,9 @@ class MCPConnection:
         self.queue = asyncio.Queue()
         self.task = None
 
-    async def invoke(self, definition, args, resource=False):
+    async def invoke(self, definition, args, resource=False, *, receive=None):
         future = asyncio.get_running_loop().create_future()
-        self.queue.put_nowait((future, definition, args, resource))
+        self.queue.put_nowait((future, definition, args, resource, receive))
         if self.task is None or self.task.done():
             self.task = asyncio.create_task(self.run())
         return await future
@@ -306,7 +313,7 @@ class MCPConnection:
         try:
             async with connection(self.config, self.root) as client:
                 while True:
-                    active, definition, args, resource = await self.queue.get()
+                    active, definition, args, resource, receive = await self.queue.get()
                     if active.cancelled():
                         active = None
                         continue
@@ -314,6 +321,8 @@ class MCPConnection:
                         value = await execute(
                             self.root, self.config, definition, args, resource, client
                         )
+                        if receive is not None:
+                            receive(value)
                     except Exception as exc:
                         if not active.done():
                             active.set_exception(exc)

@@ -187,6 +187,10 @@ class CompletedImportTests(Fixture):
         reviewer = self.store.work(
             "s", self.c.ref, "reviewer", "Check", (report.ref,), self.work.ref
         )
+        request = {"context": [{"ref": report.ref, "kind": "report", "body": report.body}]}
+        step = self.store.put("s", "step", {"request": request}, (reviewer.ref,))
+        self.store.admit("s", reviewer.ref, self.c.epoch, "review-input", request, request_step=step.ref)
+        self.store.settle("review-input", {"complete": True, "text": "checked", "calls": []})
         review = self.store.put(
             "s",
             "review",

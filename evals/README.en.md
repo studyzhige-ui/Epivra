@@ -15,6 +15,8 @@ node tests/web_status.cjs
 node tests/web_usage.cjs
 ```
 
+GitHub Actions additionally runs the configured mypy checks and builds a wheel on its supported Python/OS matrix.
+
 ## Online diagnostics
 
 The commands below call model APIs and consume provider quota. Use a new run ID for a changed model, tool contract, fixture, or implementation. Successful recorded calls are replayed; do not resend old ledger operations. Private provider records remain in ignored local directories.
