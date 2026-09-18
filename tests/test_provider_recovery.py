@@ -4,6 +4,8 @@ import asyncio
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from epivra.adapters import (
     DeepSeek,
@@ -197,11 +199,16 @@ class RecoveryTests(unittest.IsolatedAsyncioTestCase):
                 )
 
         model = Model()
-        task = asyncio.create_task(Harness(self.store, model).step("s", self.work.ref))
-        await entered.wait()
-        c = self.store.command("s", "pause", self.c.ref, "pause")
-        with self.assertRaises(Conflict):
-            await asyncio.wait_for(task, 1)
+        # Keep the retry deadline in the future even if a durable write takes
+        # longer than the fixture's delay. Test event order, not disk speed.
+        with patch("epivra.harness.time", SimpleNamespace(time=lambda: 1000.0)):
+            task = asyncio.create_task(
+                Harness(self.store, model).step("s", self.work.ref)
+            )
+            await entered.wait()
+            c = self.store.command("s", "pause", self.c.ref, "pause")
+            with self.assertRaises(Conflict):
+                await asyncio.wait_for(task, 1)
         self.assertEqual(1, model.calls)
         self.reopen()
         self.store.command("s", "resume", c.ref, "resume")
