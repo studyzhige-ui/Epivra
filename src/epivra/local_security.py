@@ -42,6 +42,16 @@ def protect(path: Path):
         ctypes.POINTER(pointer),
     ]
     api.GetNamedSecurityInfoW.restype = wintypes.DWORD
+    api.SetNamedSecurityInfoW.argtypes = [
+        wintypes.LPWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        pointer,
+        pointer,
+        pointer,
+        pointer,
+    ]
+    api.SetNamedSecurityInfoW.restype = wintypes.DWORD
     api.OpenProcessToken.argtypes = [
         wintypes.HANDLE,
         wintypes.DWORD,
@@ -70,14 +80,34 @@ def protect(path: Path):
         if not api.OpenProcessToken(kernel.GetCurrentProcess(), 8, ctypes.byref(token)):
             raise ctypes.WinError(ctypes.get_last_error())
         try:
-            size = wintypes.DWORD()
-            api.GetTokenInformation(token, 1, None, 0, ctypes.byref(size))
-            buffer = ctypes.create_string_buffer(size.value)
-            if not api.GetTokenInformation(token, 1, buffer, size, ctypes.byref(size)):
-                raise ctypes.WinError(ctypes.get_last_error())
-            user_sid = ctypes.cast(buffer, ctypes.POINTER(pointer))[0]
+
+            def token_information(kind):
+                size = wintypes.DWORD()
+                api.GetTokenInformation(token, kind, None, 0, ctypes.byref(size))
+                buffer = ctypes.create_string_buffer(size.value)
+                if not api.GetTokenInformation(
+                    token, kind, buffer, size, ctypes.byref(size)
+                ):
+                    raise ctypes.WinError(ctypes.get_last_error())
+                return buffer
+
+            user = token_information(1)  # TokenUser (SID_AND_ATTRIBUTES)
+            user_sid = ctypes.cast(user, ctypes.POINTER(pointer))[0]
             if not api.EqualSid(owner, user_sid):
-                raise PermissionError("private state must belong to the current user")
+                default_owner = token_information(4)  # TokenOwner (PSID)
+                default_sid = ctypes.cast(default_owner, ctypes.POINTER(pointer))[0]
+                if not api.EqualSid(owner, default_sid):
+                    raise PermissionError(
+                        "private state must belong to the current user or token owner"
+                    )
+                # Elevated Windows tokens can create files owned by a group. OW
+                # must mean this user before granting it access to private data.
+                # Let Windows enforce WRITE_OWNER; never enable takeover privileges.
+                error = api.SetNamedSecurityInfoW(
+                    str(path), 1, 1, user_sid, None, None, None
+                )
+                if error:
+                    raise ctypes.WinError(error)
         finally:
             kernel.CloseHandle(token)
     finally:

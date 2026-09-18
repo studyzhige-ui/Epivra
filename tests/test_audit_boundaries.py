@@ -1,4 +1,5 @@
 import asyncio
+import ctypes
 import gzip
 import json
 import sys
@@ -6,7 +7,7 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import httpx
 
@@ -14,11 +15,92 @@ from epivra.adapters import IncompleteStream, JsonAPI
 from epivra.diagnostics import windows
 from epivra.domain import Call, RecoveryExhausted, Reply, bounded_json, encode
 from epivra.harness import BUILTINS, Harness, validate
+from epivra.local_security import protect
 from epivra.materials import parse_isolated
 from epivra.review import public_inputs, units
 from epivra.storage import Store
 from epivra.web_providers import TavilyKeyPool
 from epivra.workspace import Workspace
+
+
+@unittest.skipUnless(sys.platform == "win32", "Windows security API contract")
+class WindowsOwnership(unittest.TestCase):
+    def exercise(self, owner, *, owner_error=0):
+        from ctypes import wintypes
+
+        api, kernel = Mock(), Mock()
+        events = []
+
+        def put(target, value, kind=ctypes.c_void_p):
+            ctypes.cast(target, ctypes.POINTER(kind))[0] = value
+
+        def read_owner(path, kind, flags, result, group, dacl, sacl, descriptor):
+            put(result, owner)
+            put(descriptor, 99)
+            return 0
+
+        def read_token(token, kind, buffer, size, needed):
+            put(needed, ctypes.sizeof(ctypes.c_void_p) * 2, wintypes.DWORD)
+            if buffer is None:
+                return False
+            put(buffer, {1: 10, 4: 20}[kind])  # user vs default group owner
+            return True
+
+        def write_owner(path, kind, flags, user, group, dacl, sacl):
+            events.append(("owner", flags, user))
+            return owner_error
+
+        def descriptor(sddl, revision, result, size):
+            events.append(("descriptor", sddl))
+            put(result, 88)
+            return True
+
+        api.GetNamedSecurityInfoW.side_effect = read_owner
+        api.GetTokenInformation.side_effect = read_token
+        api.OpenProcessToken.return_value = True
+        api.EqualSid.side_effect = lambda a, b: getattr(a, "value", a) == b
+        api.SetNamedSecurityInfoW.side_effect = write_owner
+        api.ConvertStringSecurityDescriptorToSecurityDescriptorW.side_effect = (
+            descriptor
+        )
+        api.SetFileSecurityW.side_effect = lambda *args: (
+            events.append(("dacl",)) or True
+        )
+        kernel.GetCurrentProcess.return_value = 1
+        self.api, self.kernel, self.events = api, kernel, events
+        with tempfile.TemporaryDirectory() as folder:
+            with patch("ctypes.WinDLL", side_effect=[api, kernel]):
+                protect(Path(folder))
+        return events
+
+    def test_default_group_owner_is_normalized_before_private_acl(self):
+        events = self.exercise(20)
+        self.assertEqual(events[0], ("owner", 1, 10))
+        self.assertEqual(
+            events[1], ("descriptor", "D:P(A;OICI;FA;;;OW)(A;OICI;FA;;;SY)")
+        )
+        self.assertEqual(events[2], ("dacl",))
+        self.kernel.CloseHandle.assert_called_once()
+        self.assertEqual(self.kernel.LocalFree.call_count, 2)
+
+    def test_current_user_needs_no_owner_write_permission(self):
+        self.exercise(10)
+        self.api.SetNamedSecurityInfoW.assert_not_called()
+        self.api.SetFileSecurityW.assert_called_once()
+
+    def test_unrelated_owner_is_rejected_without_mutation(self):
+        with self.assertRaises(PermissionError):
+            self.exercise(30)
+        self.assertEqual(self.events, [])
+        self.kernel.CloseHandle.assert_called_once()
+        self.kernel.LocalFree.assert_called_once()
+
+    def test_denied_owner_change_does_not_grant_group_access(self):
+        with self.assertRaises(OSError):
+            self.exercise(20, owner_error=5)
+        self.assertEqual(self.events, [("owner", 1, 10)])
+        self.api.SetFileSecurityW.assert_not_called()
+        self.kernel.CloseHandle.assert_called_once()
 
 
 class Stream(httpx.AsyncByteStream):
