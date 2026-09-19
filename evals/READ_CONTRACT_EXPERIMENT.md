@@ -40,3 +40,13 @@ These are design references, not evidence that a particular description changes 
 这次只让模型提前知道现有读取权限，并让作者和核查者使用相同、可解释的确定性报告计数。正文范围仅按已经保存的自动参考资料边界划分，不擅自删除作者标题、字数注记或引用，也不自动决定用户是否满意。研究角色、权限和常规研究预算政策不变。
 
 六个微型场景对照同一基线和候选实现。lead/investigator 场景仅测第一回合的工具选择，两个核查场景测明确范围下的长度判定及其理由；不冒充完整研究或泛化测试。新离线用例同时覆盖相反方向：避免 lead 越权，又不阻止 investigator 读取；检测超限，又不把自动参考文献误算成正文而拒绝合格稿。
+
+## Follow-up registered after the first pair
+
+The first pair (run `35423437795`, candidate `7177d4fc`, baseline `96968e39`) remains a failed interface result in both arms. Each matched 4/6 declared outcomes. Candidate lead selected delegation instead of forbidden reading, but passed display labels (`source:<hash>` or `plan:<hash>`) in `delegate_work.refs`, so the store rejected the calls and no children were created. Choosing the right tool is not successful delegation.
+
+The bounded follow-up reuses the existing `REFERENCES` schema for `delegate_work.refs`, replacing generic `STRINGS`. No prefix stripping, guessed identity, role change or fixture relabeling is introduced. The original store still validates that a syntax-valid identity exists in the correct study. Two additional offline tests cover valid/empty refs, invalid labels/URLs, exact error paths, no child creation on rejection and syntax-valid nonexistent identities.
+
+Request `read-contracts-ref-followup-20260919-02` runs only the four existing first-turn lead/investigator probes in both arms. Tasks, original records, expected outcomes, runner and model settings stay unchanged; the two length reports are not rerun because their implementation and fixtures are unchanged by this refs-only correction. The source manifests retain the exact versions, including the annotation-only fix `0a1776f8` whose executable code was verified unchanged from `7177d4fc`.
+
+The first and follow-up results must be reported separately. These are development diagnostics, not held-out generalization evidence or proof that every delegation succeeds. A failed selection remains recorded even when an investigator control or later case succeeds.

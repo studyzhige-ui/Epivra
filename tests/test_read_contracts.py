@@ -8,7 +8,7 @@ from pathlib import Path
 
 from epivra.adapters import DeepSeek, JsonAPI
 from epivra.domain import Call, Reply
-from epivra.harness import Harness
+from epivra.harness import BUILTINS, REFERENCES, Harness, validate
 from epivra.review import report_metrics, text_metrics
 from epivra.storage import Store
 
@@ -50,6 +50,17 @@ class Scripted:
 
     async def complete(self, request):
         return Reply("", (self.call,)).to_json()
+
+
+class ReferenceSchemaTests(unittest.TestCase):
+    def test_delegation_refs_use_existing_exact_reference_contract(self):
+        schema = BUILTINS["delegate_work"][1]["properties"]["refs"]
+        self.assertEqual(REFERENCES, schema)
+        for valid in ([], ["a" * 64], ["0" * 64, "f" * 64]):
+            validate(valid, schema, "arguments.refs")
+        for ref in ("source:" + "a" * 64, "plan:" + "b" * 64, "https://example.org", "a" * 63, "A" * 64):
+            with self.subTest(ref=ref), self.assertRaisesRegex(ValueError, r"arguments.refs\[0\]"):
+                validate([ref], schema, "arguments.refs")
 
 
 class ReadContractTests(unittest.IsolatedAsyncioTestCase):
@@ -143,6 +154,23 @@ class ReadContractTests(unittest.IsolatedAsyncioTestCase):
         self.harness = Harness(self.store, self.model)
         after = (await self.execute(reviewer, "read_report", {}))["result"]
         self.assertEqual(measured, after["report_metrics"])
+
+    async def test_delegation_rejects_display_labels_without_repair_or_side_effects(self):
+        task = {"role": "investigator", "task": "Examine the record.", "refs": ["source:" + self.source.ref]}
+        before = self.store.count("s", "work")
+        bad = await self.execute(self.lead, "delegate_work", task)
+        self.assertIsNotNone(bad["failure"])
+        self.assertIn("arguments.refs[0]", bad["result"]["error"])
+        self.assertEqual(before, self.store.count("s", "work"))
+        good = await self.execute(self.lead, "delegate_work", {**task, "refs": [self.source.ref]})
+        self.assertIsNone(good["failure"])
+        child = self.store.get("s", good["result"]["work"])
+        self.assertEqual([self.source.ref], child.body["inputs"])
+        self.assertEqual(self.lead.ref, child.body["owner"])
+        # Syntax-valid unknown refs are still rejected by the original store check.
+        missing = await self.execute(self.lead, "delegate_work", {**task, "refs": ["0" * 64]})
+        self.assertIn("artifact not found", missing["result"]["error"])
+        self.assertEqual(before + 1, self.store.count("s", "work"))
 
     async def test_restrictions_reach_native_model_wire_without_network(self):
         api = JsonAPI("https://api.deepseek.com", "test-placeholder-no-network")

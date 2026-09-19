@@ -171,7 +171,7 @@ BUILTINS = {
                         "enum": ["investigator", "synthesizer", "writer", "reviewer"],
                     },
                     "task": STRING,
-                    "refs": STRINGS,
+                    "refs": REFERENCES,
                     "review_mode": {"type": "string", "enum": ["final", "check"]},
                     "shared_context": {
                         "type": "string",
