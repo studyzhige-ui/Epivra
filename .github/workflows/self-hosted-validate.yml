@@ -1,0 +1,68 @@
+name: Self-hosted Windows validation
+
+on:
+  push:
+    branches: [improve/epivra-optimization]
+    paths: [.github/workflows/self-hosted-validate.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: self-hosted-validation-${{ github.repository }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: [self-hosted, Windows, X64, epivra-eval]
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Create isolated validation environment
+        id: env
+        shell: powershell
+        run: |
+          $venv = Join-Path $env:RUNNER_TEMP "epivra-validation-$env:GITHUB_RUN_ID"
+          python -m venv $venv
+          $python = Join-Path $venv "Scripts\python.exe"
+          $pip = Join-Path $venv "Scripts\pip.exe"
+          & $python -m pip install --upgrade pip
+          & $pip install ".[mcp,documents]" ruff mypy build
+          "venv=$venv" >> $env:GITHUB_OUTPUT
+          "python=$python" >> $env:GITHUB_OUTPUT
+
+      - name: Run full offline validation
+        shell: powershell
+        run: |
+          $python = "${{ steps.env.outputs.python }}"
+          & $python -m pip check
+          & $python -m unittest discover -s tests
+          & $python tools/check_architecture.py
+          & $python -m ruff check src tests tools evals
+          & $python -m mypy
+          & $python -m build --wheel
+
+      - name: Verify built wheel in a second clean environment
+        shell: powershell
+        run: |
+          $wheel = Get-ChildItem dist\epivra-*.whl
+          if ($wheel.Count -ne 1) { throw "Expected exactly one wheel" }
+          $clean = Join-Path $env:RUNNER_TEMP "epivra-wheel-$env:GITHUB_RUN_ID"
+          python -m venv $clean
+          $python = Join-Path $clean "Scripts\python.exe"
+          & $python -m pip install $wheel[0].FullName
+          & $python -m pip check
+          & $python -I -c "import epivra; from importlib.resources import files; assert files('epivra').joinpath('web/favicon.svg').is_file(); print(epivra.__file__)"
+          $cli = Join-Path $clean "Scripts\epivra.exe"
+          & $cli --help | Out-Null
+
+      - name: Cleanup isolated environments
+        if: always()
+        shell: powershell
+        run: |
+          Get-ChildItem $env:RUNNER_TEMP -Directory -Filter "epivra-*-$env:GITHUB_RUN_ID" -ErrorAction SilentlyContinue |
+            Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
