@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "request_id": "batch3-training-full-current-20260919",
+  "request_id": "batch3-training-committed-receipt-20260919",
   "mode": "closed",
   "cases": ["training"],
   "probe_providers": false

@@ -1817,6 +1817,7 @@ class Harness:
                     *rendered["citations"],
                 ),
             )
+            receipt = report_metrics(item.body)
             self.store.put(
                 study,
                 "work_result",
@@ -1824,9 +1825,11 @@ class Harness:
                     "ref": item.ref,
                     "producer": work.ref,
                     "handoff": args.get("handoff", ""),
+                    "report_metrics": receipt,
                 },
                 (work.ref, item.ref),
             )
+            return {"ref": item.ref, "report_metrics": receipt}
         elif call.name == "read_report":
             report, parts = self._review(study, work)
             offset, limit = args["offset"], args["limit"]
