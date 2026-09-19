@@ -8,6 +8,8 @@ on:
       - 'tests/**'
       - 'tools/**'
       - 'evals/**'
+      - '!evals/live-request.json'
+      - '!evals/open-web-request.json'
       - 'pyproject.toml'
       - '.github/workflows/self-hosted-fast.yml'
   workflow_dispatch:
