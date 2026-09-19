@@ -15,7 +15,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from epivra.adapters import DEFAULT_MODEL, DeepSeek, JsonAPI, credentials
+from epivra.adapters import DeepSeek, JsonAPI, credentials
 from epivra.diagnostics import environment, windows
 from epivra.local_security import private_directory
 from epivra.storage import Store

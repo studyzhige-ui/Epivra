@@ -7,7 +7,14 @@ from pathlib import Path
 from unittest.mock import patch
 
 from epivra.storage import Store
-from tools.run_live_eval import collect, review_checks, run, save, scrub, validate_request
+from tools.run_live_eval import (
+    collect,
+    review_checks,
+    run,
+    save,
+    scrub,
+    validate_request,
+)
 
 
 def request(**changes):
