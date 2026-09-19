@@ -31,3 +31,39 @@ jobs:
       - run: ruff check src tests tools evals
       - run: mypy
       - run: python -m build --wheel
+      - name: Install the wheel in a clean environment outside the checkout
+        if: matrix.python == '3.13' && matrix.extra == ''
+        shell: python
+        run: |
+          import os
+          import subprocess
+          import tempfile
+          import venv
+          from pathlib import Path
+
+          wheels = list(Path("dist").glob("epivra-*.whl"))
+          if len(wheels) != 1:
+              raise SystemExit("Expected exactly one freshly built wheel")
+          wheel = wheels[0].resolve()
+          clean = dict(os.environ)
+          for name in ("PYTHONPATH", "PYTHONHOME"):
+              clean.pop(name, None)
+          clean["PYTHONNOUSERSITE"] = "1"
+          with tempfile.TemporaryDirectory() as folder:
+              root = Path(folder)
+              env = root / "venv"
+              venv.EnvBuilder(with_pip=True).create(env)
+              binary = env / ("Scripts" if os.name == "nt" else "bin")
+              python = binary / ("python.exe" if os.name == "nt" else "python")
+              def check(args):
+                  subprocess.run(args, cwd=root, env=clean, check=True, timeout=300)
+              check([str(python), "-I", "-m", "pip", "install", str(wheel)])
+              check([str(python), "-I", "-m", "pip", "check"])
+              check([str(python), "-I", "-c", (
+                  "import epivra, sys; from pathlib import Path; "
+                  "from importlib.resources import files; "
+                  "assert Path(epivra.__file__).resolve().is_relative_to(Path(sys.prefix).resolve()); "
+                  "assert files('epivra').joinpath('web/favicon.svg').is_file(); "
+                  "print('Wheel import and packaged assets verified')"
+              )])
+              check([str(binary / ("epivra.exe" if os.name == "nt" else "epivra")), "--help"])
