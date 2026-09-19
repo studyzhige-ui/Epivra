@@ -1,0 +1,5 @@
+{
+  "version": 1,
+  "request_id": "read-contracts-paired-20260919-01",
+  "cases": ["lead-registry", "lead-service", "investigator-registry", "investigator-service", "length-within", "length-over"]
+}

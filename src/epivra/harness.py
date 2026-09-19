@@ -28,7 +28,7 @@ from .domain import (
     identity,
 )
 from .prompts import ROLES, TOOLS, WRITING_GUIDES
-from .review import text_metrics, units
+from .review import report_metrics, text_metrics, units
 from .scheduling import Scheduler
 from .storage import Store
 from .workspace import Workspace
@@ -438,6 +438,18 @@ def validate(value: Any, schema: dict[str, Any], path: str = "arguments") -> Non
         raise ValueError("expected one of: " + ", ".join(schema["enum"]))
 
 
+PRIVATE_ARTIFACT_KINDS = frozenset({"step", "step_done", "control", "material_bytes"})
+
+
+def artifact_read_denial(role: str, kind: str) -> str | None:
+    """Shared by runtime rejection and the model-visible read-tool contract."""
+    if role == "lead" and kind == "source":
+        return "Delegate source examination; lead reads research findings"
+    if kind in PRIVATE_ARTIFACT_KINDS:
+        return "execution and provider-private records are not research materials"
+    return None
+
+
 class Harness:
     def _validate_call(self, call, schema):
         bounded_json(call.arguments)
@@ -524,6 +536,21 @@ class Harness:
                     "save_memory",
                 }
             }
+        # Advertise the same restrictions that the read handlers enforce. Metadata
+        # lookup stays available; no responsibility gains source-reading authority.
+        denied = set(PRIVATE_ARTIFACT_KINDS)
+        if artifact_read_denial(role, "source"):
+            denied.add("source")
+        for name in ("read_artifact", "read_artifact_range"):
+            result[name]["description"] += (
+                " Not readable with this tool: " + ", ".join(sorted(denied)) + "."
+            )
+            if role == "lead":
+                result[name]["description"] += (
+                    " Delegate source examination to an investigator; read work_result,"
+                    " note or clarification_answer for findings. Source refs from"
+                    " find_artifacts are navigation/hand-off, not permission to read."
+                )
         for name, tool in self.tools.items():
             if (
                 policy.get("_approved")
@@ -1554,14 +1581,9 @@ class Harness:
             return {"ref": item.ref}
         if call.name == "read_artifact_range":
             artifact = self.store.get(study, args["ref"])
-            if work.body["role"] == "lead" and artifact.kind == "source":
-                raise NotAllowed(
-                    "Delegate source examination; lead reads research findings"
-                )
-            if artifact.kind in {"step", "step_done", "control", "material_bytes"}:
-                raise NotAllowed(
-                    "execution and provider-private records are not research materials"
-                )
+            denial = artifact_read_denial(work.body["role"], artifact.kind)
+            if denial:
+                raise NotAllowed(denial)
             body = encode(artifact.body)
             offset, limit = args["offset"], args["limit"]
             if offset < 0 or limit < 1:
@@ -1670,14 +1692,9 @@ class Harness:
             }
         if call.name == "read_artifact":
             artifact = self.store.get(study, args["ref"])
-            if work.body["role"] == "lead" and artifact.kind == "source":
-                raise NotAllowed(
-                    "Delegate source examination; lead reads research findings"
-                )
-            if artifact.kind in {"step", "step_done", "control", "material_bytes"}:
-                raise NotAllowed(
-                    "execution and provider-private records are not research materials"
-                )
+            denial = artifact_read_denial(work.body["role"], artifact.kind)
+            if denial:
+                raise NotAllowed(denial)
             if len(encode(artifact.body)) > self.context_chars // 2:
                 return self._builtin(
                     study,
@@ -1771,13 +1788,7 @@ class Harness:
             rendered = render_citations(
                 args["text"], args["evidence"], lambda ref: self.store.get(study, ref)
             )
-            return {
-                **text_metrics(rendered["text"]),
-                "scope": "rendered report including generated references",
-                "body": text_metrics(
-                    rendered["text"][: rendered["citation_body_length"]]
-                ),
-            }
+            return report_metrics(rendered)
         elif call.name == "read_writing_guide":
             return {
                 "genre": args["genre"],
@@ -1842,6 +1853,7 @@ class Harness:
                 "related_context": ["review_evidence", "review_inputs"],
                 "total": len(parts),
                 "text_metrics": text_metrics(report.body["text"]),
+                "report_metrics": report_metrics(report.body),
                 "displayed_units_metrics": text_metrics(
                     "\n\n".join(p["text"] for p in shown)
                 ),

@@ -4,7 +4,7 @@ TOOLS = {
     "read_context": "读取当前工作的完整目录页：section取navigation中的目录名，offset从0或next_offset继续，limit为期望条目数。目录仅是导航，details_omitted项用原ref读取全文；不会读取其他工作的私有窗口。新增记录在目录末尾，状态随当前事实更新。",
     "read_writing_guide": "仅在指定体裁且需要规范时读取简短写作指南。用户模板及明确要求优先；指南不是新增验收门槛。未指定体裁不必使用。",
     "run_analysis": "在已授权的无网络 Docker 沙箱执行 Python。inputs 为来源 ref 与相对 name，原始文件在 /inputs/data/<name>；保存成果到 /outputs。可用 pandas/numpy/scipy/statsmodels/matplotlib/seaborn/sklearn/openpyxl/pyarrow。purpose 写明本次必要分析；返回 status、日志 source 引用和文件 source 引用，正文用 read_source，代码和输入用 read_artifact(job)。失败/超时不是成功证据；下游直接传计算文件的 source 引用作为新输入，不抄写数据。",
-    "measure_text": "代码统计Unicode字符数及去空白字符数。测量报告时传入与draft_report相同的text和evidence，系统替换引用并生成参考资料，返回成品总长与正文长度；只传text则只统计输入本身，不代表最终报告长度。按用户约束选择正文或全文范围，整稿测量后按差额调整，避免逐句反复计数；计数日志放handoff，不放成品。",
+    "measure_text": "代码统计Unicode字符数及去空白字符数。测量报告时传入与draft_report相同的text和evidence，系统替换引用并生成参考资料，返回成品总长与body长度；body仅排除自动参考资料，仍含作者提供的标题、注记、Markdown和文内引用标注，不自动判断用户的正文范围；只传text则只统计输入本身，不代表最终报告长度。按用户约束选择正文或全文范围，整稿测量后按差额调整，避免逐句反复计数；计数日志放handoff，不放成品。",
     "record_evidence": "保存证据：优先提交read_source返回的selection与text陈述，系统直接保存对应原文，不再填写source/quote/offset。需要更细摘录时才使用source完整引用和精确quote（不得传URL、改写或省略号）；唯一匹配可省略offset。limits是可选的证据局限文字，不是分页limit。",
     "request_clarification": "将阻碍本任务的具体疑问交负责人：text说明问题、相关冲突及对交付的影响，refs引用直接成果。暂停当前工作等待答复，不提交成果；保留有效进度。",
     "answer_clarification": "答复所属工作的待决疑问：question为疑问完整引用，text只给必要决定或解释，refs直接引用原生产者成果。答复后恢复原工作，不改写已有成果，不重建同一任务。",
@@ -25,7 +25,7 @@ TOOLS = {
     "read_source": "按source或精确摘录note引用读取原始正文；note沿已绑定来源定位摘录位置，source默认从头读取一页，limit为期望字符上限，按next_offset继续直到为空。selections是本页原文片段的可选身份，可直接用于record_evidence，避免重抄引文。URL须先获取正文，不能冒充source引用。返回范围不代表已理解。",
     "read_artifact": "读取研究记录正文及直接关联入口；ref必须是返回过的完整引用，不能传名称、路径或引用前缀。大记录直接返回canonical-json第一页与next_offset，后续用read_artifact_range。",
     "read_artifact_range": "按字符范围读取记录的 canonical-json；offset=0 从头读取。阅读来源正文优先用 read_source。",
-    "read_report": "分页读取绑定报告原文，offset 为稳定单元索引，limit 为期望单元数；长段落/表格可跨单元，继续next_offset。text_metrics是全文统计，displayed_units_metrics是本页统计；来源和作者输入的完整目录用read_context。读取后的下一轮才能根据收到的正文裁决。",
+    "read_report": "分页读取绑定报告原文，offset 为稳定单元索引，limit 为期望单元数；长段落/表格可跨单元，继续next_offset。text_metrics是全文统计；report_metrics与作者measure_text使用相同口径，body仅排除自动参考资料，仍含标题、注记、Markdown和文内引用；旧稿没有边界时body为空，不猜测正文范围。displayed_units_metrics是本页统计；来源和作者输入的完整目录用read_context。读取后的下一轮才能根据收到的正文裁决。",
     "submit_review": "提交绑定版本的整体核查。reason说明是否满足任务及判断依据；defects只列影响正确性或用户用途的实质缺陷，空列表即接受；可选comments列非阻断建议。缺陷须可定位且理由成立，不要求逐段登记。",
 }
 

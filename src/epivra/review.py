@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from typing import Any
 
 
 def text_metrics(text: str) -> dict[str, int]:
@@ -11,6 +12,36 @@ def text_metrics(text: str) -> dict[str, int]:
     return {
         "characters": len(text),
         "non_whitespace_characters": sum(not c.isspace() for c in text),
+    }
+
+
+def report_metrics(report: dict[str, Any]) -> dict[str, Any]:
+    """Count exact rendered text, using only a stored boundary.
+
+    The host knows where its bibliography starts; it cannot infer which author
+    headings, notes or paragraphs the user considers the substantive body.
+    Legacy reports without this boundary retain full counts, never a guessed body.
+    """
+    text = report["text"]
+    end = report.get("citation_body_length")
+    if end is not None and (type(end) is not int or not 0 <= end <= len(text)):
+        raise ValueError("invalid citation body boundary")
+    return {
+        **text_metrics(text),
+        "scope": "rendered report including generated references",
+        "body": text_metrics(text[:end]) if end is not None else None,
+        "citation_body_length": end,
+        "body_scope": (
+            "author text before generated references; includes any author title, "
+            "headings, tables, notes and inline citation markers"
+            if end is not None else "unavailable: report has no stored body boundary"
+        ),
+        "counting_method": (
+            "Unicode code points, not words, tokens or graphemes; Markdown and "
+            "citation notation are counted literally; non_whitespace_characters "
+            "excludes only characters for which str.isspace() is true. "
+            "Counts do not decide which scope the user requested or compliance."
+        ),
     }
 
 
