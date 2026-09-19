@@ -1,0 +1,7 @@
+{
+  "version": 1,
+  "request_id": "baseline-calibration-20260919-01",
+  "mode": "review",
+  "cases": ["M03-positive", "M03-negative", "M18-positive", "M18-negative"],
+  "probe_providers": true
+}
