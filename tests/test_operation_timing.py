@@ -6,6 +6,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from epivra.harness import Harness
+from epivra.scheduling import Scheduler
 from epivra.storage import Store
 
 
@@ -102,6 +104,87 @@ class OperationTimingTests(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 self.store.mark_invoked("op", value)
         self.assertIsNone(self.store.usage_records("s")[0]["invoked_at"])
+
+
+
+class Clock:
+    def __init__(self, value=100.0):
+        self.value = value
+
+    def __call__(self):
+        return self.value
+
+
+class TimingInvokeTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.store = Store(Path(self.tmp.name) / "invoke.db")
+        control = self.store.create("s", "test", {})
+        plan = self.store.put("s", "plan", {"text": "test"}, (control.direction,))
+        control = self.store.command(
+            "s", "approve", control.ref, "approve", {"plan": plan.ref}
+        )
+        self.work = self.store.work("s", control.ref, "lead", "test")
+        self.epoch = control.epoch
+        self.clock = Clock()
+        self.harness = Harness(
+            self.store,
+            type("NoModel", (), {"identity": "offline"})(),
+            scheduler=Scheduler(clock=self.clock),
+        )
+
+    async def asyncTearDown(self):
+        self.store.close()
+        self.tmp.cleanup()
+
+    async def test_normal_invoke_records_external_span(self):
+        async def invoke():
+            self.clock.value = 105.0
+            return {"http_status": 200}
+
+        await self.harness._invoke(
+            "s",
+            self.work.ref,
+            self.epoch,
+            self.work.ref,
+            "normal-op",
+            {"tool": "fixture"},
+            invoke,
+            resource="fixture",
+        )
+        row = self.store.usage_records("s")[0]
+        self.assertEqual(100.0, row["queued_at"])
+        self.assertEqual(100.0, row["admitted_at"])
+        self.assertEqual(100.0, row["invoked_at"])
+        self.assertEqual(105.0, row["settled_at"])
+        self.assertEqual(5.0, row["external_seconds"])
+
+    async def test_received_callback_keeps_first_receipt_time(self):
+        async def invoke_received(settle):
+            self.clock.value = 102.0
+            value = {"http_status": 200}
+            settle(value)
+            self.clock.value = 104.0
+            return value
+
+        async def unused():
+            raise AssertionError("normal invoke must not run")
+
+        await self.harness._invoke(
+            "s",
+            self.work.ref,
+            self.epoch,
+            self.work.ref,
+            "received-op",
+            {"tool": "fixture"},
+            unused,
+            resource="fixture",
+            invoke_received=invoke_received,
+        )
+        row = self.store.usage_records("s")[0]
+        self.assertEqual(100.0, row["invoked_at"])
+        self.assertEqual(102.0, row["settled_at"])
+        self.assertEqual(2.0, row["external_seconds"])
 
 
 if __name__ == "__main__":
