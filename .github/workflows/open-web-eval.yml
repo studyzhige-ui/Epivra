@@ -1,0 +1,42 @@
+name: Small complete online research
+on:
+  push:
+    branches: [improve/epivra-optimization]
+    paths: [evals/open-web-request.json]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: small-live-eval-${{ github.repository }}
+  cancel-in-progress: false
+jobs:
+  evaluate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.13'
+      - name: Install and test without provider credentials
+        run: |
+          python -m pip install . ruff
+          ruff check src tests tools evals
+          python -m unittest discover -s tests -p test_open_web_eval.py -v
+          python -m unittest discover -s tests -p test_live_eval.py -v
+      - name: Execute one full small online task through the product service
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
+          LIVE_RUN_ID: gh-${{ github.run_id }}
+        run: python tools/run_open_web_eval.py --run-id "$LIVE_RUN_ID"
+      - name: Export public evidence only
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: open-web-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts/open-web/
+          if-no-files-found: warn
+          retention-days: 30
