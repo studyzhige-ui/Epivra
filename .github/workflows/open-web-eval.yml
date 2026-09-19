@@ -57,6 +57,20 @@ jobs:
             Write-Host "Timing inputs are unavailable; preserve the primary run evidence."
           }
 
+      - name: Summarize exact repeated public reads
+        if: always()
+        shell: powershell
+        run: |
+          $python = "${{ steps.env.outputs.python }}"
+          if (
+            (Test-Path "artifacts\open-web\public-artifacts.json") -and
+            (Test-Path "tools\summarize_read_redundancy.py")
+          ) {
+            & $python tools/summarize_read_redundancy.py artifacts\open-web\public-artifacts.json --output artifacts\open-web\read-redundancy.json
+          } else {
+            Write-Host "Read diagnostic inputs are unavailable; preserve the primary run evidence."
+          }
+
       - name: Export public evidence only
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
