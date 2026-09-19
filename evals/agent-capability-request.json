@@ -1,0 +1,5 @@
+{
+  "version": 1,
+  "request_id": "agent-capabilities-20260920-01",
+  "cases": ["source-conditions", "source-valid", "revise-outcome"]
+}
