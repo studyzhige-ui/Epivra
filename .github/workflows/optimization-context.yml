@@ -7,22 +7,30 @@ permissions:
   contents: read
 jobs:
   snapshot:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Windows, X64, epivra-eval]
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
-      - name: Archive only committed source, without credentials or execution state
-        shell: bash
+      - name: Archive committed development files only
+        shell: powershell
         run: |
-          mkdir -p "$RUNNER_TEMP/epivra-context"
-          git archive --format=tar HEAD > "$RUNNER_TEMP/epivra-context/source.tar"
-          git rev-parse HEAD > "$RUNNER_TEMP/epivra-context/commit.txt"
-          sha256sum "$RUNNER_TEMP/epivra-context/source.tar" > "$RUNNER_TEMP/epivra-context/source.sha256"
+          $target = Join-Path $env:RUNNER_TEMP "epivra-context-$env:GITHUB_RUN_ID"
+          New-Item -ItemType Directory -Force $target | Out-Null
+          git archive --format=tar --output="$target/source.tar" HEAD src tests tools evals .github pyproject.toml README.md
+          if ($LASTEXITCODE -ne 0) { throw "git archive failed" }
+          git rev-parse HEAD | Set-Content -Encoding ascii "$target/commit.txt"
+          if ($LASTEXITCODE -ne 0) { throw "git revision read failed" }
+          (Get-FileHash "$target/source.tar" -Algorithm SHA256).Hash | Set-Content -Encoding ascii "$target/source.sha256"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: optimization-context-${{ github.run_id }}
-          path: ${{ runner.temp }}/epivra-context/
+          path: ${{ runner.temp }}/epivra-context-${{ github.run_id }}/
           retention-days: 3
           if-no-files-found: error
+      - name: Remove this job's archive
+        if: always()
+        shell: powershell
+        run: |
+          Remove-Item -LiteralPath (Join-Path $env:RUNNER_TEMP "epivra-context-$env:GITHUB_RUN_ID") -Recurse -Force -ErrorAction SilentlyContinue
