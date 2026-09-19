@@ -124,7 +124,13 @@ def source_ranges(source: Artifact, observations: list[Artifact]) -> list[list[i
         result = body.get("result", {})
         if not isinstance(result, dict):
             continue
-        if body.get("tool") == "read_source" and result.get("ref") == source.ref:
+        if body.get("tool") == "search_sources" and not body.get("failure"):
+            for hit in result.get("matches", []):
+                if hit.get("ref") == source.ref:
+                    start, end = hit["offset"], hit["end"]
+                    if 0 <= start < end <= len(source.body["text"]):
+                        ranges.append([start, end])
+        elif body.get("tool") == "read_source" and result.get("ref") == source.ref:
             start, end = result["offset"], result["end"]
             if 0 <= start < end <= len(source.body["text"]):
                 ranges.append([start, end])

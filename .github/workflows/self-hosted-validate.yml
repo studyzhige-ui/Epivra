@@ -28,10 +28,13 @@ jobs:
         run: |
           $venv = Join-Path $env:RUNNER_TEMP "epivra-validation-$env:GITHUB_RUN_ID"
           python -m venv $venv
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $python = Join-Path $venv "Scripts\python.exe"
           $pip = Join-Path $venv "Scripts\pip.exe"
           & $python -m pip install --upgrade pip
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & $pip install ".[mcp,documents]" ruff mypy build
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           "venv=$venv" >> $env:GITHUB_OUTPUT
           "python=$python" >> $env:GITHUB_OUTPUT
 
@@ -40,11 +43,17 @@ jobs:
         run: |
           $python = "${{ steps.env.outputs.python }}"
           & $python -m pip check
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & $python -m unittest discover -s tests
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & $python tools/check_architecture.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & $python -m ruff check src tests tools evals
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & $python -m mypy
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & $python -m build --wheel
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Verify built wheel in a second clean environment
         shell: powershell
@@ -53,12 +62,17 @@ jobs:
           if ($wheel.Count -ne 1) { throw "Expected exactly one wheel" }
           $clean = Join-Path $env:RUNNER_TEMP "epivra-wheel-$env:GITHUB_RUN_ID"
           python -m venv $clean
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $python = Join-Path $clean "Scripts\python.exe"
           & $python -m pip install $wheel[0].FullName
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & $python -m pip check
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & $python -I -c "import epivra; from importlib.resources import files; assert files('epivra').joinpath('web/favicon.svg').is_file(); print(epivra.__file__)"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $cli = Join-Path $clean "Scripts\epivra.exe"
           & $cli --help | Out-Null
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Cleanup isolated environments
         if: always()

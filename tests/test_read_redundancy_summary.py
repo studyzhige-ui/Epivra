@@ -17,8 +17,7 @@ class ReadRedundancySummaryTests(unittest.TestCase):
             "body": {"role": "reviewer"},
         }
         result = {"ref": "s", "offset": 0, "end": 10, "text": "same"}
-        rows = [
-            work,
+        rows = [work] + [
             {
                 "kind": "observation",
                 "parents": ["w"],
@@ -39,12 +38,48 @@ class ReadRedundancySummaryTests(unittest.TestCase):
 
     def test_failures_nonreads_and_different_roles_do_not_collapse(self):
         rows = [
-            {"ref": "a", "kind": "work", "parents": [], "seq": 1, "body": {"role": "writer"}},
-            {"ref": "b", "kind": "work", "parents": [], "seq": 2, "body": {"role": "reviewer"}},
-            {"kind": "observation", "parents": ["a"], "seq": 3, "body": {"tool": "read_source", "result": {"text": "x"}}},
-            {"kind": "observation", "parents": ["b"], "seq": 4, "body": {"tool": "read_source", "result": {"text": "x"}}},
-            {"kind": "observation", "parents": ["a"], "seq": 5, "body": {"tool": "calculate", "result": {"text": "x"}}},
-            {"kind": "observation", "parents": ["a"], "seq": 6, "body": {"tool": "read_source", "result": {"text": "x"}, "failure": "failed"},
+            {
+                "ref": "a",
+                "kind": "work",
+                "parents": [],
+                "seq": 1,
+                "body": {"role": "writer"},
+            },
+            {
+                "ref": "b",
+                "kind": "work",
+                "parents": [],
+                "seq": 2,
+                "body": {"role": "reviewer"},
+            },
+            {
+                "kind": "observation",
+                "parents": ["a"],
+                "seq": 3,
+                "body": {"tool": "read_source", "result": {"text": "x"}},
+            },
+            {
+                "kind": "observation",
+                "parents": ["b"],
+                "seq": 4,
+                "body": {"tool": "read_source", "result": {"text": "x"}},
+            },
+            {
+                "kind": "observation",
+                "parents": ["a"],
+                "seq": 5,
+                "body": {"tool": "calculate", "result": {"text": "x"}},
+            },
+            {
+                "kind": "observation",
+                "parents": ["a"],
+                "seq": 6,
+                "body": {
+                    "tool": "read_source",
+                    "result": {"text": "x"},
+                    "failure": "failed",
+                },
+            },
         ]
         summary = summarize(rows)
         self.assertEqual(2, summary["successful_public_reads"])

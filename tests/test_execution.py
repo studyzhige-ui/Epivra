@@ -470,7 +470,7 @@ class HarnessTests(Fixture, unittest.IsolatedAsyncioTestCase):
         model = FakeModel([Reply("", ())])
         h = Harness(self.store, model)
         original = self.store.settle
-        self.store.settle = lambda *a: (_ for _ in ()).throw(OSError("disk"))
+        self.store.settle = lambda *a, **kw: (_ for _ in ()).throw(OSError("disk"))
         with self.assertRaises(OSError):
             await h.step("s", self.work.ref)
         self.store.settle = original

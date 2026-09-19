@@ -176,8 +176,8 @@ def render(text, evidence, resolve):
     }
 
 
-def validate(report, resolve):
-    """Reconstruct markers without a duplicate manuscript and compare exact output."""
+def manuscript(report, resolve):
+    """Return editable citation markers only after the saved rendering roundtrips."""
     text = report["text"]
     refs = report.get("citations", [])
     length = report.get("citation_body_length", len(text))
@@ -194,6 +194,13 @@ def validate(report, resolve):
         parts.extend((body[end : m.start()], "[[cite:" + refs[index] + "]]"))
         end = m.end()
     parts.append(body[end:])
-    expected = render("".join(parts), report["evidence"], resolve)
+    original = "".join(parts)
+    expected = render(original, report["evidence"], resolve)
     if expected != {"text": text, "citations": refs, "citation_body_length": length}:
         raise ValueError("report citation rendering or binding has changed")
+    return original
+
+
+def validate(report, resolve):
+    """Validate exact citation identity with the shared reconstruction contract."""
+    manuscript(report, resolve)

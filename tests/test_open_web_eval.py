@@ -3,8 +3,8 @@ import asyncio
 import tempfile
 import time
 import unittest
-from types import SimpleNamespace
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from tools.run_open_web_eval import (

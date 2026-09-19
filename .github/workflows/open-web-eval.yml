@@ -24,12 +24,18 @@ jobs:
         run: |
           $venv = Join-Path $env:RUNNER_TEMP "epivra-openweb-$env:GITHUB_RUN_ID"
           python -m venv $venv
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $python = Join-Path $venv "Scripts\python.exe"
           & $python -m pip install --upgrade pip
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & $python -m pip install . ruff
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & $python -m ruff check src tests tools evals
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & $python -m unittest discover -s tests -p test_open_web_eval.py -v
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & $python -m unittest discover -s tests -p test_live_eval.py -v
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           "venv=$venv" >> $env:GITHUB_OUTPUT
           "python=$python" >> $env:GITHUB_OUTPUT
 
@@ -41,6 +47,7 @@ jobs:
           LIVE_RUN_ID: gh-${{ github.run_id }}
         run: |
           & "${{ steps.env.outputs.python }}" tools/run_open_web_eval.py --run-id "$env:LIVE_RUN_ID"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Summarize operation timing
         if: always()
@@ -53,6 +60,7 @@ jobs:
             (Test-Path "tools\summarize_operation_timing.py")
           ) {
             & $python tools/summarize_operation_timing.py artifacts\open-web\calls.json --summary artifacts\open-web\summary.json --output artifacts\open-web\timing.json
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           } else {
             Write-Host "Timing inputs are unavailable; preserve the primary run evidence."
           }
@@ -67,6 +75,7 @@ jobs:
             (Test-Path "tools\summarize_read_redundancy.py")
           ) {
             & $python tools/summarize_read_redundancy.py artifacts\open-web\public-artifacts.json --output artifacts\open-web\read-redundancy.json
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           } else {
             Write-Host "Read diagnostic inputs are unavailable; preserve the primary run evidence."
           }
