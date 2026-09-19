@@ -1,7 +1,7 @@
 name: Small live evaluation
 on:
   push:
-    branches: [improve/live-validation-20260919, improve/epivra-optimization, 'eval/**']
+    branches: [improve/epivra-optimization]
     paths: [evals/live-request.json]
   workflow_dispatch:
 permissions:
