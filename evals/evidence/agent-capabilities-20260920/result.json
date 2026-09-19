@@ -1,0 +1,34 @@
+{
+  "run_id": 35464409441,
+  "baseline_commit": "6bcd5a2588cab7c4952525902e438ab78df5f7c0",
+  "candidate_commit": "80d25af5828a56611d1a6396b2344e712b576393",
+  "scope": "One stochastic trial per condition; three synthetic role tasks, at most six completed decisions per role. Not a complete product benchmark, generalization result or release acceptance.",
+  "same_cases_and_runner_hashes_verified": true,
+  "artifact_digests": {
+    "baseline": {"id":10589904720,"sha256":"684fb22d6f60aa6e24117a258b04bc417f81d46e7d749c9cae1aae0caa76932a"},
+    "candidate": {"id":10591081294,"sha256":"a09e4f35d39a804b101f7077e370bddbf52e3ad2da61a1efa73011299febb989"}
+  },
+  "results": [
+    {"case":"source-conditions","baseline":{"calls":6,"complete":true,"seconds":31.002380699999776,"input_tokens":178784,"output_tokens":6467,"total_tokens":185251,"cache_read_tokens":142976,"tool_failures":2},"candidate":{"calls":6,"complete":false,"seconds":17.030248399998527,"input_tokens":128765,"output_tokens":3280,"total_tokens":132045,"cache_read_tokens":97920,"tool_failures":1}},
+    {"case":"source-valid","baseline":{"calls":6,"complete":false,"seconds":22.078437200001645,"input_tokens":149634,"output_tokens":4184,"total_tokens":153818,"cache_read_tokens":118528,"tool_failures":0},"candidate":{"calls":6,"complete":true,"seconds":30.130495500001416,"input_tokens":101692,"output_tokens":6301,"total_tokens":107993,"cache_read_tokens":86272,"tool_failures":0}},
+    {"case":"revise-outcome","baseline":{"calls":4,"complete":true,"seconds":12.877880899999582,"input_tokens":28334,"output_tokens":2548,"total_tokens":30882,"cache_read_tokens":24192,"tool_failures":0},"candidate":{"calls":5,"complete":true,"seconds":24.80214960000012,"input_tokens":44126,"output_tokens":5198,"total_tokens":49324,"cache_read_tokens":36608,"tool_failures":0}}
+  ],
+  "total_model_calls":33,
+  "total_input_tokens":631335,
+  "total_output_tokens":27978,
+  "total_tokens":659313,
+  "cache_read_tokens_included":506496,
+  "reasoning_tokens_included":16708,
+  "unknown_operations":0,
+  "tavily_calls":0,
+  "monetary_cost":null,
+  "assessment":{
+    "source-conditions":"Baseline delivered a core answer within scope; candidate did not. Candidate used search_sources but hit a parameter-limit error, then continued searching/reading. Faster partial work is not a speedup.",
+    "source-valid":"Baseline incomplete within observed scope; candidate retained 0-35 degree and quarterly-maintenance conditions, but added demands for a separate exhaustive requirements list. Completion is not unqualified semantic acceptance. No seventh baseline turn was observed.",
+    "revise-outcome":"Both corrected summary, table and outcome-dependent recommendation while preserving valid registrations, event count and costs. Both reasonably collapsed duplicate procedural lines; exact preservation of every copy was not required. Candidate used read_manuscript but chose full draft_report, not revise_report. Five calls and 24.8s versus four calls and 12.9s did not improve efficiency.",
+    "overall":"No demonstrated overall efficiency improvement. Both original jobs remain failed because a different source case was incomplete. Do not present lower aggregate tokens or tool availability as better end-to-end research. No labels changed and no paid rerun to obtain a green result."
+  },
+  "post_trial_fix":"Expose source-search maxItems/maxLength and enforce them with explicit argument paths. One new offline test; original paid artifacts remain unchanged. This post-trial fix has no new live-model result.",
+  "raw_evidence_location":"Original GitHub Actions artifacts above and downloaded conversation evidence ZIP. This committed JSON is an accounting/assessment index, not the complete native trace or database.",
+  "verification":"Archive SHA-256, every original artifact-manifest member and unique operation IDs checked; counters recomputed from calls.json."
+}

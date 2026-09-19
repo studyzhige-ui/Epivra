@@ -11,7 +11,7 @@ from epivra.citations import manuscript, render
 from epivra.citations import validate as validate_citations
 from epivra.context import source_ranges
 from epivra.domain import Call, ContextCapacity, Reply, encode
-from epivra.harness import Harness
+from epivra.harness import BUILTINS, Harness, validate
 from epivra.review import edit_manuscript
 from epivra.storage import Store
 from epivra.workspace import Workspace
@@ -189,6 +189,20 @@ class AgentCapabilityTests(unittest.IsolatedAsyncioTestCase):
             other, "search_sources", {"terms": ["registrants"], "refs": [foreign.ref]}
         )
         self.assertIsNotNone(invalid["failure"])
+
+    def test_search_limits_are_advertised_and_validated_before_execution(self):
+        terms = BUILTINS["search_sources"][1]["properties"]["terms"]
+        self.assertEqual(16, terms["maxItems"])
+        self.assertEqual(200, terms["items"]["maxLength"])
+        for value in (["word"], [str(i) for i in range(16)], ["x" * 200]):
+            validate(value, terms, "arguments.terms")
+        with self.assertRaisesRegex(ValueError, "arguments.terms: too many"):
+            validate([str(i) for i in range(17)], terms, "arguments.terms")
+        with self.assertRaisesRegex(ValueError, r"arguments.terms\[0\]: text too long"):
+            validate(["x" * 201], terms, "arguments.terms")
+        for value in ([], [""], ["  "]):
+            with self.assertRaises(ValueError):
+                validate(value, terms, "arguments.terms")
 
     async def test_search_literal_metacharacters_unicode_and_stable_pages(self):
         ws = Workspace(self.store)

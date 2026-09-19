@@ -98,7 +98,13 @@ BUILTINS = {
         {
             **object_schema(
                 {
-                    "terms": {**STRINGS, "minItems": 1},
+                    "terms": {
+                        "type": "array",
+                        "items": {**STRING, "maxLength": 200},
+                        "minItems": 1,
+                        "maxItems": 16,
+                        "description": "1-16 nonempty literal words or phrases, at most 200 characters each; not regular expressions.",
+                    },
                     "refs": REFERENCES,
                     "offset": {"type": "integer", "minimum": 0},
                     "limit": {"type": "integer", "minimum": 1},
@@ -461,6 +467,8 @@ def validate(value: Any, schema: dict[str, Any], path: str = "arguments") -> Non
             raise ValueError("expected array")
         if len(value) < schema.get("minItems", 0):
             raise ValueError("too few items")
+        if len(value) > schema.get("maxItems", len(value)):
+            raise ValueError(f"{path}: too many items; maximum {schema['maxItems']}")
         for index, item in enumerate(value):
             validate(item, schema["items"], f"{path}[{index}]")
     elif kind == "string":
@@ -468,6 +476,8 @@ def validate(value: Any, schema: dict[str, Any], path: str = "arguments") -> Non
             "minLength", 0
         ):
             raise ValueError("expected non-empty text")
+        if len(value) > schema.get("maxLength", len(value)):
+            raise ValueError(f"{path}: text too long; maximum {schema['maxLength']}")
         if "pattern" in schema and not re.search(schema["pattern"], value):
             raise ValueError(
                 f"{path}: expected an exact artifact ref (64 lowercase hexadecimal characters), not prose; copy the ref returned by tools"
