@@ -1,0 +1,59 @@
+name: Self-hosted fast validation
+
+on:
+  push:
+    branches: [improve/epivra-optimization]
+    paths:
+      - 'src/**'
+      - 'tests/**'
+      - 'tools/**'
+      - 'evals/**'
+      - 'pyproject.toml'
+      - '.github/workflows/self-hosted-fast.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: self-hosted-fast-${{ github.repository }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: [self-hosted, Windows, X64, epivra-eval]
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Create isolated fast environment
+        id: env
+        shell: powershell
+        run: |
+          $venv = Join-Path $env:RUNNER_TEMP "epivra-fast-$env:GITHUB_RUN_ID"
+          python -m venv $venv
+          $python = Join-Path $venv "Scripts\python.exe"
+          & $python -m pip install --upgrade pip
+          & $python -m pip install ".[mcp]" ruff mypy build
+          "venv=$venv" >> $env:GITHUB_OUTPUT
+          "python=$python" >> $env:GITHUB_OUTPUT
+
+      - name: Run fast regression suite
+        shell: powershell
+        run: |
+          $python = "${{ steps.env.outputs.python }}"
+          & $python -m pip check
+          & $python -m unittest discover -s tests
+          & $python tools/check_architecture.py
+          & $python -m ruff check src tests tools evals
+          & $python -m mypy
+          & $python -m build --wheel
+
+      - name: Cleanup
+        if: always()
+        shell: powershell
+        run: |
+          $venv = "${{ steps.env.outputs.venv }}"
+          if ($venv) { Remove-Item -Recurse -Force $venv -ErrorAction SilentlyContinue }
