@@ -11,24 +11,39 @@ concurrency:
   cancel-in-progress: false
 jobs:
   evaluate:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Windows, X64, epivra-eval]
     timeout-minutes: 35
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
+
       - name: Install without provider credentials
+        id: env
+        shell: powershell
         run: |
-          python3 -m venv .venv
-          .venv/bin/python -m pip install .
+          $venv = Join-Path $env:RUNNER_TEMP "epivra-live-$env:GITHUB_RUN_ID"
+          python -m venv $venv
+          $python = Join-Path $venv "Scripts\python.exe"
+          & $python -m pip install --upgrade pip
+          & $python -m pip install . ruff
+          "venv=$venv" >> $env:GITHUB_OUTPUT
+          "python=$python" >> $env:GITHUB_OUTPUT
+
       - name: Validate selection and offline export boundaries
-        run: .venv/bin/python -m unittest discover -s tests -p test_live_eval.py -v
+        shell: powershell
+        run: |
+          & "${{ steps.env.outputs.python }}" -m unittest discover -s tests -p test_live_eval.py -v
+
       - name: Run selected small paid checks (never Benchmark-10)
+        shell: powershell
         env:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
           LIVE_RUN_ID: gh-${{ github.run_id }}
-        run: .venv/bin/python tools/run_live_eval.py --run-id "$LIVE_RUN_ID"
+        run: |
+          & "${{ steps.env.outputs.python }}" tools/run_live_eval.py --run-id "$env:LIVE_RUN_ID"
+
       - name: Retain only explicit public diagnostic projections
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -39,3 +54,13 @@ jobs:
             artifacts/live-eval/report.md
           if-no-files-found: warn
           retention-days: 30
+
+      - name: Cleanup private evaluation state
+        if: always()
+        shell: powershell
+        run: |
+          Remove-Item -Recurse -Force ".epivra\live-*" -ErrorAction SilentlyContinue
+          Remove-Item -Recurse -Force ".epivra\closed-*" -ErrorAction SilentlyContinue
+          Remove-Item -Recurse -Force "artifacts\live-eval" -ErrorAction SilentlyContinue
+          $venv = "${{ steps.env.outputs.venv }}"
+          if ($venv) { Remove-Item -Recurse -Force $venv -ErrorAction SilentlyContinue }
