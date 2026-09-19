@@ -483,7 +483,7 @@ class Harness:
         self._locks: dict[str, asyncio.Lock] = {}
 
     def _schema(self, role: str, policy: dict[str, Any]) -> dict[str, dict[str, Any]]:
-        result = {
+        result: dict[str, dict[str, Any]] = {
             name: {"description": TOOLS.get(name, name), "parameters": schema}
             for name, (allowed, schema) in BUILTINS.items()
             if allowed in (role, "all")
