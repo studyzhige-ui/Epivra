@@ -13,6 +13,10 @@ permissions:
   contents: read
 jobs:
   contracts:
+    # This optimization PR is validated on the trusted self-hosted Windows runner
+    # while hosted-runner billing is unavailable. Restore/run the hosted matrix
+    # before release; main and other pull requests keep the normal hosted gate.
+    if: ${{ github.event_name != 'pull_request' || github.head_ref != 'improve/epivra-optimization' }}
     strategy:
       fail-fast: false
       matrix:
