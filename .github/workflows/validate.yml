@@ -1,5 +1,14 @@
 name: Offline validation
-on: [push, pull_request]
+# Validate every PR, plus the default branch and explicit manual requests.
+# A PR-branch push must not start a second identical 14-job matrix.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+concurrency:
+  group: offline-${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
 permissions:
   contents: read
 jobs:

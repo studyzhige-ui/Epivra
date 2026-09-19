@@ -1,0 +1,59 @@
+{
+  "baseline_commit": "cc0d68d89981aa0730d1bf6fbbdd9bf511ede777",
+  "verified_unchanged_production_blobs": {
+    "harness.py": "b4e8c0d9dc9212854b936a63300c95c6828d8a6f",
+    "storage.py": "3688faee563d20a75f00898a1e278247d5e17d25",
+    "review.py": "b2b9a2c88a81d36c97dc322520529ad11cc54c15",
+    "prompts.py": "487b79c2fb30293de20a0764b4ea5d8a75f78132",
+    "application.py": "0ba36ebc39538f4a28a946a56525951e7a671dcd",
+    "workspace.py": "5b9368154aba32c10b3cf6c55928d998294f3f3c",
+    "local_security.py": "1fbf99913f7eda3b968c496f09dcec274087f084",
+    "adapters.py": "d2444efa345708bd88879cf79fc724d72efefc95",
+    "native_models.py": "0d3524ce82006bb50b424aac4cd06d7659585b41",
+    "materials.py": "21ec73a1100c794e04fd39c535265e0944b2af98",
+    "webui.py": "5fc860dc5f9b46ffb02af94d9abb7d1666b09951",
+    "scheduling.py": "b90c3442dd90781548ac026d0d8c3668c40fef09"
+  },
+  "context_original_blob": "918b2d8b6bfacb20b50193681d97e32c6b358d67",
+  "local_environment": "CPython 3.13.5, Linux; source reconstructed from attached snapshot and verified by Git blob identity; test snapshot is not all current branch tests",
+  "new_tests": {
+    "count": 13,
+    "passed": 13
+  },
+  "existing_focused": {
+    "long_runtime": {
+      "run": 11,
+      "passed": 11
+    },
+    "harness_boundaries": {
+      "run": 19,
+      "passed": 19
+    }
+  },
+  "local_snapshot_discovery": {
+    "collected": 376,
+    "passed": 367,
+    "skipped": 7,
+    "loader_errors": 2,
+    "error_modules": [
+      "test_cli",
+      "test_locale"
+    ],
+    "cause": "questionary unavailable in this offline environment",
+    "not_claimed": "complete current branch suite passed"
+  },
+  "ruff": "passed on local src/tests/tools/evals snapshot",
+  "architecture": "passed",
+  "mypy": "not executed; unavailable locally",
+  "new_paid_model_calls": 0,
+  "new_tavily_calls": 0,
+  "actions_probe": {
+    "run": 35440901789,
+    "attempted_job": 105891386078,
+    "rerun_job": 105896696456,
+    "status": "completed",
+    "conclusion": "failure",
+    "steps": null,
+    "root_cause": "unconfirmed; no step log available"
+  }
+}
