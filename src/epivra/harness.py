@@ -894,6 +894,7 @@ class Harness:
                         min(0.25, retry.body["not_before"] - time.time())
                     )
             if self.store.operation_status(study, key) is None:
+                queued_at = self.scheduler.clock()
                 tokens = (
                     request.get("wire", {}).get("estimated_input_tokens", 0)
                     + getattr(self.model, "max_tokens", 0)
@@ -913,6 +914,7 @@ class Harness:
                         request,
                         request_step=request_step,
                         admission={
+                            "queued_at": queued_at,
                             "at": admitted,
                             "resource": resource,
                             "tokens": tokens,
@@ -922,14 +924,19 @@ class Harness:
                         },
                     )
                     if raw is None:
+                        self.store.mark_invoked(key, self.scheduler.clock())
                         raw = (
                             await invoke_received(
-                                lambda value: self.store.settle(key, value)
+                                lambda value: self.store.settle(
+                                    key, value, settled_at=self.scheduler.clock()
+                                )
                             )
                             if invoke_received
                             else await invoke()
                         )
-                        self.store.settle(key, raw)
+                        self.store.settle(
+                            key, raw, settled_at=self.scheduler.clock()
+                        )
             else:
                 raw = self.store.admit(
                     study, work, epoch, key, request, request_step=request_step
