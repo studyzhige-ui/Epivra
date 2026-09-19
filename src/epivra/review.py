@@ -95,7 +95,7 @@ def edit_manuscript(text: str, edits: list[dict[str, str]]) -> str:
         raise ValueError(
             "provide at least one exact edit; unchanged reports need no revision"
         )
-    spans = []
+    spans: list[tuple[int, int, str]] = []
     for index, edit in enumerate(edits):
         old, new = edit["old"], edit["new"]
         if not old or old == new:
@@ -117,7 +117,8 @@ def edit_manuscript(text: str, edits: list[dict[str, str]]) -> str:
         raise ValueError(
             "edits overlap; provide non-overlapping edits against the original base"
         )
-    parts, end = [], 0
+    parts: list[str] = []
+    end = 0
     for start, stop, replacement in spans:
         parts.extend((text[end:start], replacement))
         end = stop
