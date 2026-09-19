@@ -1,5 +1,5 @@
 {
   "version": 1,
-  "request_id": "selfhost-fda-accelerated-approval-20260920-01",
-  "case": "fda-accelerated-approval"
+  "request_id": "selfhost-sqlite-wal-20260920-01",
+  "case": "sqlite-wal-concurrency"
 }
