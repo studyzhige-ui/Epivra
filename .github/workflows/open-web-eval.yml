@@ -11,27 +11,37 @@ concurrency:
   cancel-in-progress: false
 jobs:
   evaluate:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Windows, X64, epivra-eval]
     timeout-minutes: 35
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
-        with:
-          python-version: '3.13'
+
       - name: Install and test without provider credentials
+        id: env
+        shell: powershell
         run: |
-          python -m pip install . ruff
-          ruff check src tests tools evals
-          python -m unittest discover -s tests -p test_open_web_eval.py -v
-          python -m unittest discover -s tests -p test_live_eval.py -v
+          $venv = Join-Path $env:RUNNER_TEMP "epivra-openweb-$env:GITHUB_RUN_ID"
+          python -m venv $venv
+          $python = Join-Path $venv "Scripts\python.exe"
+          & $python -m pip install --upgrade pip
+          & $python -m pip install . ruff
+          & $python -m ruff check src tests tools evals
+          & $python -m unittest discover -s tests -p test_open_web_eval.py -v
+          & $python -m unittest discover -s tests -p test_live_eval.py -v
+          "venv=$venv" >> $env:GITHUB_OUTPUT
+          "python=$python" >> $env:GITHUB_OUTPUT
+
       - name: Execute one full small online task through the product service
+        shell: powershell
         env:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
           LIVE_RUN_ID: gh-${{ github.run_id }}
-        run: python tools/run_open_web_eval.py --run-id "$LIVE_RUN_ID"
+        run: |
+          & "${{ steps.env.outputs.python }}" tools/run_open_web_eval.py --run-id "$env:LIVE_RUN_ID"
+
       - name: Export public evidence only
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -40,3 +50,12 @@ jobs:
           path: artifacts/open-web/
           if-no-files-found: warn
           retention-days: 30
+
+      - name: Cleanup private evaluation state
+        if: always()
+        shell: powershell
+        run: |
+          Remove-Item -Recurse -Force ".epivra\open-web-*" -ErrorAction SilentlyContinue
+          Remove-Item -Recurse -Force "artifacts\open-web" -ErrorAction SilentlyContinue
+          $venv = "${{ steps.env.outputs.venv }}"
+          if ($venv) { Remove-Item -Recurse -Force $venv -ErrorAction SilentlyContinue }
