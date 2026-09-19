@@ -1,0 +1,28 @@
+name: Optimization development context
+on:
+  push:
+    branches: [improve/epivra-optimization]
+    paths: [.github/workflows/optimization-context.yml]
+permissions:
+  contents: read
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Archive only committed source, without credentials or execution state
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/epivra-context"
+          git archive --format=tar HEAD > "$RUNNER_TEMP/epivra-context/source.tar"
+          git rev-parse HEAD > "$RUNNER_TEMP/epivra-context/commit.txt"
+          sha256sum "$RUNNER_TEMP/epivra-context/source.tar" > "$RUNNER_TEMP/epivra-context/source.sha256"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: optimization-context-${{ github.run_id }}
+          path: ${{ runner.temp }}/epivra-context/
+          retention-days: 3
+          if-no-files-found: error
