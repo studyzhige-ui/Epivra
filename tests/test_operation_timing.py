@@ -72,6 +72,30 @@ class OperationTimingTests(unittest.TestCase):
         self.assertIsNone(row["settled_at"])
         self.assertIsNone(row["external_seconds"])
 
+    def test_legacy_operation_without_admission_stays_out_of_scheduler_history(self):
+        self.assertIsNone(
+            self.store.admit(
+                "s",
+                self.work.ref,
+                self.epoch,
+                "legacy",
+                {"tool": "fixture"},
+            )
+        )
+        self.store.mark_invoked("legacy", 13.0)
+        self.store.settle(
+            "legacy", {"value": {"http_status": 200}}, settled_at=17.0
+        )
+        self.assertEqual([], self.store.admissions())
+        row = next(
+            item
+            for item in self.store.usage_records("s")
+            if item["operation"] == "legacy"
+        )
+        self.assertIsNone(row["admitted_at"])
+        self.assertIsNone(row["invoked_at"])
+        self.assertIsNone(row["settled_at"])
+
     def test_invalid_timestamps_do_not_mutate_ledger(self):
         self.admit()
         for value in (float("nan"), float("inf"), True, "13"):
