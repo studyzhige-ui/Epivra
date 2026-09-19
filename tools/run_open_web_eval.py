@@ -53,11 +53,44 @@ def execution_gate(summary: dict, records: list[dict]) -> bool:
     )
 
 
-async def drive(service, store, study, output, summary, secrets):
+def evaluation_active_seconds() -> int:
+    """Diagnostic-job guard only; it is not a product research time budget."""
+    raw = os.environ.get("EPIVRA_EVAL_ACTIVE_SECONDS", "1500")
+    try:
+        seconds = int(raw)
+    except ValueError as exc:
+        raise ValueError("EPIVRA_EVAL_ACTIVE_SECONDS must be an integer") from exc
+    if not 300 <= seconds <= 1800:
+        raise ValueError("evaluation active window must be between 300 and 1800 seconds")
+    return seconds
+
+
+async def drive(service, store, study, output, summary, secrets, *, stop_at=None):
     task = asyncio.create_task(service.run(study))
+    pause_requested = False
     try:
         while not task.done():
-            await asyncio.wait({task}, timeout=30)
+            wait = 30.0
+            if stop_at is not None and not pause_requested:
+                wait = max(0.0, min(wait, stop_at - time.monotonic()))
+            await asyncio.wait({task}, timeout=wait)
+            if (
+                not task.done()
+                and stop_at is not None
+                and not pause_requested
+                and time.monotonic() >= stop_at
+            ):
+                control = store.control(study)
+                if not control.paused and not control.cancelled:
+                    store.command(
+                        study,
+                        f"evaluation-deadline-{summary['run_id']}",
+                        control.ref,
+                        "pause",
+                    )
+                pause_requested = True
+                summary["evaluation_deadline_reached"] = True
+                summary["stage"] = "evaluation_deadline_paused"
             summary["last_heartbeat"] = time.time()
             summary["artifact_counts"] = dict(store.db.execute(
                 "SELECT kind,COUNT(*) FROM artifacts WHERE study=? GROUP BY kind", (study,)
@@ -110,17 +143,23 @@ async def run(root: Path, request: object, run_id: str) -> int:
     })
     database, study = state / "research.db", request["case"]
     store, service, clients = None, None, []
+    stop_at = time.monotonic() + evaluation_active_seconds()
     try:
         store = Store(database)
         store.create(study, case["task"], policy)
         service, clients = online_service(store, study, keys)
-        await drive(service, store, study, output, summary, secrets)
+        await drive(service, store, study, output, summary, secrets, stop_at=stop_at)
         control = store.control(study)
         plans = store.list(study, "plan")
-        if not control.approved and plans and not service.errors:
+        if (
+            not summary.get("evaluation_deadline_reached")
+            and not control.approved
+            and plans
+            and not service.errors
+        ):
             store.command(study, "small-task-approval", control.ref, "approve", {"plan": plans[-1].ref})
             summary.update(stage="research", approved_at=time.time(), plan=plans[-1].ref)
-            await drive(service, store, study, output, summary, secrets)
+            await drive(service, store, study, output, summary, secrets, stop_at=stop_at)
         control = store.control(study)
         publications = [a for a in store.list(study, "publication") if control.direction in a.parents]
         summary.update(published=bool(publications), errors=service.errors, work_errors=service.work_errors,
