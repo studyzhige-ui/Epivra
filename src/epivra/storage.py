@@ -985,7 +985,9 @@ class Store:
             ).fetchone()
             if row is None:
                 raise ValueError("operation was not admitted")
-            admission = json.loads(row["admission"]) if row["admission"] else {}
+            if row["admission"] is None:
+                return
+            admission = json.loads(row["admission"])
             admission.setdefault("timing", {}).setdefault("invoked_at", float(at))
             self.db.execute(
                 "UPDATE operations SET admission=? WHERE id=?",
@@ -1081,7 +1083,7 @@ class Store:
             invoked_at = timing.get("invoked_at")
             settled_at = timing.get("settled_at")
 
-            def elapsed(start, end):
+            def elapsed(start: Any, end: Any) -> float | None:
                 if (
                     type(start) not in (int, float)
                     or type(end) not in (int, float)
@@ -1209,11 +1211,16 @@ class Store:
                 raise ValueError("operation was not admitted")
             if row["status"] == "succeeded" and row["result"] != serialized:
                 raise Conflict("cannot replace a settled result")
-            admission = json.loads(row["admission"]) if row["admission"] else {}
-            admission.setdefault("timing", {}).setdefault("settled_at", float(at))
+            admission = json.loads(row["admission"]) if row["admission"] else None
+            if admission is not None:
+                admission.setdefault("timing", {}).setdefault("settled_at", float(at))
             self.db.execute(
                 "UPDATE operations SET status='succeeded',result=?,admission=? WHERE id=?",
-                (serialized, encode(admission), operation_id),
+                (
+                    serialized,
+                    encode(admission) if admission is not None else None,
+                    operation_id,
+                ),
             )
             if hasattr(self, "_usage_cache"):
                 self._usage_cache.pop(row["study"], None)
