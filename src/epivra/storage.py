@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import builtins
+import math
 import sqlite3
 import sys
 import time
@@ -972,6 +973,27 @@ class Store:
             )
             return None
 
+    def mark_invoked(self, operation_id: str, at: float) -> None:
+        """Persist the first actual send/execute timestamp for one operation."""
+        import json
+
+        if type(at) not in (int, float) or not math.isfinite(at):
+            raise ValueError("finite operation timestamp required")
+        with self.transaction():
+            row = self.db.execute(
+                "SELECT study,admission FROM operations WHERE id=?", (operation_id,)
+            ).fetchone()
+            if row is None:
+                raise ValueError("operation was not admitted")
+            admission = json.loads(row["admission"]) if row["admission"] else {}
+            admission.setdefault("timing", {}).setdefault("invoked_at", float(at))
+            self.db.execute(
+                "UPDATE operations SET admission=? WHERE id=?",
+                (encode(admission), operation_id),
+            )
+            if hasattr(self, "_usage_cache"):
+                self._usage_cache.pop(row["study"], None)
+
     def admissions(self):
         import json
 
@@ -1053,6 +1075,21 @@ class Store:
                 raw["data"]["data"] = {"usage": json.loads(row["reader_usage"])}
             if row["cost_dollars"] is not None:
                 raw["data"]["costDollars"] = json.loads(row["cost_dollars"])
+            timing = admission.get("timing", {})
+            queued_at = admission.get("queued_at")
+            admitted_at = admission.get("at")
+            invoked_at = timing.get("invoked_at")
+            settled_at = timing.get("settled_at")
+
+            def elapsed(start, end):
+                if (
+                    type(start) not in (int, float)
+                    or type(end) not in (int, float)
+                    or end < start
+                ):
+                    return None
+                return end - start
+
             records.append(
                 {
                     "operation": row["id"],
@@ -1062,7 +1099,13 @@ class Store:
                     "tool": row["tool"],
                     "status": row["status"],
                     "http_status": row["http_status"],
-                    "admitted_at": admission.get("at"),
+                    "queued_at": queued_at,
+                    "admitted_at": admitted_at,
+                    "invoked_at": invoked_at,
+                    "settled_at": settled_at,
+                    "queue_seconds": elapsed(queued_at, admitted_at),
+                    "admission_to_invoke_seconds": elapsed(admitted_at, invoked_at),
+                    "external_seconds": elapsed(invoked_at, settled_at),
                     "usage": counters(raw, admission.get("resource")),
                 }
             )
@@ -1146,10 +1189,17 @@ class Store:
             raise UnknownOutcome(operation_id)
         return json.loads(row[0])
 
-    def settle(self, operation_id: str, result: Any) -> None:
-        """Persist the returned envelope, including explicit provider failures."""
+    def settle(
+        self, operation_id: str, result: Any, *, settled_at: float | None = None
+    ) -> None:
+        """Persist the returned envelope and first receipt time atomically."""
+        import json
+
         if result is None:
             raise ValueError("operation result must have an envelope")
+        at = time.time() if settled_at is None else settled_at
+        if type(at) not in (int, float) or not math.isfinite(at):
+            raise ValueError("finite operation timestamp required")
         serialized = encode(result)
         with self.transaction():
             row = self.db.execute(
@@ -1159,10 +1209,14 @@ class Store:
                 raise ValueError("operation was not admitted")
             if row["status"] == "succeeded" and row["result"] != serialized:
                 raise Conflict("cannot replace a settled result")
+            admission = json.loads(row["admission"]) if row["admission"] else {}
+            admission.setdefault("timing", {}).setdefault("settled_at", float(at))
             self.db.execute(
-                "UPDATE operations SET status='succeeded',result=? WHERE id=?",
-                (serialized, operation_id),
+                "UPDATE operations SET status='succeeded',result=?,admission=? WHERE id=?",
+                (serialized, encode(admission), operation_id),
             )
+            if hasattr(self, "_usage_cache"):
+                self._usage_cache.pop(row["study"], None)
 
     def observation(
         self,
