@@ -1,7 +1,7 @@
 name: Small live evaluation
 on:
   push:
-    branches: [improve/live-validation-20260919, 'eval/**']
+    branches: [improve/live-validation-20260919, improve/epivra-optimization, 'eval/**']
     paths: [evals/live-request.json]
   workflow_dispatch:
 permissions:
@@ -14,7 +14,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 35
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
       - name: Install without provider credentials
@@ -38,4 +38,4 @@ jobs:
             artifacts/live-eval/*.json
             artifacts/live-eval/report.md
           if-no-files-found: warn
-          retention-days: 7
+          retention-days: 30
