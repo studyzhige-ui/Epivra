@@ -1,0 +1,94 @@
+{
+  "date": "2026-09-20",
+  "purpose": "branch cleanup before continuing a single optimization development line",
+  "keep": [
+    {
+      "branch": "main",
+      "reason": "stable product baseline"
+    },
+    {
+      "branch": "improve/epivra-optimization",
+      "reason": "single optimization development line"
+    }
+  ],
+  "close_prs": [
+    {
+      "pr": 2,
+      "head": "improve/live-validation-20260919",
+      "reason": "fully contained by unified optimization branch; superseded by PR #4"
+    },
+    {
+      "pr": 3,
+      "head": "improve/read-contracts-20260919",
+      "reason": "fully contained by unified optimization branch; superseded by PR #4"
+    }
+  ],
+  "delete": [
+    {
+      "branch": "chore/archive-public-evidence-20260919",
+      "sha": "e772357d0df62ee72015c52538011dd2d7af9754",
+      "reason": "one-off evidence archiver"
+    },
+    {
+      "branch": "chore/prepare-read-contracts-20260919",
+      "sha": "9599513fa0f06a1fb862a11a0ebd71bec47ee153",
+      "reason": "one-off blob preparation"
+    },
+    {
+      "branch": "chore/prepare-read-type-20260919",
+      "sha": "62cfbb9c87b3cb47f38b706d37f682332b170792",
+      "reason": "one-off schema preparation"
+    },
+    {
+      "branch": "chore/prepare-report-receipt-20260919",
+      "sha": "a91606e3ed99c24864274a63063221fe090d86aa",
+      "reason": "one-off report receipt preparation"
+    },
+    {
+      "branch": "chore/secret-smoke-20260919",
+      "sha": "ec0819f2590e2cb24baf1bae2c370be7fdbc6c9b",
+      "reason": "one-off provider secret smoke workflow"
+    },
+    {
+      "branch": "chore/verify-audit-provenance-20260919",
+      "sha": "aef0931e4160d85bb0bed4ea4e477b344f952ca6",
+      "reason": "one-off provenance verification"
+    },
+    {
+      "branch": "codex/research-runtime-hardening",
+      "sha": "adbcd426cfcc0bfc3e9b8d4815d81d5ed1de9200",
+      "reason": "PR #1 already merged to main and contained by optimization line"
+    },
+    {
+      "branch": "experiment/objective-led-research-20260920",
+      "sha": "b0302503eefb6d9b25d8e715739b54a23dcbb0c2",
+      "reason": "rejected experiment; unique results archived"
+    },
+    {
+      "branch": "experiment/review-decision-20260920",
+      "sha": "cbba57dab549e4bb5b009452f8cc2056e1f198bd",
+      "reason": "rejected experiment; unique paired results archived"
+    },
+    {
+      "branch": "improve/live-validation-20260919",
+      "sha": "96968e399832aea53e016434841fa9be52d48fb5",
+      "reason": "ancestor of unified optimization line; PR #2 closed as superseded"
+    },
+    {
+      "branch": "improve/read-contracts-20260919",
+      "sha": "b3f45e5691f56b22362a3cba41e9a34f76a3761b",
+      "reason": "ancestor of unified optimization line; PR #3 closed as superseded"
+    },
+    {
+      "branch": "stage/agent-capabilities-20260920",
+      "sha": "3a17186510057e1f3ac69ae0b7b42906e6ca1a7a",
+      "reason": "temporary staging for rejected capability experiment"
+    },
+    {
+      "branch": "stage/read-delivery-20260920",
+      "sha": "f6542a435e820ea0e4a8f9cddc8cd3567d8a46dd",
+      "reason": "temporary staging; retained read-delivery fix already in unified line"
+    }
+  ],
+  "invariant": "delete workflow must verify every ref still points at the audited SHA before deleting any branch"
+}
