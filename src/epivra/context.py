@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 from .domain import Artifact, ContextCapacity, encode
@@ -52,6 +53,34 @@ def page(items: list, offset: int, limit: int, capacity: int) -> dict:
         result["items"].append(entry)
         result["next_offset"] = next_offset
         payload_size += addition
+    return result
+
+
+def fit_read_result(build: Callable[[int], dict], count: int, capacity: int) -> dict:
+    """Fit a lossless page to the actual serialized tool-result contract.
+
+    The caller rebuilds offsets, cursors and excerpt metadata for each prefix.
+    Nothing is sliced after persistence, and raw text is never summarized.
+    If required metadata and one unit cannot fit, fail explicitly instead of
+    returning an endlessly redirected observation or a non-advancing cursor.
+    """
+    if count < 0 or capacity < 1:
+        raise ValueError("invalid read-result capacity")
+    result = build(count)
+    if len(encode(result)) <= capacity:
+        return result
+    minimum = 1 if count else 0
+    result = build(minimum)
+    if len(encode(result)) > capacity:
+        raise ContextCapacity("read metadata and one unit exceed tool-result capacity")
+    low, high = minimum, count - 1
+    while low < high:
+        middle = (low + high + 1) // 2
+        trial = build(middle)
+        if len(encode(trial)) <= capacity:
+            low, result = middle, trial
+        else:
+            high = middle - 1
     return result
 
 

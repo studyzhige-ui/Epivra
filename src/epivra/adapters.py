@@ -12,7 +12,7 @@ from typing import Any
 
 import httpx
 
-from .domain import ContextCapacity, encode, identity
+from .domain import INLINE_TOOL_RESULT_CHARS, ContextCapacity, encode, identity
 
 
 def encode_state(state):
@@ -460,7 +460,7 @@ class ChatCompletions:
                             raise ValueError("cannot continue unpaired tool call")
                         observation = observations[index]
                         result = encode(observation["result"])
-                        if len(result) > 12000:
+                        if len(result) > INLINE_TOOL_RESULT_CHARS:
                             result = encode(
                                 {
                                     "observation_ref": observation["_ref"],
@@ -487,7 +487,7 @@ class ChatCompletions:
                         for o in previous["observations"]
                         if "_ref" in o
                         and "index" in o
-                        and len(encode(o["result"])) <= 12000
+                        and len(encode(o["result"])) <= INLINE_TOOL_RESULT_CHARS
                     }
                     prior_fields = {}
                     for message in previous["request"]["messages"]:

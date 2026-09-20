@@ -14,8 +14,9 @@ from typing import Any, Protocol
 from .analysis_runtime import AnalysisRuntime
 from .calculation import calculate
 from .citations import render as render_citations
-from .context import assemble, fit_provider, page, source_ranges
+from .context import assemble, fit_provider, fit_read_result, page, source_ranges
 from .domain import (
+    INLINE_TOOL_RESULT_CHARS,
     Artifact,
     Call,
     Conflict,
@@ -1597,17 +1598,21 @@ class Harness:
                 raise ValueError("invalid artifact range")
             offset = min(offset, len(body))
             limit = min(limit, self.context_chars // 3)
-            return {
-                "ref": artifact.ref,
-                "kind": artifact.kind,
-                "parents": self._relations(study, artifact),
-                "encoding": "canonical-json",
-                "text": body[offset : offset + limit],
-                "offset": offset,
-                "end": min(len(body), offset + limit),
-                "total": len(body),
-                "next_offset": offset + limit if offset + limit < len(body) else None,
-            }
+            relations = self._relations(study, artifact)
+
+            def artifact_page(count):
+                end = offset + count
+                return {
+                    "ref": artifact.ref, "kind": artifact.kind, "parents": relations,
+                    "encoding": "canonical-json", "text": body[offset:end],
+                    "offset": offset, "end": end, "total": len(body),
+                    "next_offset": end if end < len(body) else None,
+                }
+
+            return fit_read_result(
+                artifact_page, min(limit, len(body) - offset),
+                min(INLINE_TOOL_RESULT_CHARS, self.context_chars // 3),
+            )
         if call.name == "read_catalog":
             return self.workspace.catalog_page(
                 study, args["ref"], args["offset"], args["limit"]
@@ -1663,60 +1668,52 @@ class Harness:
                 raise ValueError("invalid source range")
             offset = min(offset, len(text))
             limit = min(limit, self.context_chars // 3)
-            end = min(len(text), offset + limit)
-            # Selections bind exact original paragraphs. Labels are a preview,
-            # not a replacement for the returned original text.
-            selections = []
-            for match in re.finditer(
-                r"\S[^\n]*(?:\n(?!\s*\n)[^\n]+)*", text[offset:end]
-            ):
-                start, stop = offset + match.start(), offset + match.end()
-                selections.append(
-                    {
+            def source_page(count):
+                end = offset + count
+                selections = []
+                for match in re.finditer(
+                    r"\S[^\n]*(?:\n(?!\s*\n)[^\n]+)*", text[offset:end]
+                ):
+                    start, stop = offset + match.start(), offset + match.end()
+                    selections.append({
                         "selection": f"{source.ref}:{start}:{stop}",
                         "preview": text[start:stop][:100],
-                    }
-                )
-            return {
-                "ref": source.ref,
-                "kind": "source",
-                "offset": offset,
-                "end": min(len(text), offset + limit),
-                "total": len(text),
-                "next_offset": end if end < len(text) else None,
-                "selections": selections,
-                "text": text[offset : offset + limit],
-                "origin": source.body.get("origin"),
-                "coverage": source.body.get("coverage"),
-                "analysis": source.body.get("analysis"),
-                "execution_status": source.body.get("execution_status"),
-                "issues": source.body.get("issues", []),
-                "segments": [
-                    s
-                    for s in source.body.get("segments", [])
-                    if s["start"] < offset + limit and s["end"] > offset
-                ],
-            }
+                    })
+                return {
+                    "ref": source.ref, "kind": "source", "offset": offset,
+                    "end": end, "total": len(text),
+                    "next_offset": end if end < len(text) else None,
+                    "selections": selections, "text": text[offset:end],
+                    "origin": source.body.get("origin"),
+                    "coverage": source.body.get("coverage"),
+                    "analysis": source.body.get("analysis"),
+                    "execution_status": source.body.get("execution_status"),
+                    "issues": source.body.get("issues", []),
+                    "segments": [seg for seg in source.body.get("segments", [])
+                                 if seg["start"] < end and seg["end"] > offset],
+                }
+
+            return fit_read_result(
+                source_page, min(limit, len(text) - offset),
+                min(INLINE_TOOL_RESULT_CHARS, self.context_chars // 3),
+            )
         if call.name == "read_artifact":
             artifact = self.store.get(study, args["ref"])
             denial = artifact_read_denial(work.body["role"], artifact.kind)
             if denial:
                 raise NotAllowed(denial)
-            if len(encode(artifact.body)) > self.context_chars // 2:
-                return self._builtin(
-                    study,
-                    work,
-                    epoch,
-                    step,
-                    index,
-                    Call("read_artifact_range", {"ref": artifact.ref}),
-                )
-            return {
-                "ref": artifact.ref,
-                "kind": artifact.kind,
-                "body": artifact.body,
+            result = {
+                "ref": artifact.ref, "kind": artifact.kind, "body": artifact.body,
                 "parents": self._relations(study, artifact),
             }
+            if len(encode(result)) > min(
+                INLINE_TOOL_RESULT_CHARS, self.context_chars // 2
+            ):
+                return self._builtin(
+                    study, work, epoch, step, index,
+                    Call("read_artifact_range", {"ref": artifact.ref}),
+                )
+            return result
         if call.name == "calculate":
             return calculate(args["expression"])
         if call.name == "record_evidence":
@@ -1836,28 +1833,28 @@ class Harness:
                 ):
                     break
                 shown.append(part)
-            end = offset + len(shown)
-            return {
-                "report": report.ref,
-                "units": shown,
-                "evidence": page(
-                    report.body["evidence"], 0, 20, self.context_chars // 32
-                )["items"],
-                "inputs": page(
-                    self._relations(study, report), 0, 20, self.context_chars // 32
-                )["items"],
-                "related_context": ["review_evidence", "review_inputs"],
-                "total": len(parts),
-                "text_metrics": text_metrics(report.body["text"]),
-                "report_metrics": report_metrics(report.body),
-                "displayed_units_metrics": text_metrics(
-                    "\n\n".join(p["text"] for p in shown)
-                ),
-                "unit_metrics": {
-                    str(p["unit"]): text_metrics(p["text"]) for p in shown
-                },
-                "next_offset": end if end < len(parts) else None,
-            }
+            evidence = page(report.body["evidence"], 0, 20, self.context_chars // 32)["items"]
+            inputs = page(self._relations(study, report), 0, 20, self.context_chars // 32)["items"]
+            metrics = report_metrics(report.body)
+
+            def report_page(count):
+                delivered = shown[:count]
+                end = offset + count
+                return {
+                    "report": report.ref, "units": delivered,
+                    "evidence": evidence, "inputs": inputs,
+                    "related_context": ["review_evidence", "review_inputs"],
+                    "total": len(parts), "text_metrics": text_metrics(report.body["text"]),
+                    "report_metrics": metrics,
+                    "displayed_units_metrics": text_metrics("\n\n".join(p["text"] for p in delivered)),
+                    "unit_metrics": {str(p["unit"]): text_metrics(p["text"]) for p in delivered},
+                    "next_offset": end if end < len(parts) else None,
+                }
+
+            return fit_read_result(
+                report_page, len(shown),
+                min(INLINE_TOOL_RESULT_CHARS, self.context_chars // 3),
+            )
         elif call.name == "submit_review":
             if work.body.get("review_mode", "final") == "check":
                 raise NotAllowed(

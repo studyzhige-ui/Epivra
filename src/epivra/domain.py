@@ -40,6 +40,10 @@ class OwnershipError(RuntimeError):
     """Another host owns this database."""
 
 
+# Existing public tool-result envelope limit, not a document/LLM budget.
+INLINE_TOOL_RESULT_CHARS = 12000
+
+
 def encode(value: Any) -> str:
     return json.dumps(
         value,
