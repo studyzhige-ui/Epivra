@@ -1,5 +1,4 @@
 name: Self-hosted fast validation
-
 on:
   push:
     branches: [improve/epivra-optimization]
@@ -14,58 +13,61 @@ on:
       - 'pyproject.toml'
       - '.github/workflows/self-hosted-fast.yml'
   workflow_dispatch:
-
 permissions:
   contents: read
-
 concurrency:
   group: self-hosted-fast-${{ github.repository }}-${{ github.ref }}
-  cancel-in-progress: true
-
+  cancel-in-progress: false
 jobs:
   validate:
+    if: github.ref == 'refs/heads/improve/epivra-optimization'
     runs-on: [self-hosted, Windows, X64, epivra-eval]
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
-
-      - name: Create isolated fast environment
-        id: env
-        shell: powershell
+      - name: Allocate isolated development check paths
+        shell: python
         run: |
-          $venv = Join-Path $env:RUNNER_TEMP "epivra-fast-$env:GITHUB_RUN_ID"
-          python -m venv $venv
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $python = Join-Path $venv "Scripts\python.exe"
-          & $python -m pip install --upgrade pip
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          & $python -m pip install ".[mcp]" ruff mypy build
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          "venv=$venv" >> $env:GITHUB_OUTPUT
-          "python=$python" >> $env:GITHUB_OUTPUT
-
-      - name: Run fast regression suite
-        shell: powershell
+          import os
+          from pathlib import Path
+          base = Path(os.environ['RUNNER_TEMP']) / ('epivra-dev-' + os.environ['GITHUB_RUN_ID'] + '-' + os.environ['GITHUB_RUN_ATTEMPT'])
+          base.mkdir(exist_ok=False)
+          with open(os.environ['GITHUB_ENV'], 'a', encoding='utf-8') as output:
+              output.write('DEV_CHECK_ROOT=' + str(base) + '\n')
+              output.write('DEV_CHECK_PYTHON=' + str(base / 'env/Scripts/python.exe') + '\n')
+      - name: Install without provider credentials
+        shell: python
         run: |
-          $python = "${{ steps.env.outputs.python }}"
-          & $python -m pip check
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          & $python -m unittest discover -s tests
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          & $python tools/check_architecture.py
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          & $python -m ruff check src tests tools evals
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          & $python -m mypy
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          & $python -m build --wheel
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
-      - name: Cleanup
-        if: always()
-        shell: powershell
+          import os, subprocess, venv
+          from pathlib import Path
+          base = Path(os.environ['DEV_CHECK_ROOT'])
+          venv.EnvBuilder(with_pip=True).create(base / 'env')
+          with (base / 'install.log').open('wb') as log:
+              subprocess.run([os.environ['DEV_CHECK_PYTHON'], '-m', 'pip', 'install', '.[mcp]', 'ruff', 'mypy', 'build'], stdout=log, stderr=subprocess.STDOUT, check=True, timeout=480)
+      - name: Check and retain per-gate results
+        shell: python
         run: |
-          $venv = "${{ steps.env.outputs.venv }}"
-          if ($venv) { Remove-Item -Recurse -Force $venv -ErrorAction SilentlyContinue }
+          import os, subprocess
+          from pathlib import Path
+          p = os.environ['DEV_CHECK_PYTHON']
+          evidence = str(Path(os.environ['DEV_CHECK_ROOT']) / 'evidence')
+          subprocess.run([p, 'tools/dev_check.py', 'run', '--profile', 'full', '--output', evidence], check=True)
+          subprocess.run([p, 'tools/dev_check.py', 'inspect', '--output', evidence], check=True)
+      - name: Retain validation receipts even on failure
+        if: always() && env.DEV_CHECK_ROOT != ''
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: offline-validation-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ env.DEV_CHECK_ROOT }}/install.log
+            ${{ env.DEV_CHECK_ROOT }}/evidence/
+          retention-days: 14
+          if-no-files-found: warn
+      - name: Remove only this validation environment
+        if: always() && env.DEV_CHECK_ROOT != ''
+        shell: python
+        run: |
+          import os, shutil
+          shutil.rmtree(os.environ['DEV_CHECK_ROOT'], ignore_errors=True)

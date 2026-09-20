@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "date": "2026-09-21",
+  "scope": "development execution repair; product refactor paused",
+  "repository": "studyzhige-ui/Epivra",
+  "branch": "improve/epivra-optimization",
+  "protected_main": "51d039dfc6ffdb88fb5768f1add72535029c2bd7",
+  "base_commit": "046ab4a80a8251c651f7bd39987e9a9b262d958a",
+  "base_tree": "e3ae270777c1b2b3653feb6e9d0d27c6b2bd8773",
+  "verified_snapshot_files": 272,
+  "unvalidated_unattached_blob_do_not_apply": "820e2d2962f74096af448b4aa0f429ab7515a5c2",
+  "product_src_changed": false,
+  "paid_evaluations_started": 0,
+  "status": "execution tooling implemented; each commit requires its own validation receipt",
+  "local_environment": {
+    "os": "Linux",
+    "python": "3.13.5",
+    "full_dependencies_available": false,
+    "network_install": "blocked_dns",
+    "streaming_exec": "unavailable"
+  },
+  "local_tests": {
+    "module": "tests/test_dev_check.py",
+    "passed": 14,
+    "failed": 0,
+    "scope": "developer tooling only, not product full regression"
+  },
+  "resume": "Read live head, PR #4 and CI for the commit introducing dev_check.py. Reconcile before writing. Do not rerun paid jobs or replay the unvalidated blob.",
+  "next_product_work": "Continuous research owner refactor, only after execution repair is verified. Preserve the user's approved research semantics.",
+  "platform_failure_cause": "unconfirmed; no internal traceback",
+  "remote_verification": "Locate the original Self-hosted fast validation run by the committed SHA and check its artifact; never infer success from this file."
+}
