@@ -93,7 +93,8 @@ async def run(root, arm, run_id, archive):
     secret = os.environ.get("DEEPSEEK_API_KEY", "").strip()
     if not secret:
         raise ValueError("missing model credential")
-    state.mkdir(parents=True); output.mkdir(parents=True)
+    state.mkdir(parents=True)
+    output.mkdir(parents=True)
     secrets = (secret,)
     policy = freeze_model_settings({"provider": "deepseek", "model": "deepseek-flash",
         "stream_model": True, "network": False, "local_roots": [], "as_of_date": case["as_of_date"]})
@@ -165,5 +166,6 @@ if __name__ == "__main__":
     try:
         status = asyncio.run(run(Path(__file__).resolve().parents[1], args.arm, args.run_id, args.archive))
     except Exception as exc:
-        print(json.dumps({"error_type": type(exc).__name__}));status = 1
+        print(json.dumps({"error_type": type(exc).__name__}))
+        status = 1
     raise SystemExit(status)
