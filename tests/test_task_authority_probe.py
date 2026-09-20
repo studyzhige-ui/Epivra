@@ -8,7 +8,14 @@ from unittest.mock import patch
 
 import epivra.harness as runtime
 from epivra.storage import Store
-from evals.task_authority_probe import CASES, NEW, OLD, ORDER, candidate_writer, validate_request
+from evals.task_authority_probe import (
+    CASES,
+    NEW,
+    OLD,
+    ORDER,
+    candidate_writer,
+    validate_request,
+)
 from tools.run_task_authority_probe import run, seed
 
 
