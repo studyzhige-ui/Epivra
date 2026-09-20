@@ -40,7 +40,7 @@ jobs:
               "improve/live-validation-20260919": "96968e399832aea53e016434841fa9be52d48fb5",
               "improve/read-contracts-20260919": "b3f45e5691f56b22362a3cba41e9a34f76a3761b",
               "stage/agent-capabilities-20260920": "3a17186510057e1f3ac69ae0b7b42906e6ca1a7a",
-              "stage/read-delivery-20260920": "f6542a435e820ea0e4f8f9cddc8cd3567d8a46dd",
+              "stage/read-delivery-20260920": "f6542a435e820ea0e4a8f9cddc8cd3567d8a46dd",
           }
           if keep & expected.keys():
               raise SystemExit("cleanup allow-list overlaps protected long-lived branches")
