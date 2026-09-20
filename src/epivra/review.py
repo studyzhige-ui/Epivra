@@ -34,8 +34,7 @@ def report_metrics(report: dict[str, Any]) -> dict[str, Any]:
         "body_scope": (
             "author text before generated references; includes any author title, "
             "headings, tables, notes and inline citation markers"
-            if end is not None
-            else "unavailable: report has no stored body boundary"
+            if end is not None else "unavailable: report has no stored body boundary"
         ),
         "counting_method": (
             "Unicode code points, not words, tokens or graphemes; Markdown and "
@@ -83,44 +82,3 @@ def public_inputs(request):
                     continue
             if isinstance(value, dict):
                 yield value
-
-
-def edit_manuscript(text: str, edits: list[dict[str, str]]) -> str:
-    """Apply exact, non-overlapping replacements against one immutable base.
-
-    The agent decides every replacement and affected conclusion. Ambiguous or
-    missing anchors fail before persistence; unchanged text is copied verbatim.
-    """
-    if not edits:
-        raise ValueError(
-            "provide at least one exact edit; unchanged reports need no revision"
-        )
-    spans: list[tuple[int, int, str]] = []
-    for index, edit in enumerate(edits):
-        old, new = edit["old"], edit["new"]
-        if not old or old == new:
-            raise ValueError(
-                f"edits[{index}]: old must be nonempty and differ from new"
-            )
-        start = text.find(old)
-        if start < 0:
-            raise ValueError(
-                f"edits[{index}]: old text not found; read_manuscript for this base version"
-            )
-        if text.find(old, start + 1) >= 0:
-            raise ValueError(
-                f"edits[{index}]: ambiguous anchor; include more surrounding original text"
-            )
-        spans.append((start, start + len(old), new))
-    spans.sort()
-    if any(a[1] > b[0] for a, b in zip(spans, spans[1:])):
-        raise ValueError(
-            "edits overlap; provide non-overlapping edits against the original base"
-        )
-    parts: list[str] = []
-    end = 0
-    for start, stop, replacement in spans:
-        parts.extend((text[end:start], replacement))
-        end = stop
-    parts.append(text[end:])
-    return "".join(parts)

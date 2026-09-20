@@ -1,14 +1,11 @@
 """Fixed research instructions; dynamic context is owned by the harness."""
 
 TOOLS = {
-    "search_sources": "在当前研究已保存的source原文中按terms的字面词/短语搜索（忽略大小写，任一匹配，不作语义推理）。可传refs限定来源；不传查本研究全部已保存原文。一次返回多个位置的原文上下文、精确offset/end和selection。适合定位条件、术语、反证，不必逐页找词；无命中不表示不存在，必要时改词或用read_source展开上下文。next_offset仅在相同terms/refs下续读。不是互联网搜索，也不代替判断资料是否支持结论。",
-    "read_manuscript": "读取直接分配给当前writer的report可编辑原稿，保留[[cite:ref]]而非渲染数字引用；按offset/next_offset续读。用于精确修订，返回原文不是新报告，不改变旧稿。",
-    "revise_report": "自主修订当前writer收到的report：edits每项old必须在read_manuscript原稿中唯一匹配，new为你决定的替换文本（可为空）；所有编辑同时对同一基稿应用。证据未变可不传evidence。新增引用仍用[[cite:ref]]。生成新报告并结束本writer工作，旧稿和旧核查不改、新稿仍需绑定核查。依据错误实际影响修改所有相关结论，不只改被点名词；未改变内容无须重生成。需要整体重写仍可用draft_report。",
     "read_context": "读取当前工作的完整目录页：section取navigation中的目录名，offset从0或next_offset继续，limit为期望条目数。目录仅是导航，details_omitted项用原ref读取全文；不会读取其他工作的私有窗口。新增记录在目录末尾，状态随当前事实更新。",
     "read_writing_guide": "仅在指定体裁且需要规范时读取简短写作指南。用户模板及明确要求优先；指南不是新增验收门槛。未指定体裁不必使用。",
     "run_analysis": "在已授权的无网络 Docker 沙箱执行 Python。inputs 为来源 ref 与相对 name，原始文件在 /inputs/data/<name>；保存成果到 /outputs。可用 pandas/numpy/scipy/statsmodels/matplotlib/seaborn/sklearn/openpyxl/pyarrow。purpose 写明本次必要分析；返回 status、日志 source 引用和文件 source 引用，正文用 read_source，代码和输入用 read_artifact(job)。失败/超时不是成功证据；下游直接传计算文件的 source 引用作为新输入，不抄写数据。",
     "measure_text": "代码统计Unicode字符数及去空白字符数。测量报告时传入与draft_report相同的text和evidence，系统替换引用并生成参考资料，返回成品总长与body长度；body仅排除自动参考资料，仍含作者提供的标题、注记、Markdown和文内引用标注，不自动判断用户的正文范围；只传text则只统计输入本身，不代表最终报告长度。按用户约束选择正文或全文范围，整稿测量后按差额调整，避免逐句反复计数；计数日志放handoff，不放成品。",
-    "record_evidence": "保存证据：优先提交当前work自己的read_source或search_sources返回的selection与text陈述，系统直接保存对应原文，不再填写source/quote/offset；不能复制另一work的selection。需要更细摘录或跨工作核对时才使用source完整引用和精确quote（不得传URL、改写或省略号）；唯一匹配可省略offset。limits是可选的证据局限文字，不是分页limit。",
+    "record_evidence": "保存证据：优先提交当前work自己的read_source返回的selection与text陈述，系统直接保存对应原文，不再填写source/quote/offset；不能复制另一work的selection。需要更细摘录或跨工作核对时才使用source完整引用和精确quote（不得传URL、改写或省略号）；唯一匹配可省略offset。limits是可选的证据局限文字，不是分页limit。",
     "request_clarification": "将阻碍本任务的具体疑问交负责人：text说明问题、相关冲突及对交付的影响，refs引用直接成果。暂停当前工作等待答复，不提交成果；保留有效进度。",
     "answer_clarification": "答复所属工作的待决疑问：question为疑问完整引用，text只给必要决定或解释，refs直接引用原生产者成果。答复后恢复原工作，不改写已有成果，不重建同一任务。",
     "wait_for_work": "当后续动作依赖尚未结束的调查时，保存需要等待的子工作work引用；调度器在结果或阻断到来前不重复调用你。refs只能是你自己的子工作，不能是报告或结果引用。",
@@ -137,7 +134,6 @@ publish_report 前确认已接受的核查绑定待发版本并满足用户用�
 不引入未经研究的新事实、方法结论或行动门槛。已有计算直接复用，引用对应真正支持的判断。
 重要矛盾或缺口使成文无法成立时 request_clarification，明确影响并保留有效草稿；表达层问题自己解决。
 整稿完成后自查覆盖、前后一致、引用和用户约束；篇幅需要测量时用 measure_text。
-修订已有稿件可用read_manuscript和revise_report精确更新，不必重新生成未改变段落；编辑范围由实际影响决定，需要重组整稿时仍可draft_report。
 收到修订意见，核对所指问题及影响，更新所有受影响的摘要、表格、正文和建议，不能只替换被点名的标签。
 若需新的证据解释或重要取舍，交负责人协调责任角色；没有受影响的内容直接保留，不整篇重做研究。
 draft_report.text只放成品，evidence指向实际来源；修订时handoff说明改动前提、关联结论如何处理及仍成立的理由。

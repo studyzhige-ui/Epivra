@@ -13,7 +13,6 @@ from typing import Any, Protocol
 
 from .analysis_runtime import AnalysisRuntime
 from .calculation import calculate
-from .citations import manuscript
 from .citations import render as render_citations
 from .context import assemble, fit_provider, page, source_ranges
 from .domain import (
@@ -29,7 +28,7 @@ from .domain import (
     identity,
 )
 from .prompts import ROLES, TOOLS, WRITING_GUIDES
-from .review import edit_manuscript, report_metrics, text_metrics, units
+from .review import report_metrics, text_metrics, units
 from .scheduling import Scheduler
 from .storage import Store
 from .workspace import Workspace
@@ -93,59 +92,6 @@ REFERENCES = {
     "description": "Exact 64-character artifact refs returned by tools, not filenames, URLs, quotations or explanatory prose. Use [] when no reference exists.",
 }
 BUILTINS = {
-    "search_sources": (
-        "all",
-        {
-            **object_schema(
-                {
-                    "terms": {
-                        "type": "array",
-                        "items": {**STRING, "maxLength": 200},
-                        "minItems": 1,
-                        "maxItems": 16,
-                        "description": "1-16 nonempty literal words or phrases, at most 200 characters each; not regular expressions.",
-                    },
-                    "refs": REFERENCES,
-                    "offset": {"type": "integer", "minimum": 0},
-                    "limit": {"type": "integer", "minimum": 1},
-                }
-            ),
-            "required": ["terms"],
-        },
-    ),
-    "read_manuscript": (
-        "writer",
-        {
-            **object_schema(
-                {
-                    "report": STRING,
-                    "offset": {"type": "integer", "minimum": 0},
-                    "limit": {"type": "integer", "minimum": 1},
-                }
-            ),
-            "required": ["report"],
-        },
-    ),
-    "revise_report": (
-        "writer",
-        {
-            **object_schema(
-                {
-                    "report": STRING,
-                    "edits": {
-                        "type": "array",
-                        "minItems": 1,
-                        "items": object_schema(
-                            {"old": STRING, "new": {"type": "string"}}
-                        ),
-                    },
-                    "evidence": REFERENCES,
-                    "handoff": {"type": "string"},
-                }
-            ),
-            "required": ["report", "edits"],
-        },
-    ),
     "read_context": (
         "all",
         object_schema(
@@ -467,8 +413,6 @@ def validate(value: Any, schema: dict[str, Any], path: str = "arguments") -> Non
             raise ValueError("expected array")
         if len(value) < schema.get("minItems", 0):
             raise ValueError("too few items")
-        if len(value) > schema.get("maxItems", len(value)):
-            raise ValueError(f"{path}: too many items; maximum {schema['maxItems']}")
         for index, item in enumerate(value):
             validate(item, schema["items"], f"{path}[{index}]")
     elif kind == "string":
@@ -476,8 +420,6 @@ def validate(value: Any, schema: dict[str, Any], path: str = "arguments") -> Non
             "minLength", 0
         ):
             raise ValueError("expected non-empty text")
-        if len(value) > schema.get("maxLength", len(value)):
-            raise ValueError(f"{path}: text too long; maximum {schema['maxLength']}")
         if "pattern" in schema and not re.search(schema["pattern"], value):
             raise ValueError(
                 f"{path}: expected an exact artifact ref (64 lowercase hexadecimal characters), not prose; copy the ref returned by tools"
@@ -552,8 +494,6 @@ class Harness:
                 and name in {"save_note", "discover_local", "snapshot_local"}
             )
         }
-        if role == "lead":
-            result.pop("search_sources", None)  # Existing raw-source boundary.
         if role == "reviewer" and policy.get("_review_mode") == "check":
             result.pop("submit_review")
             result["finish_work"] = {
@@ -994,7 +934,9 @@ class Harness:
                             if invoke_received
                             else await invoke()
                         )
-                        self.store.settle(key, raw, settled_at=self.scheduler.clock())
+                        self.store.settle(
+                            key, raw, settled_at=self.scheduler.clock()
+                        )
             else:
                 raw = self.store.admit(
                     study, work, epoch, key, request, request_step=request_step
@@ -1489,57 +1431,6 @@ class Harness:
     async def _analysis(self, study, work, epoch, step, index, args):
         return await self.analysis.run(study, work, epoch, step, index, args)
 
-    def _editable_report(self, study, work, ref):
-        report = self.store.get(study, ref)
-        if (
-            work.body["role"] != "writer"
-            or report.kind != "report"
-            or ref not in self._handoff_inputs(study, work)
-            or work.body["direction"] not in report.parents
-        ):
-            raise NotAllowed(
-                "edit only a report explicitly assigned to this writer in the current direction"
-            )
-        return report
-
-    def _save_report(self, study, work, parents, args, revises=None):
-        rendered = render_citations(
-            args["text"], args["evidence"], lambda ref: self.store.get(study, ref)
-        )
-        receipt = report_metrics(rendered)
-        revision = {"revises": revises} if revises else {}
-        with self.store.transaction():
-            item = self.store._put(
-                study,
-                "report",
-                {
-                    **rendered,
-                    "evidence": args["evidence"],
-                    "producer": work.ref,
-                    **revision,
-                },
-                (
-                    *parents,
-                    *self._handoff_inputs(study, work),
-                    *args["evidence"],
-                    *rendered["citations"],
-                    *((revises,) if revises else ()),
-                ),
-            )
-            self.store._put(
-                study,
-                "work_result",
-                {
-                    "ref": item.ref,
-                    "producer": work.ref,
-                    "handoff": args.get("handoff", ""),
-                    "report_metrics": receipt,
-                    **revision,
-                },
-                (work.ref, item.ref),
-            )
-        return {"ref": item.ref, "report_metrics": receipt, **revision}
-
     def _builtin(
         self, study: str, work: Artifact, epoch: int, step: str, index: int, call: Call
     ) -> Any:
@@ -1561,47 +1452,6 @@ class Harness:
                 offset=args["offset"],
                 limit=args["limit"],
             )
-        if call.name == "search_sources":
-            if artifact_read_denial(work.body["role"], "source"):
-                raise NotAllowed(
-                    "Delegate source examination; lead reads research findings"
-                )
-            return self.workspace.search_sources(
-                study,
-                args["terms"],
-                args.get("refs", ()),
-                args.get("offset", 0),
-                args.get("limit", 8),
-                self.context_chars // 3,
-            )
-        if call.name == "read_manuscript":
-            report = self._editable_report(study, work, args["report"])
-            text = manuscript(report.body, lambda ref: self.store.get(study, ref))
-            offset = min(args.get("offset", 0), len(text))
-            limit = min(
-                args.get("limit", self.context_chars // 3), self.context_chars // 3
-            )
-            if offset < 0 or limit < 1:
-                raise ValueError("invalid manuscript range")
-            end = min(len(text), offset + limit)
-            return {
-                "report": report.ref,
-                "text": text[offset:end],
-                "offset": offset,
-                "end": end,
-                "total": len(text),
-                "next_offset": end if end < len(text) else None,
-                "format": "author Markdown with exact [[cite:ref]] markers; no generated bibliography",
-            }
-        if call.name == "revise_report":
-            report = self._editable_report(study, work, args["report"])
-            text = manuscript(report.body, lambda ref: self.store.get(study, ref))
-            revised = {
-                "text": edit_manuscript(text, args["edits"]),
-                "evidence": args.get("evidence", report.body["evidence"]),
-                "handoff": args.get("handoff", ""),
-            }
-            return self._save_report(study, work, parents, revised, report.ref)
         if call.name == "pin_evidence":
             refs = list(dict.fromkeys(args["refs"]))
             if len(encode(refs)) > self.context_chars // 4:
@@ -1877,19 +1727,14 @@ class Harness:
                 issued = any(
                     selected == item.get("selection")
                     for observation in self._steps(study, "observation", work.ref)
-                    if observation.body.get("tool") in {"read_source", "search_sources"}
+                    if observation.body.get("tool") == "read_source"
                     and isinstance(observation.body.get("result"), dict)
-                    for item in observation.body["result"].get(
-                        "selections"
-                        if observation.body["tool"] == "read_source"
-                        else "matches",
-                        [],
-                    )
+                    for item in observation.body.get("result", {}).get("selections", [])
                     if isinstance(item, dict)
                 )
                 if not issued:
                     raise ValueError(
-                        "selection must come from this work's read_source or search_sources result"
+                        "selection must come from this work's read_source result"
                     )
                 source_ref, start_text, end_text = selected.split(":")
                 source = self.store.get(study, source_ref)
@@ -1958,7 +1803,26 @@ class Harness:
                 "status": "advisory; user requirements take precedence",
             }
         elif call.name == "draft_report":
-            return self._save_report(study, work, parents, args)
+            rendered = render_citations(
+                args["text"], args["evidence"], lambda ref: self.store.get(study, ref)
+            )
+            receipt = report_metrics(rendered)
+            # A report and its delivered work_result are one logical completion.
+            # Keep this correctness fix independently of the reverted edit tools.
+            with self.store.transaction():
+                item = self.store._put(
+                    study, "report",
+                    {**rendered, "evidence": args["evidence"], "producer": work.ref},
+                    (*parents, *self._handoff_inputs(study, work),
+                     *args["evidence"], *rendered["citations"]),
+                )
+                self.store._put(
+                    study, "work_result",
+                    {"ref": item.ref, "producer": work.ref,
+                     "handoff": args.get("handoff", ""), "report_metrics": receipt},
+                    (work.ref, item.ref),
+                )
+            return {"ref": item.ref, "report_metrics": receipt}
         elif call.name == "read_report":
             report, parts = self._review(study, work)
             offset, limit = args["offset"], args["limit"]

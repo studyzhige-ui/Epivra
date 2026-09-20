@@ -5,13 +5,12 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
-import re
 import shutil
 from pathlib import Path
 from typing import Any
 
 from .analysis import filename
-from .domain import Artifact, ContextCapacity, NotAllowed, encode
+from .domain import Artifact, NotAllowed
 from .materials import MAX_INPUT_BYTES, SUPPORTED_SUFFIXES, parse, parse_isolated
 from .storage import Store
 
@@ -20,97 +19,6 @@ class Workspace:
     def __init__(self, store: Store, parse_timeout: float = 60):
         self.store = store
         self.parse_timeout = parse_timeout
-
-    def search_sources(self, study, terms, refs=(), offset=0, limit=8, capacity=16000):
-        """Find literal passages across saved originals without a model roundtrip per page.
-
-        Source-sequence/character order is deterministic and append stable. Results
-        are excerpts, not summaries, rankings or proofs of source completeness.
-        """
-        terms = list(dict.fromkeys(t.strip() for t in terms))
-        if not 1 <= len(terms) <= 16 or any(not t or len(t) > 200 for t in terms):
-            raise ValueError(
-                "use 1-16 nonempty literal terms of at most 200 characters"
-            )
-        if offset < 0 or limit < 1:
-            raise ValueError("invalid search page")
-        if refs:
-            sources = [self.store.get(study, ref) for ref in dict.fromkeys(refs)]
-            if any(source.kind != "source" for source in sources):
-                raise ValueError("refs must name source snapshots in this study")
-            sources = sorted(sources, key=lambda source: source.seq)
-        else:
-            sources = self.store.iter_artifacts(study, "source")
-        pattern = re.compile(
-            "|".join(re.escape(t) for t in sorted(terms, key=len, reverse=True)), re.I
-        )
-        result = {
-            "matches": [],
-            "offset": offset,
-            "next_offset": None,
-            "scope": "specified source snapshots"
-            if refs
-            else "saved source snapshots in this study",
-            "method": "literal, case-insensitive OR; source sequence then position, not semantic ranking",
-            "limitation": "Excerpts only. No hit does not establish absence. Read surrounding originals, change terms or investigate further as needed.",
-        }
-        if len(encode(result)) > capacity:
-            raise ContextCapacity("source search metadata exceeds capacity")
-        seen = 0
-        for source in sources:
-            text = source.body["text"]
-            stop = 0
-            for match in pattern.finditer(text):
-                if match.start() < stop:
-                    continue  # A returned window already contains this match.
-                start, stop = (
-                    max(0, match.start() - 350),
-                    min(len(text), match.end() + 750),
-                )
-                if seen < offset:
-                    seen += 1
-                    continue
-                hit = {
-                    "ref": source.ref,
-                    "kind": "source",
-                    "origin": str(source.body.get("origin", ""))[:400],
-                    "offset": start,
-                    "end": stop,
-                    "total": len(text),
-                    "match_offset": match.start(),
-                    "match_end": match.end(),
-                    "text": text[start:stop],
-                    "selection": f"{source.ref}:{start}:{stop}",
-                    "source_coverage": source.body.get("coverage"),
-                }
-                # Both full source acquisition status and this selected range matter.
-                if len(encode(hit["source_coverage"])) > 400:
-                    hit["source_coverage"] = (
-                        "see source snapshot for acquisition coverage"
-                    )
-                next_index = seen + 1
-                trial = {
-                    **result,
-                    "matches": [*result["matches"], hit],
-                    "next_offset": next_index,
-                }
-                if len(result["matches"]) >= limit or len(encode(trial)) > capacity:
-                    if not result["matches"]:
-                        raise ContextCapacity(
-                            "source excerpt cannot fit; increase context capacity"
-                        )
-                    result["next_offset"] = seen
-                    return result
-                result["matches"].append(hit)
-                seen = next_index
-        # All matching windows were visited; null is checked in its actual encoding.
-        if len(encode(result)) > capacity:
-            last = result["matches"].pop()
-            del last
-            result["next_offset"] = offset + len(result["matches"])
-            if not result["matches"]:
-                raise ContextCapacity("source search cursor cannot fit")
-        return result
 
     def _options(self, study):
         control = self.store.control(study)
