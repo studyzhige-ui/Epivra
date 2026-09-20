@@ -90,5 +90,23 @@
       "reason": "temporary staging; retained read-delivery fix already in unified line"
     }
   ],
-  "invariant": "delete workflow must verify every ref still points at the audited SHA before deleting any branch"
+  "invariant": "delete workflow must verify every ref still points at the audited SHA before deleting any branch",
+  "status": "completed",
+  "failed_safety_run": 35502898188,
+  "successful_cleanup_run": 35503050646,
+  "final_branches": [
+    "main",
+    "improve/epivra-optimization"
+  ],
+  "pull_requests": {
+    "1": "closed_merged_historical",
+    "2": "closed_unmerged_superseded",
+    "3": "closed_unmerged_superseded",
+    "4": "open_draft_unified_optimization"
+  },
+  "archives": [
+    "evals/archive/2026-09-20/objective-led-research.md",
+    "evals/archive/2026-09-20/review-decision.md"
+  ],
+  "note": "The first cleanup attempt deleted nothing because all refs were verified before the delete phase; a single-character SHA transcription mismatch was corrected, then all 13 approved branches were deleted."
 }
