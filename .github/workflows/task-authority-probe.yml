@@ -1,0 +1,55 @@
+name: Preregistered task authority diagnosis
+on:
+  push:
+    branches: [improve/epivra-optimization]
+    paths: [evals/root-cause-request.json]
+permissions:
+  contents: read
+concurrency:
+  group: small-live-eval-${{ github.repository }}
+  cancel-in-progress: false
+jobs:
+  diagnose:
+    runs-on: [self-hosted, Windows, X64, epivra-eval]
+    timeout-minutes: 14
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Install and verify causal isolation without provider secrets
+        shell: python
+        run: |
+          import os, subprocess, venv
+          from pathlib import Path
+          directory = Path(os.environ['RUNNER_TEMP']) / ('epivra-root-cause-' + os.environ['GITHUB_RUN_ID'])
+          venv.EnvBuilder(with_pip=True).create(directory)
+          python = str(directory / 'Scripts/python.exe')
+          subprocess.run([python, '-m', 'pip', 'install', '.', 'ruff'], check=True)
+          subprocess.run([python, '-m', 'ruff', 'check', 'evals/task_authority_probe.py', 'tools/run_task_authority_probe.py', 'tests/test_task_authority_probe.py'], check=True)
+          subprocess.run([python, '-m', 'unittest', 'discover', '-s', 'tests', '-p', 'test_task_authority_probe.py', '-v'], check=True)
+          with open(os.environ['GITHUB_ENV'], 'a', encoding='utf-8') as output:
+              output.write('PROBE_PYTHON=' + python + '\n')
+      - name: Execute the one predefined diagnostic comparison
+        shell: python
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+        run: |
+          import os, subprocess, sys
+          process = subprocess.run([os.environ['PROBE_PYTHON'], 'tools/run_task_authority_probe.py', '--run-id', 'gh-' + os.environ['GITHUB_RUN_ID']])
+          sys.exit(process.returncode)
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: task-authority-${{ github.run_id }}
+          path: artifacts/task-authority/
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Clean only this run's private state and environment
+        if: always()
+        shell: python
+        run: |
+          import os, shutil
+          from pathlib import Path
+          run = os.environ['GITHUB_RUN_ID']
+          shutil.rmtree(Path(os.environ['RUNNER_TEMP']) / ('epivra-root-cause-' + run), ignore_errors=True)
+          shutil.rmtree(Path('.epivra') / ('authority-gh-' + run), ignore_errors=True)
