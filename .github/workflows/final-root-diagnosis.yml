@@ -1,0 +1,78 @@
+name: Final bounded research root-cause diagnosis
+on:
+  push:
+    branches: [improve/epivra-optimization]
+    paths: [evals/final-root-request.json]
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: small-live-eval-${{ github.repository }}
+  cancel-in-progress: false
+jobs:
+  diagnose:
+    runs-on: [self-hosted, Windows, X64, epivra-eval]
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Retrieve and verify original trace without model credentials
+        shell: python
+        env:
+          ARCHIVE_TOKEN: ${{ github.token }}
+        run: |
+          import hashlib, os, urllib.error, urllib.request
+          from pathlib import Path
+          from urllib.parse import urlsplit
+          class NoRedirect(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self, *args, **kwargs): return None
+          request = urllib.request.Request('https://api.github.com/repos/studyzhige-ui/Epivra/actions/artifacts/10599254629/zip', headers={'Authorization': 'Bearer '+os.environ['ARCHIVE_TOKEN'], 'Accept': 'application/vnd.github+json'})
+          try:
+              response = urllib.request.build_opener(NoRedirect).open(request, timeout=30)
+          except urllib.error.HTTPError as error:
+              if error.code != 302: raise
+              location = error.headers['Location']
+              if urlsplit(location).scheme != 'https': raise ValueError('unsafe redirect')
+              response = urllib.request.urlopen(location, timeout=60)
+          with response: data = response.read()
+          if hashlib.sha256(data).hexdigest() != 'd4c547b7fa318a970906285c18565a4e8d0bc12d61fde6885c6d31d2882ffed9': raise ValueError('historical archive changed')
+          path = Path(os.environ['RUNNER_TEMP']) / ('epivra-final-root-'+os.environ['GITHUB_RUN_ID']+'.zip')
+          path.write_bytes(data)
+          with open(os.environ['GITHUB_ENV'],'a',encoding='utf-8') as output: output.write('AUDIT_ARCHIVE='+str(path)+'\n')
+      - name: Offline gates and isolated install without model credentials
+        shell: python
+        run: |
+          import os, subprocess, venv
+          from pathlib import Path
+          path = Path(os.environ['RUNNER_TEMP']) / ('epivra-final-root-'+os.environ['GITHUB_RUN_ID'])
+          venv.EnvBuilder(with_pip=True).create(path)
+          python = str(path/'Scripts/python.exe')
+          subprocess.run([python,'-m','pip','install','.','ruff'],check=True)
+          subprocess.run([python,'-m','ruff','check','tools/run_final_root_diagnosis.py','tests/test_final_root_diagnosis.py'],check=True)
+          subprocess.run([python,'-m','unittest','discover','-s','tests','-p','test_final_root_diagnosis.py','-v'],check=True)
+          with open(os.environ['GITHUB_ENV'],'a',encoding='utf-8') as output: output.write('AUDIT_PYTHON='+python+'\n')
+      - name: Run only the frozen 24 input ablations
+        shell: python
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+        run: |
+          import os, subprocess, sys
+          result = subprocess.run([os.environ['AUDIT_PYTHON'],'tools/run_final_root_diagnosis.py','--run-id','gh-'+os.environ['GITHUB_RUN_ID'],'--archive',os.environ['AUDIT_ARCHIVE']])
+          sys.exit(result.returncode)
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: final-root-${{ github.run_id }}
+          path: artifacts/final-root/
+          retention-days: 30
+          if-no-files-found: warn
+      - name: Clean this run's isolated temporary files
+        if: always()
+        shell: python
+        run: |
+          import os, shutil
+          from pathlib import Path
+          path = Path(os.environ['RUNNER_TEMP']) / ('epivra-final-root-'+os.environ['GITHUB_RUN_ID'])
+          shutil.rmtree(path,ignore_errors=True)
+          path.with_suffix('.zip').unlink(missing_ok=True)
