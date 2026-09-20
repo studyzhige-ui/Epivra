@@ -13,15 +13,16 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
-      - name: Archive committed development files only
+      - name: Archive committed source with exact Git tree manifest
         shell: python
         run: |
           import hashlib, os, subprocess
           from pathlib import Path
           target = Path(os.environ['RUNNER_TEMP']) / ('epivra-context-' + os.environ['GITHUB_RUN_ID'])
           target.mkdir(exist_ok=True)
-          subprocess.run(['git', 'archive', '--format=tar', '--output=' + str(target / 'source.tar'), 'HEAD', 'src', 'tests', 'tools', 'evals', '.github', 'pyproject.toml', 'README.md'], check=True)
+          subprocess.run(['git', 'archive', '--format=tar', '--output=' + str(target / 'source.tar'), 'HEAD'], check=True)
           (target / 'commit.txt').write_bytes(subprocess.check_output(['git', 'rev-parse', 'HEAD']))
+          (target / 'tree.txt').write_bytes(subprocess.check_output(['git', 'ls-tree', '-r', 'HEAD']))
           (target / 'source.sha256').write_text(hashlib.sha256((target / 'source.tar').read_bytes()).hexdigest(), encoding='ascii')
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
