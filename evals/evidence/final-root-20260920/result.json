@@ -1,0 +1,75 @@
+{
+  "date": "2026-09-20",
+  "baseline": "afa3fc3fc1f62b5c326fa8c6f392ae101c96ad04",
+  "evaluated_commit": "626a238398cd39042a64937bffedf8788f9314cf",
+  "run_id": 35511421371,
+  "job_id": 106079867778,
+  "artifact_id": 10605687799,
+  "archive_sha256": "e89319ffb775f5425f7a8e4421b23fdf8ca0f68dbd9643f0675c3b0180059c06",
+  "verified_manifest_members": 26,
+  "scope": "24 single-completion no-tool input ablations, not a full product or exact Harness replay",
+  "production_src_changed": false,
+  "new_paid_calls_in_resumed_turn": 0,
+  "usage": {"calls":24,"input_tokens":241338,"output_tokens":160941,"total_tokens":402279,"cache_read_tokens_included":136190,"reasoning_tokens_included":101942,"unknown_operations":0,"tavily_calls":0,"monetary_cost":null,"batch_wall_seconds":736.1768538951874},
+  "strict_ci": {"run_id":35511421340,"job_id":106079867772,"conclusion":"success","scope":"Existing self-hosted validation steps; exact count not re-extracted from this log in the resumed turn"},
+  "task_only_pairs": [
+    {"repeat":0,"original_seconds":97.668055,"neutral_seconds":68.886163,"original_output_tokens":22361,"neutral_output_tokens":14904},
+    {"repeat":1,"original_seconds":75.127644,"neutral_seconds":45.420709,"original_output_tokens":17795,"neutral_output_tokens":10320}
+  ],
+  "historical_arm_means": {
+    "original":{"seconds":86.39784979820251,"input_tokens":34820,"output_tokens":20078,"public_characters":24581.5},
+    "neutral_task":{"seconds":57.15343618392944,"input_tokens":34085,"output_tokens":12612,"public_characters":11183.5},
+    "partial_corrected_upstream":{"seconds":76.56097912788391,"input_tokens":34839,"output_tokens":17704,"public_characters":19102},
+    "direct_sources":{"seconds":58.39454483985901,"input_tokens":11034,"output_tokens":12510.5,"public_characters":6582}
+  },
+  "short_generation":{"observed":8,"core_conditions_supported":8,"limitation":"Core conditions only; not all prose flawless or stable model accuracy"},
+  "focused_review":{"observed":8,"correct_accept_reject":8,"limitation":"Evaluator selected short disputed claims, not autonomous full-report risk discovery"},
+  "correction_arm_audit": {
+    "valid_clean_full_upstream_correction":false,
+    "changed":"upstream[0].body.findings[2].statement and its projected ref",
+    "unchanged_erroneous_copy":"upstream[0].body.text",
+    "surviving_quote":"故长读事务对提交的影响只能是经 checkpoint 无法完成的间接路径，不是直接阻塞写事务。",
+    "forbidden_inference":"Do not claim complete upstream correction failed or the model ignored consistently corrected evidence"
+  },
+  "architecture_verification": {
+    "production_blob_hashes_matched":10,
+    "model_calls":0,
+    "source_only_writer_rejected":"NotAllowed: writer requires research results from current research",
+    "writer_after_investigator_without_synthesizer_allowed":true,
+    "lead_raw_source_access":false,
+    "lead_and_investigator_can_draft_report":false,
+    "draft_report_produces_work_result_and_ends_author_work":true,
+    "separate_version_bound_review_required_for_publication":true,
+    "limitation":"Code-level obligations are proven; their avoidable wall-time share is unmeasured"
+  },
+  "historical_chain": [
+    {"seq":631,"kind":"note","ref_prefix":"5b4f0562f41c","role":"investigator","finding":"Earliest inspected exclusive only-path assertion"},
+    {"seq":901,"kind":"work_result","ref_prefix":"1adc56191d1f","finding":"Assertion duplicated in text and finding; status inference"},
+    {"seq":1529,"kind":"work_result","ref_prefix":"828e8b536f95","finding":"Synthesizer retains exclusion and promotes to source_statement"},
+    {"seq":2053,"kind":"report","ref_prefix":"79a71a68afbe","finding":"Writer inherits assertion"},
+    {"seq":2775,"kind":"work_result","ref_prefix":"196718b882a2","finding":"Check notices non-exhaustive support, recommends inference label"},
+    {"seq":2828,"kind":"work","ref_prefix":"164899faa514","finding":"Revision assignment forbids changing conclusion and predetermines no substantive impact"},
+    {"seq":3433,"kind":"report","ref_prefix":"dfd07fc519c0","finding":"Only assertion remains with inference/non-exhaustivity qualification"}
+  ],
+  "semantic_judgments": {
+    "real_0_original":"Retains unsupported exclusive-path assertion as shared conclusion",
+    "real_1_original":"Speculative reconciliation equates checkpoint waiting for readers with explanation of readers themselves being held up, later prescribes this as citation discipline",
+    "neutral_both":"Reduced output but retains exclusive-path claim and/or unsupported writer-self-block implication",
+    "partial_correction":"Mixed outcomes cannot identify effect of a complete correction; one answer combines only-path assertion with non-exhaustivity disclaimer",
+    "direct_0":"FULL/RESTART/TRUNCATE grouped as choices for forcing reset despite different guarantees",
+    "direct_1":"General nontruncation/journal_size_limit summary does not preserve TRUNCATE successful-return exception",
+    "full_product_quality_accepted":false,
+    "reviewer":"Assistant independent of Epivra, not external human certification"
+  },
+  "decision": {
+    "root_mechanisms_located":["Hard role capability/creation boundaries","Assignment-induced output amplification","Unsupported inference propagation and evidence-status inflation","Revision that changes qualification but preserves unsupported claim"],
+    "not_fully_identified":["Relative effect of attention, context size and shared conclusion bias on long review","Global causal contribution of each role boundary","Stable full-product benefit of a continuous-owner architecture"],
+    "production_refactor_implemented":false,
+    "one_off_workflow_and_request_removed_in_archive_commit":true,
+    "failed_tools_restored":false,
+    "further_paid_jobs_launched":false,
+    "merged_or_released":false
+  },
+  "limitations":["One or two observations per arm, nonrandom alternating/reversed schedule and different cache states","Direct-source arm changes several factors and omits product loop","Partial corrected-upstream arm leaves conflicting original prose","Focused review has evaluator-selected targets","No new full-product latency or semantic acceptance result"],
+  "evidence_location":"Full raw public ZIPs, per-trial audit, historical records, reproduction scripts and source proof are in the downloadable evidence bundle; this Git file is a permanent index, not the full private database"
+}
