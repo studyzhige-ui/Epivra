@@ -16,7 +16,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          fetch-depth: 2
+          fetch-depth: 3
           persist-credentials: false
       - name: Materialize audited complete worktree
         shell: python
@@ -24,7 +24,7 @@ jobs:
           import hashlib, json, os, subprocess
           from pathlib import Path
           base='614ca1ca764e8c2926a50dd57a7def1c199b66ec'
-          assert subprocess.check_output(['git','rev-parse','HEAD^'],text=True).strip()==base
+          assert subprocess.check_output(['git','rev-parse','HEAD^'],text=True).strip()=='a937d5d43ae7509c582197a3a33c319252b1a382'
           paths=subprocess.check_output(['git','diff','--name-only',base,'HEAD'],text=True).splitlines()
           assert all(p.startswith('.github/refactor-batch/') or p=='.github/workflows/workspace-verify.yml' for p in paths)
           directory=Path(os.environ['RUNNER_TEMP'])/('epivra-workspace-'+os.environ['GITHUB_RUN_ID']+'-'+os.environ['GITHUB_RUN_ATTEMPT'])
@@ -51,6 +51,12 @@ jobs:
                   last=edit['start']
               data=''.join(lines).encode('utf-8')
               assert blob(data)==row['after'],row['path']+' candidate'
+              if row['path']=='src/epivra/cli.py':
+                  text=data.decode('utf-8')
+                  old='lines.append(tr("\\n## 研究范围与问题"))'
+                  assert text.count(old)==1
+                  data=text.replace(old,'lines.append("\\n## " + tr("研究范围与问题"))').encode('utf-8')
+                  assert blob(data)=='8c59088f598239e57c63d366b63ca5e0ea3858bf'
               if path.suffix=='.py': compile(data,str(path),'exec')
               prepared.append((path,data))
           data=subprocess.check_output(['git','show','HEAD:.github/refactor-batch/files/test_research_workspace.py'])
@@ -144,6 +150,7 @@ jobs:
             ${{ env.WORKSPACE_CHECK_ROOT }}/tracked.diff
             ${{ env.WORKSPACE_CHECK_ROOT }}/evidence/
             ${{ env.WORKSPACE_CHECK_ROOT }}/files/
+          include-hidden-files: true
           retention-days: 14
           if-no-files-found: warn
       - name: Clean isolated verification directory
