@@ -39,11 +39,11 @@ const coverageLabels = localized({
   mcp_output_not_reviewed: "外部工具资料 · 尚未核查",
 });
 const roles = localized({
-  lead: "研究负责人",
+  lead: "研究主体",
   investigator: "调查",
-  synthesizer: "综合",
+  synthesizer: "冲突核实",
   writer: "写作",
-  reviewer: "核查",
+  reviewer: "编辑核查",
 });
 const fragment = new URLSearchParams(location.hash.slice(1));
 if (fragment.has("token")) {
@@ -498,6 +498,18 @@ async function loadProgress() {
     $("work-list").dataset.signature = signature;
     $("work-list").replaceChildren();
     const states = {delivered:t("已交付"), blocked:t("需要处理"), clarification:t("等待负责人澄清"), waiting:t("等待依赖成果"), pending:t("已安排，尚未交付")};
+    if (result.research) {
+      const panel = node("section", undefined, "work-card card"), research = result.research;
+      panel.append(node("strong", t("研究依据与文稿")));
+      panel.append(node("p", t("当前记录：{0} 项研究判断，{1} 项分歧核实。", research.findings.length, research.conflicts.length), "muted"));
+      const basisText = !research.basis ? t("仍在形成写作依据")
+        : research.basis.stale ? t("依据已变化，需要重新评估写作准备")
+        : t("研究主体已记录写作准备判断；这不是自动正确性认证");
+      panel.append(node("p", basisText));
+      if (result.manuscript) panel.append(node("small", result.manuscript.state === "published"
+        ? t("当前文稿已交付") : t("当前稿件持续编辑中，尚未交付"), "muted"));
+      $("work-list").append(panel);
+    }
     if (!result.work.length) $("work-list").append(node("p", t("尚未分配调查工作。"), "muted"));
     for (const w of result.work) {
       const row = node("details", undefined, "work-card card"), summary = node("summary");
@@ -521,6 +533,8 @@ async function loadProgress() {
             const section = node("section");
             markdown(section, entry.text);
             if (entry.quote) section.append(node("blockquote", entry.quote));
+            for (const condition of entry.conditions || []) section.append(node("p", t("成立条件：{0}", condition), "muted"));
+            for (const limit of entry.limits || []) section.append(node("p", t("资料限制：{0}", limit), "muted"));
             if (typeof entry.accepted === "boolean") section.prepend(node("strong", entry.accepted ? t("该版本核查通过") : t("该版本需要修订")));
             if (entry.report) section.append(node("small", t("对应报告：{0}", entry.report), "muted"));
             for (const issue of entry.defects || []) section.append(node("p", issue, "alert"));
@@ -797,7 +811,7 @@ $("approve").onclick = () => {
 function renderPlanBody(target, plan) {
   markdown(target, plan.body.text);
   if (plan.body.brief) {
-    target.append(node("h3", t("研究范围与前提")));
+    target.append(node("h3", t("研究范围与问题")));
     const names = {
       subject: t("研究对象"),
       given_context: t("已知背景"),

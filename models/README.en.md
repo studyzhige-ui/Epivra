@@ -2,7 +2,7 @@
 
 **English** · [简体中文](README.md)
 
-`docling/` holds Docling layout, table, and RapidOCR models. Epivra discovers this directory under the research root automatically; you may also configure another path. Language models are accessed through provider APIs and do not need local downloads. The old project's BGE embedding and reranking models are not used by the current implementation.
+`docling/` holds Docling layout, table, and RapidOCR models. Epivra discovers this directory under the research root automatically; you may also configure another path. Language models are accessed through provider APIs and do not need local downloads.
 
 The local snapshot is approximately 733 MB and is excluded from Git. `docling-manifest.json` records SHA-256 hashes and sizes for verification. Keep model weights and their configuration files together. Application icons live in `src/epivra/web/` and are installed with the Python package.
 

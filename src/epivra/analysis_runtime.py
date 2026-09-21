@@ -17,10 +17,11 @@ class AnalysisRuntime:
         self.sandbox = sandbox or DockerSandbox()
 
     async def run(self, study, work, epoch, step, index, args):
+        self.store.require_work(study, work.ref, epoch)
         config = (
             self.store.get(study, work.body["direction"]).body["policy"].get("analysis")
         )
-        if not config or work.body["role"] == "lead":
+        if not config or not self.store.control(study).approved:
             raise NotAllowed("analysis is not enabled for this work")
         inputs = {item["name"]: item["ref"] for item in args["inputs"]}
         if len(inputs) != len(args["inputs"]):

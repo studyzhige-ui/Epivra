@@ -270,7 +270,7 @@ class PublicTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIn(
                     "read_writing_guide", service.harness._request("s", writer)["tools"]
                 )
-                self.assertNotIn("read_writing_guide", req["tools"])
+                self.assertIn("read_writing_guide", req["tools"])
             finally:
                 await service.close()
                 for client in clients:

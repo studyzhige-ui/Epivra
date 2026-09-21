@@ -34,7 +34,7 @@ After installation, start from the project directory without reinstalling or act
 
 | Part | Meaning |
 |---|---|
-| `.\.venv\Scripts\epivra.exe` | Run Epivra from this project's virtual environment. The old `deep-research.exe` command is retired. |
+| `.\.venv\Scripts\epivra.exe` | Run Epivra from this project's virtual environment. |
 | `--lang en` | Select English; use `--lang zh-CN` for Simplified Chinese. When omitted, `EPIVRA_LANG` applies, falling back to Simplified Chinese. |
 | `web` | Start the Web workbench and open the browser. Without this subcommand, Epivra opens the interactive CLI. |
 | `--port 0` | Let the system choose an available port and print the actual URL. Omit it to use port `8765`, or specify a port such as `--port 8080`. |
@@ -67,7 +67,11 @@ Keys are stored locally in `.env`; environment variables take precedence. Defaul
 4. Generate and read the initial strategy, then approve its scope and approach.
 5. Use **My research** to view progress and results. Research proceeds autonomously; genuine blockers such as quota or credential problems are reported.
 
-Strategy generation also calls the model. Use explicit pause and direction controls to change a task. When a revised strategy needs approval, review the current version. Do not edit the database or intermediate files to control research.
+Generating the initial route calls the model. The route describes the question, material scope, methods, and deliverables without prescribing an answer. Approval is required once; the research owner then works within the approved permissions. Adjusting direction does not require another approval. Pause and wait for active execution to settle before adding materials or reloading credentials. Do not edit the database or intermediate files to control research.
+
+The owner can investigate original sources, record findings and conflicts, prepare a writing basis, and revise the manuscript directly. It may delegate focused investigation, synthesis, or writing tasks when useful; roles are not a mandatory pipeline. External MCP capabilities are used through authorized assistants.
+
+Drafts are saved and revised continuously but are not published reports. An independent reviewer must accept the exact current manuscript before publication. Defects return to revision or further investigation, and changed manuscripts require another review. Reports have no default word limit. Local-material mode disables built-in web channels; selected external MCP services may still access the network.
 
 
 ### Citations and repeated failures
@@ -83,7 +87,7 @@ Normal research has no total call, token, cost, or elapsed-time cap. Explicit pr
 The base installation handles text, CSV/TSV, text-layer PDFs, and XLSX. Spreadsheet formulas are read but not recalculated. For scanned PDFs, image OCR, DOCX/PPTX, and other complex materials:
 
 ```powershell
-python -m pip install -e ".[documents]"
+python -m pip install ".[documents]"
 ```
 
 Local models are automatically discovered in `models/docling/`. After a fresh clone, follow the [model guide](../models/README.en.md) to download them. Missing dependencies, incomplete models, and parser failures are reported. OCR does not interpret charts; important figures and complex layouts still need review.
@@ -101,11 +105,11 @@ Enable analysis in settings. Containers have no network access and receive only 
 ## 5. Bidirectional MCP
 
 ```powershell
-python -m pip install -e ".[mcp]"
+python -m pip install ".[mcp]"
 epivra start
 ```
 
-Other clients can use Epivra through `epivra-mcp --lang en --root <absolute-project-path>`. Start the research host independently first; it must not depend on the MCP client's process lifetime. Strategy approval through MCP is disabled by default.
+Other clients can use Epivra through `epivra-mcp --lang en --root <absolute-project-path>`. Start the research host independently first; it must not depend on the MCP client's process lifetime. Strategy approval through MCP is disabled by default; add `--allow-approval` when explicitly authorizing the connected client to approve routes.
 
 Example client configuration; replace paths with your installation:
 
@@ -136,7 +140,11 @@ To connect Epivra to an external MCP server, define a named connection in local 
 
 Public services may omit `token_env`. Keep tokens in the environment or `.env`. Run `epivra mcp-discover materials`, then explicitly allow the required tools and exact resource URIs. A tool entry looks like `"lookup": {"roles": ["investigator", "reviewer"], "write": false}`. Only connect trusted services; `write: true` is advance authorization for external writes.
 
-To expose Epivra through local HTTP MCP, set a separate `EPIVRA_MCP_TOKEN` environment variable and run `epivra-mcp --lang en --transport http`. Clients use Bearer authentication. The service listens on loopback only; this product does not provide public multi-tenant hosting.
+MCP creates a paused research draft. Upload materials, resume to generate a route, and approve it through Web/CLI or an authorized MCP client. Control requests require the current control version and a unique command ID; approval also requires the exact route reference.
+
+External connections are fixed when a study is created. Editing the configuration does not add permissions to existing studies. Tool roles may be `investigator`, `synthesizer`, `writer`, or `reviewer`; `lead` is not accepted.
+
+To expose Epivra through local HTTP MCP, set a separate `EPIVRA_MCP_TOKEN` environment variable and run `epivra-mcp --lang en --transport http`. Clients use Bearer authentication. This HTTP token is read from the process environment, not `.env`. The service listens on loopback only; this product does not provide public multi-tenant hosting.
 
 ## 6. Files, backups, and upgrades
 
@@ -151,7 +159,7 @@ To expose Epivra through local HTTP MCP, set a separate `EPIVRA_MCP_TOKEN` envir
 
 Before a backup, pause tasks and wait for in-flight work to finish. Run `epivra shutdown`, then copy the entire `.epivra/` directory. Epivra protects this directory for the local owner; it does not change permissions on user source folders. Back up credentials and MCP configuration separately and securely if needed. Do not copy only the database and omit material files. Stop the Web server separately in its terminal.
 
-Epivra does not automatically import the old project's `.deep-research-agent/` data. Keep the old directory and use its previous installation to read historical research. Installation and research roots may differ; specify `--root` to avoid accidentally creating separate workspaces by launching from different directories.
+Installation and research roots may differ. Specify `--root` to avoid creating separate workspaces by launching from different directories. Before upgrading, back up the complete workspace and retain a rollback version of the application. Studies with incompatible runtime contracts remain available for inspection and export, but cannot resume implicitly; create a new study with the required materials to continue investigation. Data directories are not migrated automatically. Completed studies can be imported explicitly with the `import_study` command listed by `epivra --help`.
 
 ## 7. Troubleshooting and current limits
 
@@ -169,7 +177,7 @@ Provider caching is an optimization, not a recovery dependency. Usage reports sh
 - **Analysis will not start:** check Docker and the `epivra-analysis:1` image.
 - **Research is blocked:** follow the task's message, fix the cause, and resume instead of creating a duplicate task.
 
-Features are integrated, but live provider verification and cross-topic/long-document evaluations still have coverage gaps. Research conclusions are not guaranteed correct; review important sources, limitations, and uncertainty. Engineering tests do not replace research quality evaluation.
+Research conclusions are not guaranteed correct; review important sources, limitations, and uncertainty. Engineering tests do not replace research quality evaluation.
 
 ## Included public sources and research strategy
 

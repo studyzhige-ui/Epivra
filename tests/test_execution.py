@@ -5,6 +5,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from research_fixture import save_report
+
 from epivra.domain import (
     Call,
     Conflict,
@@ -146,12 +148,16 @@ class StorageTests(Fixture):
             self.store.put("other", "note", {}, (self.work.ref,))
 
     def test_plan_version_is_required(self):
-        old = self.c
-        plan = self.store.put("s", "plan", {"text": "old"}, (old.direction,))
-        revised = self.command("steer", {"request": "new"})
+        # Initial route approval must name a current plan. Steering an already
+        # approved study retains authority and no longer allows reapproval.
+        old = self.store.create("pending", "Original question", {})
+        plan = self.store.put("pending", "plan", {"text": "old"}, (old.direction,))
+        revised = self.store.command(
+            "pending", "steer", old.ref, "steer", {"request": "new"}
+        )
         with self.assertRaises(Conflict):
             self.store.command(
-                "s", "wrong-plan", revised.ref, "approve", {"plan": plan.ref}
+                "pending", "wrong-plan", revised.ref, "approve", {"plan": plan.ref}
             )
 
     def test_publication_needs_bound_independent_review(self):
@@ -177,16 +183,7 @@ class StorageTests(Fixture):
             "s", self.c.ref, "writer", "Write", (synthesis.ref,), self.work.ref
         )
         source = self.store.put("s", "source", {"text": "Evidence"})
-        report = self.store.put(
-            "s",
-            "report",
-            {
-                "text": "Result",
-                "producer": writer.ref,
-                "evidence": [source.ref],
-            },
-            (self.c.direction, source.ref, writer.ref),
-        )
+        report = save_report(self.store, writer, "Result", [source.ref])
         review_work = self.store.work(
             "s",
             self.c.ref,
@@ -206,10 +203,21 @@ class StorageTests(Fixture):
         )
         with self.assertRaisesRegex(ValueError, "has not reached"):
             self.store.publish("s", self.work.ref, self.c.epoch, report.ref, review.ref)
-        request = {"context": [{"ref": report.ref, "kind": "report", "body": report.body}]}
+        request = {
+            "context": [{"ref": report.ref, "kind": "report", "body": report.body}]
+        }
         step = self.store.put("s", "step", {"request": request}, (review_work.ref,))
-        self.store.admit("s", review_work.ref, self.c.epoch, "review-input", request, request_step=step.ref)
-        self.store.settle("review-input", {"complete": True, "text": "checked", "calls": []})
+        self.store.admit(
+            "s",
+            review_work.ref,
+            self.c.epoch,
+            "review-input",
+            request,
+            request_step=step.ref,
+        )
+        self.store.settle(
+            "review-input", {"complete": True, "text": "checked", "calls": []}
+        )
         published = self.store.publish(
             "s", self.work.ref, self.c.epoch, report.ref, review.ref
         )
@@ -470,7 +478,7 @@ class HarnessTests(Fixture, unittest.IsolatedAsyncioTestCase):
         model = FakeModel([Reply("", ())])
         h = Harness(self.store, model)
         original = self.store.settle
-        self.store.settle = lambda *a: (_ for _ in ()).throw(OSError("disk"))
+        self.store.settle = lambda *a, **kw: (_ for _ in ()).throw(OSError("disk"))
         with self.assertRaises(OSError):
             await h.step("s", self.work.ref)
         self.store.settle = original

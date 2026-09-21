@@ -70,7 +70,7 @@ class AnalysisTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(self.source.ref, output.parents)
         self.assertIn(job.ref, output.parents)
         self.assertEqual(b"mean\n2\n", self.harness.workspace.original("s", output.ref))
-        replay = await self.harness._analysis(
+        replay = await self.harness.analysis.run(
             "s", self.work, self.c.epoch, job.body["step"], 0, self.args
         )
         self.assertEqual(result.body, replay)
@@ -100,6 +100,15 @@ class AnalysisTests(unittest.IsolatedAsyncioTestCase):
         observation = self.store.list("s", "observation")[-1].body["result"]
         self.assertEqual("mean\n2\n", observation["text"])
         self.assertEqual(job.ref, observation["analysis"])
+
+    async def test_owner_analysis_uses_the_same_authorization_and_lineage(self):
+        self.work = self.lead
+        result = await self.execute()
+        self.assertEqual("succeeded", result.body["status"])
+        self.sandbox.run.assert_awaited_once()
+        job = self.store.get("s", result.body["job"])
+        self.assertIn(self.lead.ref, job.parents)
+        self.assertFalse(self.harness.finished("s", self.lead.ref))
 
     async def test_pause_during_analysis_records_cancel_and_reaps(self):
         async def paused(job, folder, config, fresh, guard):
@@ -131,12 +140,12 @@ class AnalysisTests(unittest.IsolatedAsyncioTestCase):
         other = Workspace(self.store).upload("other", "private.txt", b"private")
         with self.assertRaises((ValueError, KeyError)):
             self.harness.workspace.analysis_inputs("s", {"x.txt": other.ref}, 100)
-        self.assertNotIn(
-            "run_analysis", self.harness._schema("lead", {"analysis": DEFAULTS})
+        self.assertIn(
+            "run_analysis", self.harness._schema("lead", {"analysis": DEFAULTS, "_approved": True})
         )
         self.assertNotIn("run_analysis", self.harness._schema("investigator", {}))
         self.sandbox.run.return_value["files"][0]["data"] = "invalid-base64"
-        result = await self.harness._analysis(
+        result = await self.harness.analysis.run(
             "s", self.work, self.c.epoch, self.source.ref, 0, self.args
         )
         self.assertEqual("failed", result["status"])

@@ -1,0 +1,53 @@
+name: Self-hosted fast validation
+on:
+  push:
+    branches: [main, improve/epivra-optimization]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: self-hosted-fast-${{ github.repository }}-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  validate:
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/improve/epivra-optimization'
+    runs-on: [self-hosted, Windows, X64, epivra]
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Allocate isolated development check paths
+        shell: python
+        run: |
+          import os
+          from pathlib import Path
+          base = Path(os.environ['RUNNER_TEMP']) / ('epivra-dev-' + os.environ['GITHUB_RUN_ID'] + '-' + os.environ['GITHUB_RUN_ATTEMPT'])
+          base.mkdir(exist_ok=False)
+          with open(os.environ['GITHUB_ENV'], 'a', encoding='utf-8') as output:
+              output.write('DEV_CHECK_ROOT=' + str(base) + '\n')
+              output.write('DEV_CHECK_PYTHON=' + str(base / 'env/Scripts/python.exe') + '\n')
+      - name: Install without provider credentials
+        shell: python
+        run: |
+          import os, subprocess, venv
+          from pathlib import Path
+          base = Path(os.environ['DEV_CHECK_ROOT'])
+          venv.EnvBuilder(with_pip=True).create(base / 'env')
+          with (base / 'install.log').open('wb') as log:
+              subprocess.run([os.environ['DEV_CHECK_PYTHON'], '-m', 'pip', 'install', '.[mcp]', 'ruff', 'mypy', 'build'], stdout=log, stderr=subprocess.STDOUT, check=True, timeout=480)
+      - name: Check and retain per-gate results
+        shell: python
+        run: |
+          import os, subprocess
+          from pathlib import Path
+          p = os.environ['DEV_CHECK_PYTHON']
+          evidence = str(Path(os.environ['DEV_CHECK_ROOT']) / 'evidence')
+          subprocess.run([p, 'tools/dev_check.py', 'run', '--profile', 'full', '--output', evidence], check=True)
+          subprocess.run([p, 'tools/dev_check.py', 'inspect', '--output', evidence], check=True)
+      - name: Remove only this validation environment
+        if: always() && env.DEV_CHECK_ROOT != ''
+        shell: python
+        run: |
+          import os, shutil
+          shutil.rmtree(os.environ['DEV_CHECK_ROOT'], ignore_errors=True)

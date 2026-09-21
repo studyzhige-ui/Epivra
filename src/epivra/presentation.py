@@ -2,12 +2,16 @@
 
 from .citations import occurrences
 from .domain import Conflict
+from .research import ResearchLedger
+from .writing import WritingWorkspace
 
 
 def source_info(source):
     return {
         "ref": source.ref,
-        **{key: source.body.get(key) for key in ("origin", "name", "title", "coverage")},
+        **{
+            key: source.body.get(key) for key in ("origin", "name", "title", "coverage")
+        },
     }
 
 
@@ -98,7 +102,14 @@ def progress(store, study, errors=None):
     for wait in store.list(study, "work_wait"):
         waits[wait.body.get("producer")] = wait
     revisions = {}
-    for kind in ("note", "clarification_answer"):
+    for kind in (
+        "note",
+        "clarification_answer",
+        "finding",
+        "research_conflict",
+        "writing_basis",
+        "draft_saved",
+    ):
         for item in store.list(study, kind):
             revisions.setdefault(item.body.get("producer"), {})[kind] = item.ref
     items = []
@@ -131,7 +142,31 @@ def progress(store, study, errors=None):
                 "error": error,
             }
         )
-    return {"direction": direction, "work": items}
+    research = ResearchLedger(store).snapshot(study)
+    draft = WritingWorkspace(store).current(study, direction)
+    manuscript = (
+        None
+        if draft is None
+        else {
+            "ref": draft.ref,
+            "basis": draft.body["basis"],
+            "state": "published"
+            if any(
+                p.body.get("report") == draft.ref
+                for p in store.list(study, "publication")
+            )
+            else "draft",
+            "basis_stale": research["basis"] is None
+            or research["basis"]["stale"]
+            or research["basis"]["ref"] != draft.body["basis"],
+        }
+    )
+    return {
+        "direction": direction,
+        "work": items,
+        "research": research,
+        "manuscript": manuscript,
+    }
 
 
 def work_detail(store, study, ref):
@@ -139,19 +174,36 @@ def work_detail(store, study, ref):
     if work.kind != "work" or work.body["direction"] != store.control(study).direction:
         raise Conflict("work is no longer current")
     entries = []
-    for kind in ("note", "clarification_answer", "work_result"):
+    for kind in (
+        "note",
+        "clarification_answer",
+        "finding",
+        "research_conflict",
+        "writing_basis",
+        "draft_saved",
+        "work_result",
+    ):
         for item in store.list(study, kind):
             if item.body.get("producer") != work.ref:
                 continue
             body = item.body
-            if kind == "work_result" and body.get("ref"):
+            if kind in {"work_result", "draft_saved"} and body.get("ref"):
                 target = store.get(study, body["ref"])
                 body = target.body
                 kind_label = target.kind
             else:
                 kind_label = kind
             # Public tool artifacts only; never fallback to dumping unknown bodies.
-            text = body.get("text") or body.get("claim") or body.get("summary") or ""
+            text = (
+                body.get("text")
+                or body.get("statement")
+                or body.get("explanation")
+                or body.get("question")
+                or body.get("rationale")
+                or body.get("claim")
+                or body.get("summary")
+                or ""
+            )
             if kind_label == "review":
                 text = (
                     body.get("reason", "")
@@ -164,6 +216,11 @@ def work_detail(store, study, ref):
                     "kind": kind_label,
                     "text": text,
                     "quote": body.get("quote"),
+                    "status": body.get("status", body.get("disposition")),
+                    "support": body.get("support", body.get("evidence", [])),
+                    "conditions": body.get("conditions", []),
+                    "limits": body.get("limits", body.get("limitations", [])),
+                    "basis": body.get("basis"),
                     "source": body.get("source"),
                     "accepted": body.get("accepted"),
                     "report": body.get("report"),

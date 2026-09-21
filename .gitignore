@@ -37,3 +37,8 @@ analysis-settings.json
 /AGENTS.md
 /CLAUDE.md
 /PROJECT_CHARTER.md
+
+
+/evals/
+/.github/DEVELOPMENT_RECOVERY.md
+/.github/development-state.json

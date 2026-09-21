@@ -14,11 +14,11 @@ from typing import Any, Protocol
 from .analysis_runtime import AnalysisRuntime
 from .calculation import calculate
 from .citations import render as render_citations
-from .context import assemble, fit_provider, page, source_ranges
+from .context import assemble, fit_provider, fit_read_result, page, source_ranges
 from .domain import (
+    INLINE_TOOL_RESULT_CHARS,
     Artifact,
     Call,
-    Conflict,
     NotAllowed,
     RecoveryExhausted,
     RepeatedFailure,
@@ -27,11 +27,13 @@ from .domain import (
     encode,
     identity,
 )
-from .prompts import ROLES, TOOLS, WRITING_GUIDES
-from .review import text_metrics, units
+from .prompts import PROMPT_VERSION, ROLES, ROUTE_PROMPT, TOOLS, WRITING_GUIDES
+from .research import DISPOSITIONS, RESEARCH_KINDS, STATUSES, ResearchLedger
+from .review import report_metrics, text_metrics, units
 from .scheduling import Scheduler
 from .storage import Store
 from .workspace import Workspace
+from .writing import WritingWorkspace
 
 
 class Model(Protocol):
@@ -171,7 +173,7 @@ BUILTINS = {
                         "enum": ["investigator", "synthesizer", "writer", "reviewer"],
                     },
                     "task": STRING,
-                    "refs": STRINGS,
+                    "refs": REFERENCES,
                     "review_mode": {"type": "string", "enum": ["final", "check"]},
                     "shared_context": {
                         "type": "string",
@@ -194,33 +196,6 @@ BUILTINS = {
                     "text": STRING,
                     "refs": STRINGS,
                     "supersedes": REFERENCES,
-                    "findings": {
-                        "type": "array",
-                        "items": {
-                            **object_schema(
-                                {
-                                    "statement": STRING,
-                                    "status": {
-                                        "type": "string",
-                                        "enum": [
-                                            "source_statement",
-                                            "observation",
-                                            "inference",
-                                            "assumption",
-                                            "prediction",
-                                        ],
-                                    },
-                                    "support": {
-                                        **REFERENCES,
-                                        "description": "Supporting source/note/work_result/report artifact refs only. A report ref supports observations about that report, not independent verification of its claims. Explain the evidence in statement; this field is not evidence prose.",
-                                    },
-                                    "conditions": STRINGS,
-                                    "not_supported": STRINGS,
-                                }
-                            ),
-                            "required": ["statement", "status", "support"],
-                        },
-                    },
                 }
             ),
             "required": ["text", "refs"],
@@ -274,7 +249,7 @@ BUILTINS = {
                     {
                         "subject": {
                             **STRING,
-                            "description": "用户指定的研究对象或主题；与关于它的待检验经验主张分开。",
+                            "description": "用户指定的研究对象或主题；不填写研究假设或预定结论。",
                         },
                         "given_context": STRINGS,
                         "questions": {**STRINGS, "minItems": 1},
@@ -301,7 +276,16 @@ BUILTINS = {
         "writer",
         {
             **object_schema(
-                {"text": STRING, "evidence": STRINGS, "handoff": {"type": "string"}}
+                {
+                    "text": STRING,
+                    "evidence": STRINGS,
+                    "handoff": {"type": "string"},
+                    "base": {
+                        **STRING,
+                        "pattern": "^[0-9a-f]{64}$",
+                        "description": "Exact current report ref for a revision; omit only for a first draft.",
+                    },
+                }
             ),
             "required": ["text", "evidence"],
         },
@@ -367,6 +351,133 @@ BUILTINS = {
         ),
     ),
 }
+
+
+# A shared workbench, not new workflow stages. Identity checks belong to the
+# host; evidence interpretation and readiness belong to the research Agent.
+BUILTINS.update(
+    {
+        "record_finding": (
+            "research",
+            {
+                **object_schema(
+                    {
+                        "statement": STRING,
+                        "status": {**STRING, "enum": list(STATUSES)},
+                        "support": {**REFERENCES, "minItems": 1},
+                        "conditions": STRINGS,
+                        "limits": STRINGS,
+                        "replaces": STRING,
+                        "reason": {"type": "string"},
+                    }
+                ),
+                "required": ["statement", "status", "support"],
+            },
+        ),
+        "record_conflict": (
+            "research",
+            {
+                **object_schema(
+                    {
+                        "question": STRING,
+                        "findings": {**REFERENCES, "minItems": 1},
+                        "disposition": {**STRING, "enum": list(DISPOSITIONS)},
+                        "explanation": {"type": "string"},
+                        "evidence": REFERENCES,
+                        "replaces": STRING,
+                    }
+                ),
+                "required": ["question", "findings"],
+            },
+        ),
+        "prepare_writing": (
+            "research",
+            {
+                **object_schema(
+                    {
+                        "findings": REFERENCES,
+                        "coverage": {
+                            "type": "array",
+                            "minItems": 1,
+                            "items": {
+                                **object_schema(
+                                    {
+                                        "question": {"type": "integer", "minimum": 0},
+                                        "findings": REFERENCES,
+                                        "limitation": {"type": "string"},
+                                    }
+                                ),
+                                "required": ["question", "findings"],
+                            },
+                        },
+                        "rationale": STRING,
+                        "limitations": STRINGS,
+                        "replaces": STRING,
+                    }
+                ),
+                "required": ["findings", "coverage", "rationale"],
+            },
+        ),
+        "read_draft": (
+            "research",
+            {
+                **object_schema(
+                    {
+                        "ref": STRING,
+                        "offset": {"type": "integer", "minimum": 0},
+                        "limit": {"type": "integer", "minimum": 1},
+                    }
+                ),
+                "required": [],
+            },
+        ),
+        "patch_draft": (
+            "research",
+            {
+                **object_schema(
+                    {
+                        "base": STRING,
+                        "basis": STRING,
+                        "evidence": REFERENCES,
+                        "edits": {
+                            "type": "array",
+                            "minItems": 1,
+                            "items": object_schema(
+                                {
+                                    "old": STRING,
+                                    "new": {"type": "string"},
+                                }
+                            ),
+                        },
+                        "handoff": {"type": "string"},
+                    }
+                ),
+                "required": ["base"],
+            },
+        ),
+    }
+)
+BUILTINS["patch_draft"][1]["properties"]["basis"] = {
+    **STRING,
+    "description": "New valid basis; required and different for basis-only updates.",
+}
+BUILTINS["patch_draft"][1]["properties"]["edits"]["description"] = (
+    "Simultaneous edits against base; omit only for basis-only update."
+)
+BUILTINS["record_finding"][1]["properties"]["support"]["description"] = (
+    "Only source or exact note refs; not summaries or control records."
+)
+BUILTINS["draft_report"][1]["properties"]["basis"] = STRING
+BUILTINS["find_artifacts"][1]["properties"]["kind"]["enum"].extend(
+    sorted(RESEARCH_KINDS)
+)
+BUILTINS["read_context"][1]["properties"]["section"]["enum"].extend(
+    [
+        "research_questions",
+        "research_findings",
+        "research_conflicts",
+    ]
+)
 
 
 for _name in ("read_source", "read_artifact_range", "read_report"):
@@ -438,6 +549,9 @@ def validate(value: Any, schema: dict[str, Any], path: str = "arguments") -> Non
         raise ValueError("expected one of: " + ", ".join(schema["enum"]))
 
 
+PRIVATE_ARTIFACT_KINDS = frozenset({"step", "step_done", "control", "material_bytes"})
+
+
 class Harness:
     def _validate_call(self, call, schema):
         bounded_json(call.arguments)
@@ -462,6 +576,8 @@ class Harness:
         self.scheduler = scheduler or Scheduler(history=store.admissions())
         self.tools = tools or {}
         self.workspace = Workspace(store)
+        self.research = ResearchLedger(store)
+        self.writing = WritingWorkspace(store)
         self.analysis = AnalysisRuntime(store, self.scheduler, sandbox)
         if set(self.tools) & set(BUILTINS):
             raise ValueError("external tools may not replace runtime tools")
@@ -471,14 +587,27 @@ class Harness:
         self._locks: dict[str, asyncio.Lock] = {}
 
     def _schema(self, role: str, policy: dict[str, Any]) -> dict[str, dict[str, Any]]:
-        result = {
+        # "lead" is the persisted name of the continuous research owner, not a
+        # coordinator that must outsource reading and authorship. External tools
+        # still require their explicit role grant AND the study's authorization.
+        research = role in {"lead", "investigator", "synthesizer", "writer"}
+        shared_research = {
+            "record_evidence",
+            "draft_report",
+            "read_writing_guide",
+            "measure_text",
+            "save_note",
+            "discover_local",
+            "snapshot_local",
+        }
+        result: dict[str, dict[str, Any]] = {
             name: {"description": TOOLS.get(name, name), "parameters": schema}
             for name, (allowed, schema) in BUILTINS.items()
             if allowed in (role, "all")
-            or (role == "lead" and name == "discover_local")
-            or (role == "synthesizer" and name == "finish_work")
+            or (research and (name in shared_research or allowed == "research"))
+            or (role in {"synthesizer", "writer"} and name == "finish_work")
             or (
-                role in {"investigator", "reviewer", "synthesizer", "writer"}
+                role == "reviewer"
                 and name in {"save_note", "discover_local", "snapshot_local"}
             )
         }
@@ -488,42 +617,35 @@ class Harness:
                 "description": TOOLS["finish_work"],
                 "parameters": BUILTINS["finish_work"][1],
             }
-        if not policy.get("analysis") or role == "lead":
+        if not policy.get("analysis"):
             result.pop("run_analysis", None)
-        if role == "lead" and policy.get("_approved"):
-            result = {
-                k: v
-                for k, v in result.items()
-                if k
-                in {
-                    "read_context",
-                    "delegate_work",
-                    "answer_clarification",
-                    "wait_for_work",
-                    "save_memory",
-                    "save_note",
-                    "read_artifact",
-                    "read_artifact_range",
-                    "find_artifacts",
-                    "publish_report",
+        if role == "lead":
+            result.pop("request_clarification", None)  # No questions to the user.
+            if policy.get("_approved"):
+                result.pop("propose_plan", None)
+            else:
+                result = {
+                    k: v
+                    for k, v in result.items()
+                    if k
+                    in {
+                        "read_context",
+                        "propose_plan",
+                        "discover_local",
+                        "read_catalog",
+                        "find_artifacts",
+                        "read_artifact",
+                        "read_artifact_range",
+                        "save_memory",
+                    }
                 }
-            }
-        elif role == "lead":
-            result = {
-                k: v
-                for k, v in result.items()
-                if k
-                in {
-                    "read_context",
-                    "propose_plan",
-                    "discover_local",
-                    "read_catalog",
-                    "find_artifacts",
-                    "read_artifact",
-                    "read_artifact_range",
-                    "save_memory",
-                }
-            }
+        denied = set(PRIVATE_ARTIFACT_KINDS)
+        if not policy.get("_approved"):
+            denied.add("source")
+        for name in ("read_artifact", "read_artifact_range"):
+            result[name]["description"] += (
+                " Not readable with this tool: " + ", ".join(sorted(denied)) + "."
+            )
         for name, tool in self.tools.items():
             if (
                 policy.get("_approved")
@@ -536,11 +658,18 @@ class Harness:
                 }
         return result
 
+    def _read_denial(self, study: str, kind: str) -> str | None:
+        if kind == "source" and not self.store.control(study).approved:
+            return "source examination requires initial route approval"
+        if kind in PRIVATE_ARTIFACT_KINDS:
+            return "execution and provider-private records are not research materials"
+        return None
+
     def _review(self, study: str, work: Artifact):
         reports = [
-            self.store.get(study, ref)
+            item
             for ref in work.body["inputs"]
-            if self.store.get(study, ref).kind == "report"
+            if (item := self.store.get(study, ref)).kind == "report"
         ]
         if len(reports) != 1:
             raise ValueError("review requires one bound report")
@@ -599,6 +728,49 @@ class Harness:
                     continue
             raise
 
+    def _focused_research_refs(self, study: str, work: Artifact) -> set[str]:
+        """Follow explicit shared research dependencies, never private transcripts.
+
+        Only focused helpers use this projection. Global directories remain
+        explicitly readable and permissions are unchanged. Corrected versions
+        travel alongside assigned historical records, rather than stale prose
+        silently being treated as current evidence.
+        """
+        pending = list(self._handoff_inputs(study, work))
+        memory = self._steps(study, "memory", work.ref, limit=1)
+        if memory:
+            pending.extend(memory[-1].body.get("refs", []))
+        replacements = {
+            item.body["replaces"]: item.ref
+            for kind in ("finding", "research_conflict", "writing_basis")
+            for item in self.store.list(study, kind)
+            if item.body.get("replaces")
+            and item.body.get("direction") == work.body["direction"]
+        }
+        visited: set[str] = set()
+        while pending:
+            ref = pending.pop()
+            if ref in visited:
+                continue
+            item = self.store.get(study, ref)
+            visited.add(ref)
+            if ref in replacements:
+                pending.append(replacements[ref])
+            if item.kind not in {
+                "work_result", "finding", "research_conflict", "writing_basis", "note", "report"
+            }:
+                continue
+            for key in ("refs", "support", "sources", "findings", "evidence"):
+                values = item.body.get(key, [])
+                if isinstance(values, list):
+                    pending.extend(
+                        value for value in values
+                        if isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value)
+                    )
+            if item.kind == "report" and item.body.get("basis"):
+                pending.append(item.body["basis"])
+        return visited
+
     def _assemble_request(
         self,
         study: str,
@@ -615,15 +787,27 @@ class Harness:
         control = self.store.control(study)
         plan = self.store.get(study, control.plan) if control.plan else None
         anchors = self._steps(study, "evidence_anchor", work.ref, limit=1)
+        knowledge = self.research.snapshot(study)
+        focused = work.body["role"] in {"investigator", "synthesizer"}
+        related = self._focused_research_refs(study, work) if focused else set()
         mandatory = {
             "provider": self.model.identity,
-            "system": ROLES[work.body["role"]],
+            "system": (
+                ROUTE_PROMPT
+                if work.body["role"] == "lead" and not control.approved
+                else ROLES[work.body["role"]]
+            ),
+            "prompt_version": PROMPT_VERSION,
+            "phase": "research" if control.approved else "route_approval",
+            "context_scope": "assigned_research_dependencies" if focused else "current_writing_basis",
             "role": work.body["role"],
             "work_ref": work.ref,
             "direction_ref": direction.ref,
             "task": work.body["task"],
             "shared_context": work.body.get("shared_context", ""),
             "deliverable": work.body.get("deliverable", ""),
+            "draft": self._draft_head(study, work),
+            "writing_basis": knowledge["basis"],
             "current_date": direction.body["policy"].get("as_of_date")
             or datetime.now(timezone.utc).date().isoformat(),
             "direction": direction.body,
@@ -685,16 +869,46 @@ class Harness:
                 "inputs": self._relations(study, report),
             }
         candidates = self._steps(study, "observation", work.ref, limit=64)
+        # Readiness and canonical findings arrive as original artifacts. The
+        # editor sees the exact basis used by its bound report, not a new summary.
+        basis_ref = (
+            report.body.get("basis")
+            if work.body["role"] == "reviewer"
+            else knowledge["basis"]["ref"]
+            if knowledge["basis"]
+            else None
+        )
+        if basis_ref and not focused:
+            basis_item = self.store.get(study, basis_ref)
+            candidates.append(basis_item)
+            candidates.extend(
+                self.store.get(study, ref) for ref in basis_item.body["findings"]
+            )
+
         if work.body["role"] == "reviewer":
             candidates.append(report)
         candidates.extend(self._steps(study, "note", work.ref, limit=64))
         if plan is not None and direction.ref in plan.parents:
             candidates.append(plan)
+        if focused:
+            candidates.extend(
+                item for ref in related
+                if (item := self.store.get(study, ref)).kind
+                in {"finding", "research_conflict", "note", "work_result"}
+            )
         candidates.extend(
             self.store.get(study, ref)
             for ref in self._handoff_inputs(study, work)
             if self.store.get(study, ref).kind
-            in {"work_result", "plan", "note", "clarification_answer"}
+            in {
+                "work_result",
+                "plan",
+                "note",
+                "clarification_answer",
+                "finding",
+                "research_conflict",
+                "writing_basis",
+            }
             and not (
                 work.body["role"] == "reviewer"
                 and self.store.get(study, ref).kind == "work_result"
@@ -729,6 +943,11 @@ class Harness:
             key: mandatory.pop(key)
             for key in ("inputs", "catalogs", "delegated_work", "clarifications")
         }
+        directories.update(
+            research_questions=knowledge["questions"],
+            research_findings=knowledge["findings"],
+            research_conflicts=knowledge["conflicts"],
+        )
         if work.body["role"] == "reviewer":
             directories["review_inputs"] = mandatory["review_progress"].pop("inputs")
             directories["review_evidence"] = mandatory["review_progress"].pop(
@@ -769,6 +988,11 @@ class Harness:
             // len(directories),
         )
         for key, items in directories.items():
+            # Do not inject unrelated conclusions into a clean helper context.
+            # read_context(section=...) above still returns the complete global
+            # directory with its real cursor; no hidden retrieval restrictions.
+            if focused and key in {"research_findings", "research_conflicts"}:
+                continue
             first = (
                 page(items, 0, 20, allocation)
                 if allocation >= 256
@@ -867,6 +1091,7 @@ class Harness:
                         min(0.25, retry.body["not_before"] - time.time())
                     )
             if self.store.operation_status(study, key) is None:
+                queued_at = self.scheduler.clock()
                 tokens = (
                     request.get("wire", {}).get("estimated_input_tokens", 0)
                     + getattr(self.model, "max_tokens", 0)
@@ -886,6 +1111,7 @@ class Harness:
                         request,
                         request_step=request_step,
                         admission={
+                            "queued_at": queued_at,
                             "at": admitted,
                             "resource": resource,
                             "tokens": tokens,
@@ -895,14 +1121,17 @@ class Harness:
                         },
                     )
                     if raw is None:
+                        self.store.mark_invoked(key, self.scheduler.clock())
                         raw = (
                             await invoke_received(
-                                lambda value: self.store.settle(key, value)
+                                lambda value: self.store.settle(
+                                    key, value, settled_at=self.scheduler.clock()
+                                )
                             )
                             if invoke_received
                             else await invoke()
                         )
-                        self.store.settle(key, raw)
+                        self.store.settle(key, raw, settled_at=self.scheduler.clock())
             else:
                 raw = self.store.admit(
                     study, work, epoch, key, request, request_step=request_step
@@ -956,7 +1185,14 @@ class Harness:
             kind,
             work,
             producer=kind
-            in {"work_result", "note", "memory", "evidence_anchor", "work_wait"},
+            in {
+                "work_result",
+                "draft_saved",
+                "note",
+                "memory",
+                "evidence_anchor",
+                "work_wait",
+            },
             # Only step has one parent; multi-parent artifacts are sorted by ref.
             first_parent=kind == "step",
             limit=limit,
@@ -984,6 +1220,7 @@ class Harness:
             "catalog",
             "clarification",
             "clarification_answer",
+            *RESEARCH_KINDS,
         }
         return [
             {"ref": a.ref, "kind": a.kind, "producer": a.body.get("producer")}
@@ -993,6 +1230,18 @@ class Harness:
 
     def waiting(self, study: str, work: str) -> bool:
         return bool(self.store.clarifications(study, work=work, open_only=True))
+
+    def _draft_head(self, study: str, work: Artifact) -> dict | None:
+        draft = self.writing.current(study, work.body["direction"])
+        if draft is None:
+            return None
+        receipts = self.store.matching(study, "draft_saved", {"ref": draft.ref})
+        return {
+            "ref": draft.ref,
+            "receipt": receipts[-1].ref if receipts else None,
+            "basis": draft.body["basis"],
+            "state": "saved_not_finished",
+        }
 
     def finished(self, study: str, work: str) -> bool:
         return bool(self._steps(study, "work_result", work))
@@ -1119,7 +1368,7 @@ class Harness:
                             break
                         try:
                             self._validate_call(candidate, schema)
-                        except (ValueError, NotAllowed):
+                        except ValueError:
                             break
                         batch.append((j, candidate))
                     if len(batch) > 1:
@@ -1165,7 +1414,7 @@ class Harness:
                     if call.name not in schema:
                         raise NotAllowed("tool not available to this work")
                     self._validate_call(call, schema)
-                except (ValueError, NotAllowed) as exc:
+                except ValueError as exc:
                     invalid = True
                     result: Any = {"error": str(exc)}
                 else:
@@ -1194,7 +1443,7 @@ class Harness:
                                     "count": len(catalog.body["entries"]),
                                 }
                             elif call.name == "run_analysis":
-                                result = await self._analysis(
+                                result = await self.analysis.run(
                                     study,
                                     work,
                                     control.epoch,
@@ -1211,7 +1460,7 @@ class Harness:
                                     index,
                                     call,
                                 )
-                        except (ValueError, NotAllowed, Conflict) as exc:
+                        except ValueError as exc:
                             result = {"error": str(exc)}
                     else:
                         envelope = await self._external(
@@ -1364,6 +1613,9 @@ class Harness:
                 "note",
                 "report",
                 "review",
+                "finding",
+                "research_conflict",
+                "writing_basis",
             ),
         )
 
@@ -1394,14 +1646,26 @@ class Harness:
             study, "step_done", {"step": step, "failure": failure}, (work, step)
         )
 
-    async def _analysis(self, study, work, epoch, step, index, args):
-        return await self.analysis.run(study, work, epoch, step, index, args)
-
     def _builtin(
         self, study: str, work: Artifact, epoch: int, step: str, index: int, call: Call
     ) -> Any:
         self.store.require_work(study, work.ref, epoch)
         direction = work.body["direction"]
+        if not self.store.control(study).approved and call.name in {
+            "read_source",
+            "snapshot_local",
+            "record_evidence",
+            "draft_report",
+            "delegate_work",
+            "run_analysis",
+            "publish_report",
+            "record_finding",
+            "record_conflict",
+            "prepare_writing",
+            "read_draft",
+            "patch_draft",
+        }:
+            raise NotAllowed("initial research route approval required")
         args = call.arguments
         if call.name in {"read_source", "read_artifact_range", "read_report"}:
             args = {
@@ -1417,6 +1681,37 @@ class Harness:
                 section=args["section"],
                 offset=args["offset"],
                 limit=args["limit"],
+            )
+        if call.name in {"record_finding", "record_conflict", "prepare_writing"}:
+            method = getattr(self.research, call.name)
+            item = method(
+                study,
+                work.ref,
+                epoch,
+                _operation=identity(step, index, call.name),
+                **args,
+            )
+            return {
+                "ref": item.ref,
+                "kind": item.kind,
+                "status": item.body.get("status", item.body.get("disposition")),
+                "semantic_verification": "Agent judgment, not host certification",
+                "replaces": item.body.get("replaces"),
+                "writing_basis": self.research.snapshot(study)["basis"],
+            }
+        if call.name == "read_draft":
+            return self.writing.read(
+                study, work.ref, epoch, capacity=self.context_chars // 3, **args
+            )
+        if call.name in {"draft_report", "patch_draft"}:
+            return self.writing.save(
+                study,
+                work.ref,
+                epoch,
+                step,
+                index,
+                research_refs=self._handoff_inputs(study, work),
+                **args,
             )
         if call.name == "pin_evidence":
             refs = list(dict.fromkeys(args["refs"]))
@@ -1477,6 +1772,21 @@ class Harness:
                 "resumed_work": self.store.get(study, args["question"]).body["work"],
             }
         if call.name == "finish_work":
+            draft = self._draft_head(study, work)
+            draft_binding = {}
+            if (
+                draft
+                and self.store.get(study, draft["ref"]).body.get("producer") == work.ref
+            ):
+                if draft["ref"] not in args["refs"]:
+                    raise ValueError(
+                        "include the current saved report ref when completing author work"
+                    )
+                saved_receipt = self.store.get(study, draft["receipt"])
+                draft_binding = {
+                    key: saved_receipt.body[key]
+                    for key in ("ref", "handoff", "report_metrics")
+                }
             for ref in args.get("supersedes", []):
                 old = self.store.get(study, ref)
                 producer = self.store.get(study, old.body.get("producer", ref))
@@ -1490,17 +1800,6 @@ class Harness:
                     raise ValueError(
                         "revision must replace an assigned same-role result in this direction"
                     )
-            for finding in args.get("findings", []):
-                for ref in finding["support"]:
-                    if self.store.get(study, ref).kind not in {
-                        "source",
-                        "note",
-                        "work_result",
-                        "report",
-                    }:
-                        raise ValueError(
-                            "finding support must name original research evidence"
-                        )
             binding = {}
             if work.body["role"] == "reviewer":
                 if work.body.get("review_mode", "final") != "check":
@@ -1510,17 +1809,12 @@ class Harness:
             item = self.store.put(
                 study,
                 "work_result",
-                {**args, "producer": work.ref, **binding},
+                {**args, "producer": work.ref, **draft_binding, **binding},
                 (
                     *parents,
                     *self._handoff_inputs(study, work),
                     *args["refs"],
                     *args.get("supersedes", []),
-                    *(
-                        ref
-                        for finding in args.get("findings", [])
-                        for ref in finding["support"]
-                    ),
                 ),
             )
             return {"ref": item.ref}
@@ -1554,31 +1848,36 @@ class Harness:
             return {"ref": item.ref}
         if call.name == "read_artifact_range":
             artifact = self.store.get(study, args["ref"])
-            if work.body["role"] == "lead" and artifact.kind == "source":
-                raise NotAllowed(
-                    "Delegate source examination; lead reads research findings"
-                )
-            if artifact.kind in {"step", "step_done", "control", "material_bytes"}:
-                raise NotAllowed(
-                    "execution and provider-private records are not research materials"
-                )
+            denial = self._read_denial(study, artifact.kind)
+            if denial:
+                raise NotAllowed(denial)
             body = encode(artifact.body)
             offset, limit = args["offset"], args["limit"]
             if offset < 0 or limit < 1:
                 raise ValueError("invalid artifact range")
             offset = min(offset, len(body))
             limit = min(limit, self.context_chars // 3)
-            return {
-                "ref": artifact.ref,
-                "kind": artifact.kind,
-                "parents": self._relations(study, artifact),
-                "encoding": "canonical-json",
-                "text": body[offset : offset + limit],
-                "offset": offset,
-                "end": min(len(body), offset + limit),
-                "total": len(body),
-                "next_offset": offset + limit if offset + limit < len(body) else None,
-            }
+            relations = self._relations(study, artifact)
+
+            def artifact_page(count):
+                end = offset + count
+                return {
+                    "ref": artifact.ref,
+                    "kind": artifact.kind,
+                    "parents": relations,
+                    "encoding": "canonical-json",
+                    "text": body[offset:end],
+                    "offset": offset,
+                    "end": end,
+                    "total": len(body),
+                    "next_offset": end if end < len(body) else None,
+                }
+
+            return fit_read_result(
+                artifact_page,
+                min(limit, len(body) - offset),
+                min(INLINE_TOOL_RESULT_CHARS, self.context_chars // 3),
+            )
         if call.name == "read_catalog":
             return self.workspace.catalog_page(
                 study, args["ref"], args["offset"], args["limit"]
@@ -1634,51 +1933,60 @@ class Harness:
                 raise ValueError("invalid source range")
             offset = min(offset, len(text))
             limit = min(limit, self.context_chars // 3)
-            end = min(len(text), offset + limit)
-            # Selections bind exact original paragraphs. Labels are a preview,
-            # not a replacement for the returned original text.
-            selections = []
-            for match in re.finditer(
-                r"\S[^\n]*(?:\n(?!\s*\n)[^\n]+)*", text[offset:end]
-            ):
-                start, stop = offset + match.start(), offset + match.end()
-                selections.append(
-                    {
-                        "selection": f"{source.ref}:{start}:{stop}",
-                        "preview": text[start:stop][:100],
-                    }
-                )
-            return {
-                "ref": source.ref,
-                "kind": "source",
-                "offset": offset,
-                "end": min(len(text), offset + limit),
-                "total": len(text),
-                "next_offset": end if end < len(text) else None,
-                "selections": selections,
-                "text": text[offset : offset + limit],
-                "origin": source.body.get("origin"),
-                "coverage": source.body.get("coverage"),
-                "analysis": source.body.get("analysis"),
-                "execution_status": source.body.get("execution_status"),
-                "issues": source.body.get("issues", []),
-                "segments": [
-                    s
-                    for s in source.body.get("segments", [])
-                    if s["start"] < offset + limit and s["end"] > offset
-                ],
-            }
+
+            def source_page(count):
+                end = offset + count
+                selections = []
+                for match in re.finditer(
+                    r"\S[^\n]*(?:\n(?!\s*\n)[^\n]+)*", text[offset:end]
+                ):
+                    start, stop = offset + match.start(), offset + match.end()
+                    selections.append(
+                        {
+                            "selection": f"{source.ref}:{start}:{stop}",
+                            "preview": text[start:stop][:100],
+                        }
+                    )
+                return {
+                    "ref": source.ref,
+                    "kind": "source",
+                    "offset": offset,
+                    "end": end,
+                    "total": len(text),
+                    "next_offset": end if end < len(text) else None,
+                    "selections": selections,
+                    "text": text[offset:end],
+                    "origin": source.body.get("origin"),
+                    "coverage": source.body.get("coverage"),
+                    "analysis": source.body.get("analysis"),
+                    "execution_status": source.body.get("execution_status"),
+                    "issues": source.body.get("issues", []),
+                    "segments": [
+                        seg
+                        for seg in source.body.get("segments", [])
+                        if seg["start"] < end and seg["end"] > offset
+                    ],
+                }
+
+            return fit_read_result(
+                source_page,
+                min(limit, len(text) - offset),
+                min(INLINE_TOOL_RESULT_CHARS, self.context_chars // 3),
+            )
         if call.name == "read_artifact":
             artifact = self.store.get(study, args["ref"])
-            if work.body["role"] == "lead" and artifact.kind == "source":
-                raise NotAllowed(
-                    "Delegate source examination; lead reads research findings"
-                )
-            if artifact.kind in {"step", "step_done", "control", "material_bytes"}:
-                raise NotAllowed(
-                    "execution and provider-private records are not research materials"
-                )
-            if len(encode(artifact.body)) > self.context_chars // 2:
+            denial = self._read_denial(study, artifact.kind)
+            if denial:
+                raise NotAllowed(denial)
+            result = {
+                "ref": artifact.ref,
+                "kind": artifact.kind,
+                "body": artifact.body,
+                "parents": self._relations(study, artifact),
+            }
+            if len(encode(result)) > min(
+                INLINE_TOOL_RESULT_CHARS, self.context_chars // 2
+            ):
                 return self._builtin(
                     study,
                     work,
@@ -1687,12 +1995,7 @@ class Harness:
                     index,
                     Call("read_artifact_range", {"ref": artifact.ref}),
                 )
-            return {
-                "ref": artifact.ref,
-                "kind": artifact.kind,
-                "body": artifact.body,
-                "parents": self._relations(study, artifact),
-            }
+            return result
         if call.name == "calculate":
             return calculate(args["expression"])
         if call.name == "record_evidence":
@@ -1758,6 +2061,8 @@ class Harness:
                 study, "note", {**args, "producer": work.ref}, (*parents, *args["refs"])
             )
         elif call.name == "propose_plan":
+            if self.store.control(study).approved:
+                raise NotAllowed("research route is already approved")
             item = self.store.put(study, "plan", args, parents)
             self.store.put(
                 study,
@@ -1771,51 +2076,13 @@ class Harness:
             rendered = render_citations(
                 args["text"], args["evidence"], lambda ref: self.store.get(study, ref)
             )
-            return {
-                **text_metrics(rendered["text"]),
-                "scope": "rendered report including generated references",
-                "body": text_metrics(
-                    rendered["text"][: rendered["citation_body_length"]]
-                ),
-            }
+            return report_metrics(rendered)
         elif call.name == "read_writing_guide":
             return {
                 "genre": args["genre"],
                 "guidance": WRITING_GUIDES[args["genre"]],
                 "status": "advisory; user requirements take precedence",
             }
-        elif call.name == "draft_report":
-            rendered = render_citations(
-                args["text"], args["evidence"], lambda ref: self.store.get(study, ref)
-            )
-            for ref in args["evidence"]:
-                if self.store.get(study, ref).kind != "source":
-                    raise ValueError("evidence must reference source snapshots")
-            item = self.store.put(
-                study,
-                "report",
-                {
-                    **rendered,
-                    "evidence": args["evidence"],
-                    "producer": work.ref,
-                },
-                (
-                    *parents,
-                    *self._handoff_inputs(study, work),
-                    *args["evidence"],
-                    *rendered["citations"],
-                ),
-            )
-            self.store.put(
-                study,
-                "work_result",
-                {
-                    "ref": item.ref,
-                    "producer": work.ref,
-                    "handoff": args.get("handoff", ""),
-                },
-                (work.ref, item.ref),
-            )
         elif call.name == "read_report":
             report, parts = self._review(study, work)
             offset, limit = args["offset"], args["limit"]
@@ -1829,27 +2096,40 @@ class Harness:
                 ):
                     break
                 shown.append(part)
-            end = offset + len(shown)
-            return {
-                "report": report.ref,
-                "units": shown,
-                "evidence": page(
-                    report.body["evidence"], 0, 20, self.context_chars // 32
-                )["items"],
-                "inputs": page(
-                    self._relations(study, report), 0, 20, self.context_chars // 32
-                )["items"],
-                "related_context": ["review_evidence", "review_inputs"],
-                "total": len(parts),
-                "text_metrics": text_metrics(report.body["text"]),
-                "displayed_units_metrics": text_metrics(
-                    "\n\n".join(p["text"] for p in shown)
-                ),
-                "unit_metrics": {
-                    str(p["unit"]): text_metrics(p["text"]) for p in shown
-                },
-                "next_offset": end if end < len(parts) else None,
-            }
+            evidence = page(report.body["evidence"], 0, 20, self.context_chars // 32)[
+                "items"
+            ]
+            inputs = page(
+                self._relations(study, report), 0, 20, self.context_chars // 32
+            )["items"]
+            metrics = report_metrics(report.body)
+
+            def report_page(count):
+                delivered = shown[:count]
+                end = offset + count
+                return {
+                    "report": report.ref,
+                    "units": delivered,
+                    "evidence": evidence,
+                    "inputs": inputs,
+                    "related_context": ["review_evidence", "review_inputs"],
+                    "total": len(parts),
+                    "text_metrics": text_metrics(report.body["text"]),
+                    "report_metrics": metrics,
+                    "displayed_units_metrics": text_metrics(
+                        "\n\n".join(p["text"] for p in delivered)
+                    ),
+                    "unit_metrics": {
+                        str(p["unit"]): text_metrics(p["text"]) for p in delivered
+                    },
+                    "next_offset": end if end < len(parts) else None,
+                }
+
+            return fit_read_result(
+                report_page,
+                len(shown),
+                min(INLINE_TOOL_RESULT_CHARS, self.context_chars // 3),
+            )
         elif call.name == "submit_review":
             if work.body.get("review_mode", "final") == "check":
                 raise NotAllowed(

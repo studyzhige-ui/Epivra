@@ -29,11 +29,11 @@ LABELS = {
     "ernie": "百度文心",
 }
 ROLES = {
-    "lead": "研究负责人",
+    "lead": "研究主体",
     "investigator": "调查",
-    "synthesizer": "综合",
+    "synthesizer": "冲突核实",
     "writer": "写作",
-    "reviewer": "核查",
+    "reviewer": "编辑核查",
 }
 
 
@@ -61,7 +61,7 @@ def strategy(plan):
         "material_scope": tr("资料范围"),
     }
     if brief:
-        lines.append(tr("\n## 研究范围与前提"))
+        lines.append("\n## " + tr("研究范围与问题"))
     for key, value in brief.items():
         if isinstance(value, dict):
             modes = {

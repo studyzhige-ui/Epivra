@@ -260,6 +260,46 @@ class WorkflowTests(unittest.IsolatedAsyncioTestCase):
                             },
                         )
                     ]
+                elif (
+                    role == "writer"
+                    and request.get("draft")
+                    and store.get("s", request["draft"]["ref"]).body["producer"]
+                    == request["work_ref"]
+                ):
+                    calls = [
+                        Call(
+                            "finish_work",
+                            {
+                                "text": "Saved the checked draft for independent editing.",
+                                "refs": [request["draft"]["ref"]],
+                            },
+                        )
+                    ]
+                elif role == "writer" and not store.list("s", "finding"):
+                    calls = [
+                        Call(
+                            "record_finding",
+                            {
+                                "statement": "The supplied sample measured 17; it does not establish a population effect.",
+                                "status": "observation",
+                                "support": [source_ref],
+                            },
+                        )
+                    ]
+                elif role == "writer" and not request.get("writing_basis"):
+                    finding = store.list("s", "finding")[-1]
+                    calls = [
+                        Call(
+                            "prepare_writing",
+                            {
+                                "findings": [finding.ref],
+                                "coverage": [
+                                    {"question": 0, "findings": [finding.ref]}
+                                ],
+                                "rationale": "The provided sample answers this fixture's question, retaining its limited sample scope.",
+                            },
+                        )
+                    ]
                 elif role == "writer":
                     answer = store.get("s", request["inputs"][0]["ref"])
                     self.assertIn("17", answer.body["text"])
@@ -270,6 +310,11 @@ class WorkflowTests(unittest.IsolatedAsyncioTestCase):
                             {
                                 "text": "Measured 17 in a limited sample.",
                                 "evidence": [source_ref],
+                                **(
+                                    {"base": request["draft"]["ref"]}
+                                    if request.get("draft")
+                                    else {}
+                                ),
                             },
                         )
                     ]
@@ -384,7 +429,9 @@ class WorkflowTests(unittest.IsolatedAsyncioTestCase):
                     ),
                 ).to_json()
 
-        harness = Harness(store, Model(), context_chars=12000)
+        harness = Harness(store, Model(), context_chars=24000)
+        # Leave room for the complete tool schema; returned source page remains
+        # checked at its original requested 100-character bound.
         await harness.step("s", work.ref)
         body = store.list("s", "observation")[-1].body["result"]
         self.assertEqual("rare counterevidence", body["text"])

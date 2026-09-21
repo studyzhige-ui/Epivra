@@ -4,6 +4,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from research_fixture import prepare_basis
+
 from epivra.domain import Call, Reply
 from epivra.harness import Harness
 from epivra.storage import Store
@@ -53,6 +55,8 @@ class RoleHandoffTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def execute(self, work, name, args):
+        if name == "draft_report":
+            prepare_basis(self.store, work)
         self.model.call = Call(name, args)
         await self.harness.step("s", work.ref)
         return self.model.requests[-1]

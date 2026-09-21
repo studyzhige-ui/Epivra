@@ -29,6 +29,8 @@ LAYERS = (
                 "document_parser",
                 "materials",
                 "review",
+                "research",
+                "writing",
                 "citations",
                 "calculation",
                 "analysis",
@@ -58,7 +60,7 @@ LAYERS = (
 )
 ALLOWED = {
     "report_export": set(),
-    "presentation": {"domain", "citations"},
+    "presentation": {"domain", "citations", "research", "writing"},
     "locale": set(),
     "webui": {
         "report_export",
@@ -114,12 +116,14 @@ ALLOWED = {
     "__init__": set(),
     "domain": set(),
     "prompts": set(),
-    "storage": {"domain", "usage", "citations", "review", "local_security"},
+    "storage": {"domain", "usage", "citations", "review", "local_security", "writing"},
     "local_security": set(),
     "diagnostics": {"domain", "review"},
     "citations": set(),
     "usage": set(),
     "context": {"domain"},
+    "research": {"domain"},
+    "writing": {"domain", "research", "citations", "context", "review"},
     "review": {"domain"},
     "calculation": set(),
     "workspace": {"domain", "storage", "materials", "analysis"},
@@ -127,6 +131,8 @@ ALLOWED = {
     "analysis_runtime": {"analysis", "domain", "storage", "workspace", "scheduling"},
     "harness": {
         "analysis_runtime",
+        "research",
+        "writing",
         "calculation",
         "citations",
         "domain",

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 from .domain import Artifact, ContextCapacity, encode
@@ -12,10 +13,21 @@ def page(items: list, offset: int, limit: int, capacity: int) -> dict:
     if offset < 0 or limit < 1:
         raise ValueError("invalid context page")
     offset = min(offset, len(items))
-    result = {"items": [], "offset": offset, "total": len(items), "next_offset": None}
+    result = {
+        "items": [],
+        "offset": offset,
+        "total": len(items),
+        "next_offset": offset if offset < len(items) else None,
+    }
+    initial_size = len(encode(result))
+    if initial_size > capacity:
+        raise ContextCapacity("context page metadata exceeds capacity")
+    fixed_size = initial_size - len(encode(result["next_offset"]))
+    payload_size = 0
     for item in items[offset : offset + limit]:
         entry = item
-        if len(encode(entry)) > capacity // 2 and isinstance(item, dict):
+        entry_size = len(encode(entry))
+        if entry_size > capacity // 2 and isinstance(item, dict):
             entry = {
                 k: item[k]
                 for k in (
@@ -30,16 +42,45 @@ def page(items: list, offset: int, limit: int, capacity: int) -> dict:
                 if k in item
             }
             entry["details_omitted"] = True
-        trial = {
-            **result,
-            "items": [*result["items"], entry],
-            "next_offset": offset + len(result["items"]) + 1,
-        }
-        if len(encode(trial)) > capacity:
+            entry_size = len(encode(entry))
+        end = offset + len(result["items"]) + 1
+        next_offset = end if end < len(items) else None
+        # The terminal cursor is JSON null (four characters), not its numeric
+        # predecessor. Size the actual envelope before accepting the last item.
+        addition = entry_size + bool(result["items"])
+        if fixed_size + payload_size + addition + len(encode(next_offset)) > capacity:
             break
         result["items"].append(entry)
-    end = offset + len(result["items"])
-    result["next_offset"] = end if end < len(items) else None
+        result["next_offset"] = next_offset
+        payload_size += addition
+    return result
+
+
+def fit_read_result(build: Callable[[int], dict], count: int, capacity: int) -> dict:
+    """Fit a lossless page to the actual serialized tool-result contract.
+
+    The caller rebuilds offsets, cursors and excerpt metadata for each prefix.
+    Nothing is sliced after persistence, and raw text is never summarized.
+    If required metadata and one unit cannot fit, fail explicitly instead of
+    returning an endlessly redirected observation or a non-advancing cursor.
+    """
+    if count < 0 or capacity < 1:
+        raise ValueError("invalid read-result capacity")
+    result = build(count)
+    if len(encode(result)) <= capacity:
+        return result
+    minimum = 1 if count else 0
+    result = build(minimum)
+    if len(encode(result)) > capacity:
+        raise ContextCapacity("read metadata and one unit exceed tool-result capacity")
+    low, high = minimum, count - 1
+    while low < high:
+        middle = (low + high + 1) // 2
+        trial = build(middle)
+        if len(encode(trial)) <= capacity:
+            low, result = middle, trial
+        else:
+            high = middle - 1
     return result
 
 
@@ -143,10 +184,16 @@ def assemble(
         if isinstance(memory, Artifact)
         else memory,
     }
-    if len(encode(request)) > capacity:
+    initial_size = len(encode(request))
+    if initial_size > capacity:
         raise ContextCapacity(
             "task, authority and active memory exceed context capacity"
         )
+    # encode() uses compact JSON: only the context-array payload and the decimal
+    # omitted_count change. Account in Unicode code points exactly as before,
+    # without serializing the task, authority, memory and accepted bodies again
+    # for every candidate. No new model-input or report-length policy is added.
+    fixed_size = initial_size - len(str(len(candidates)))
     direct = (
         set(direct_refs)
         if direct_refs is not None
@@ -157,35 +204,42 @@ def assemble(
         key=lambda a: (a.ref in direct, a.kind == "clarification_answer", a.seq),
         reverse=True,
     )
-    selected = []
+    selected: list[dict[str, Any]] = []
+    sizes: list[int] = []
+    payload_size = 0
     for item in ordered:
         entry = {"ref": item.ref, "kind": item.kind, "body": item.body}
-        trial = {
-            **request,
-            "context": [*selected, entry],
-            "omitted_count": len(candidates) - len(selected) - 1,
-        }
-        if len(encode(trial)) <= capacity:
-            selected.append(entry)
-        else:
+        entry_size = len(encode(entry))
+        # Preserve the previous trial's selected-entry count (handles included).
+        trial_base = (
+            fixed_size
+            + len(str(len(candidates) - len(selected) - 1))
+            + payload_size
+            + bool(selected)  # The separator before this array element.
+        )
+        if trial_base + entry_size > capacity:
             # Preserve retrieval handles instead of losing oversized results.
-            handle = {
+            entry = {
                 "ref": item.ref,
                 "kind": item.kind,
                 "body_omitted": True,
                 "characters": len(encode(item.body)),
             }
-            trial["context"] = [*selected, handle]
-            if len(encode(trial)) <= capacity:
-                selected.append(handle)
+            entry_size = len(encode(entry))
+        if trial_base + entry_size <= capacity:
+            payload_size += entry_size + bool(selected)
+            selected.append(entry)
+            sizes.append(entry_size)
+    omitted = len(candidates) - sum("body" in entry for entry in selected)
+    # The final count excludes handles from full-body delivery, just as before;
+    # crossing a decimal boundary can require dropping low-priority entries.
+    while fixed_size + len(str(omitted)) + payload_size > capacity and selected:
+        removed = selected.pop()
+        payload_size -= sizes.pop() + bool(selected)
+        omitted += "body" in removed
     request["context"] = list(reversed(selected))
-    request["omitted_count"] = len(candidates) - sum("body" in x for x in selected)
-    # omitted_count can gain digits relative to a full-body trial.
-    while len(encode(request)) > capacity and request["context"]:
-        request["context"].pop(0)
-        request["omitted_count"] = len(candidates) - sum(
-            "body" in x for x in request["context"]
-        )
+    request["omitted_count"] = omitted
+    # One final exact check protects the boundary if encode's contract changes.
     if len(encode(request)) > capacity:
         raise ContextCapacity("context metadata exceeds capacity")
     return request

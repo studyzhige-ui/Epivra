@@ -34,7 +34,7 @@ python -m venv .venv
 
 | 部分 | 含义 |
 |---|---|
-| `.\.venv\Scripts\epivra.exe` | 使用本项目虚拟环境中的 Epivra 程序；旧命令 `deep-research.exe` 已停用。 |
+| `.\.venv\Scripts\epivra.exe` | 使用本项目虚拟环境中的 Epivra 程序。 |
 | `--lang zh-CN` | 指定简体中文界面；英文为 `--lang en`。省略时读取 `EPIVRA_LANG`，未设置则默认简体中文。 |
 | `web` | 启动 Web 工作台并自动打开浏览器；省略此子命令则进入交互式 CLI。 |
 | `--port 0` | 由系统选择空闲端口，终端输出实际访问地址；省略则使用固定端口 `8765`，也可指定如 `--port 8080`。 |
@@ -65,7 +65,11 @@ python -m venv .venv
 4. 生成并阅读初始研究策略，确认范围与方法后批准。
 5. 在“我的研究”查看进度和成果。正常过程自主推进，遇到额度、凭据等阻断会说明原因。
 
-生成初始策略也会调用模型。需要改变方向时使用暂停与改向操作；修改后的策略如需审批，应阅读当前版本再确认。不要通过直接编辑数据库或中间文件控制研究。
+生成初始路线也会调用模型。路线说明问题、资料范围、方法和交付要求，不预设答案。用户只需批准一次，之后由负责人在原授权内持续推进；改向不触发再次审批。需要补充资料或重载凭据时，先暂停并等待当前执行结束。不要通过编辑数据库或中间文件控制研究。
+
+负责人可以直接调查原文、记录发现与冲突、整理写作依据和修订稿件，也可以按需委派调查、综合或写作助手，不要求每项研究经过固定的角色流水线。负责人通过已获授权的助手使用外部 MCP 工具。
+
+草稿会持续保存和修订，但尚不属于已发布报告。最终交付必须由独立审稿者核查当前精确版本；有缺陷时回到修订或补查，改稿后重新审阅。报告没有默认字数上限。仅本地资料模式关闭内建网络渠道，已选 MCP 服务自身仍可能联网。
 
 
 ### 引用与重复错误保护
@@ -81,7 +85,7 @@ python -m venv .venv
 基础安装支持文本、CSV/TSV、PDF 文本层和 XLSX。公式可读取但不重新计算。扫描 PDF、图片 OCR、DOCX/PPTX 等复杂资料安装可选依赖：
 
 ```powershell
-python -m pip install -e ".[documents]"
+python -m pip install ".[documents]"
 ```
 
 本项目的模型放在 `models/docling/`，运行时自动发现；新克隆项目按[模型说明](../models/README.md)下载。缺少依赖、模型或解析失败会明确反馈；OCR 不等于理解图表，重要图表和复杂排版仍应核查。
@@ -99,11 +103,11 @@ docker build -t epivra-analysis:1 sandbox
 ## 5. MCP 双向接入
 
 ```powershell
-python -m pip install -e ".[mcp]"
+python -m pip install ".[mcp]"
 epivra start
 ```
 
-外部 MCP 工具在本地 `mcp-servers.json` 配置；通过设置启用，并明确允许的工具、资料与角色。其他 MCP 客户端调用 Epivra 时，使用 `epivra-mcp --root <项目绝对路径>`。宿主须先独立启动，不能依赖 MCP 客户端的生命周期。默认不允许外部客户端批准研究策略。
+外部 MCP 工具在本地 `mcp-servers.json` 配置；通过设置启用，并明确允许的工具、资料与角色。其他 MCP 客户端调用 Epivra 时，使用 `epivra-mcp --root <项目绝对路径>`。宿主须先独立启动，不能依赖 MCP 客户端的生命周期。默认不允许外部客户端批准研究策略；确需授权时，启动 MCP 服务加 `--allow-approval`。
 
 例如在外部客户端的 MCP 设置中配置（路径替换为实际安装目录）：
 
@@ -134,7 +138,11 @@ Epivra 连接外部服务时，在本地 `mcp-servers.json` 配置命名连接�
 
 公开服务可省略 token_env；其他服务的令牌只保存在本地环境或 `.env`。先运行 `epivra mcp-discover materials` 查看工具与资源，再为需要的工具指定 `roles` 和 `write`，如 `"lookup": {"roles": ["investigator", "reviewer"], "write": false}`；resources 填精确资源 URI。只添加信任的服务，外部写工具的 `write: true` 表示用户预先授权写操作。
 
-Epivra 对外提供 HTTP MCP 时，设置独立环境变量 `EPIVRA_MCP_TOKEN`，再运行 `epivra-mcp --transport http`；客户端使用 Bearer 认证。该服务仅监听本机，本产品不提供公网多租户服务。
+MCP 创建研究时先建立暂停草稿；上传资料后恢复运行以生成路线，再在 Web/CLI 中批准，或由已获代审批授权的客户端批准。控制操作须携带当前控制版本与唯一命令编号，审批还须指定精确路线。
+
+外部连接配置在研究创建时固定，修改配置不会自动为已有研究新增权限。工具角色可选 `investigator`、`synthesizer`、`writer`、`reviewer`；不接受 `lead`。
+
+Epivra 对外提供 HTTP MCP 时，在启动进程的环境中设置独立环境变量 `EPIVRA_MCP_TOKEN`，再运行 `epivra-mcp --transport http`；客户端使用 Bearer 认证。该 HTTP 令牌不从 `.env` 读取。该服务仅监听本机，本产品不提供公网多租户服务。
 
 ## 6. 文件、备份与升级
 
@@ -149,7 +157,7 @@ Epivra 对外提供 HTTP MCP 时，设置独立环境变量 `EPIVRA_MCP_TOKEN`�
 
 备份研究前先暂停任务，等待当前执行结束，然后使用 `epivra shutdown` 关闭宿主，再复制整个 `.epivra/`。Epivra 会保护该目录供本地用户使用，不会修改用户原资料目录的权限；如需保留连接，再单独安全备份 `.env` 和 MCP 配置。不要只复制数据库而遗漏资料文件。Web 服务另行在其终端退出。
 
-Epivra 是新的独立项目，不自动导入旧项目 `.deep-research-agent/` 数据。旧目录保持原样，历史研究继续使用旧安装读取。安装位置与研究根目录可不同，用 `--root` 显式指定，避免从不同目录启动产生两份本地工作区。
+安装位置与研究根目录可以不同。使用 `--root` 显式指定工作区，避免从不同目录启动产生多份研究数据。升级前备份完整工作区，保留可回退的程序版本。运行合同不兼容的研究可以查阅和导出，但不能隐式接续执行；需要继续调查时创建新研究，并选择所需资料。数据目录不会自动迁移，已完成研究可通过 `epivra --help` 中的 `import_study` 命令显式导入。
 
 ## 7. 常见问题与当前边界
 

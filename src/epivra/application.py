@@ -71,7 +71,7 @@ class ResearchService:
                         study,
                         c.ref,
                         "lead",
-                        "提出初始研究策略并提交审批。",
+                        "提出供用户批准的研究路线：研究哪些问题、查阅哪些资料、怎样覆盖问题，不提出假设或预定答案。",
                     )
                     if self.harness.finished(study, work.ref):
                         return
@@ -382,7 +382,7 @@ def online_service(
             identity="web-selection-v1:"
             + ":".join(providers[n].identity for n in names),
             permission="network",
-            roles=("investigator", "reviewer"),
+            roles=("lead", "investigator", "synthesizer", "writer", "reviewer"),
             observe=lambda raw, acq, choices=names, read=reading: observe(
                 raw, acq, choices, read
             ),
@@ -457,6 +457,7 @@ def online_service(
                     args, name=n, tool_name=t
                 ),
                 identity="public-source-v1",
+                roles=("lead", "investigator", "synthesizer", "writer", "reviewer"),
                 permission="network",
                 check=lambda args, t=tool_name: request(t, args),
                 observe=lambda raw, acq, n=name: public_observe(raw, acq, name=n),

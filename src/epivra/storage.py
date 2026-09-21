@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import builtins
+import math
 import sqlite3
 import sys
 import time
@@ -23,6 +24,7 @@ from .domain import (
     identity,
 )
 from .local_security import protect
+from .writing import WritingWorkspace
 
 
 class Store:
@@ -500,7 +502,7 @@ class Store:
                 "direction",
                 {
                     "request": request,
-                    "runtime": "research-mainline-v2",
+                    "runtime": "continuous-research-v2",
                     "policy": policy,
                 },
             )
@@ -645,6 +647,10 @@ class Store:
             direction, cancelled = current.direction, False
             approved_plan = current.plan
             if action == "approve":
+                if current.approved:
+                    raise NotAllowed(
+                        "research route is already approved; no second approval"
+                    )
                 plan = self.get(study, payload["plan"])
                 if plan.kind != "plan" or direction not in plan.parents:
                     raise Conflict(
@@ -693,7 +699,7 @@ class Store:
             return result
 
     def require_runtime(self, study: str, direction: str) -> None:
-        if self.get(study, direction).body.get("runtime") != "research-mainline-v2":
+        if self.get(study, direction).body.get("runtime") != "continuous-research-v2":
             raise RuntimeMismatch(
                 "Archived research runtime: read-only audit; start a new study"
             )
@@ -737,25 +743,20 @@ class Store:
                     raise NotAllowed("only a lead may delegate")
                 if parent.body["direction"] != current.direction:
                     raise Conflict("delegating work belongs to a superseded direction")
-            if role in {"synthesizer", "writer"}:
-                expected_roles = {"investigator", "synthesizer"}
-                results = [self.get(study, ref) for ref in inputs]
-                valid = set()
-                for result in results:
-                    if result.kind != "work_result" or not result.body.get("producer"):
-                        continue
-                    producer = self.get(study, result.body["producer"])
-                    if (
-                        producer.kind == "work"
-                        and producer.ref in result.parents
-                        and producer.body["role"] in expected_roles
-                        and producer.body["direction"] == current.direction
-                    ):
-                        valid.add(result.ref)
-                if not valid:
-                    raise NotAllowed(
-                        f"{role} requires research results from current research"
-                    )
+            # Specialization is not a prerequisite chain. A helper may start
+            # from direct evidence; its authority is inherited from this study.
+            if role in {"writer", "synthesizer"}:
+                for ref in inputs:
+                    result = self.get(study, ref)
+                    if result.kind == "work_result" and result.body.get("producer"):
+                        producer = self.get(study, result.body["producer"])
+                        if (
+                            producer.kind == "work"
+                            and producer.body["direction"] != current.direction
+                        ):
+                            raise NotAllowed(
+                                "historical findings require reassessment from their sources"
+                            )
             if role == "reviewer":
                 reports = [
                     self.get(study, ref)
@@ -972,6 +973,29 @@ class Store:
             )
             return None
 
+    def mark_invoked(self, operation_id: str, at: float) -> None:
+        """Persist the first actual send/execute timestamp for one operation."""
+        import json
+
+        if type(at) not in (int, float) or not math.isfinite(at):
+            raise ValueError("finite operation timestamp required")
+        with self.transaction():
+            row = self.db.execute(
+                "SELECT study,admission FROM operations WHERE id=?", (operation_id,)
+            ).fetchone()
+            if row is None:
+                raise ValueError("operation was not admitted")
+            if row["admission"] is None:
+                return
+            admission = json.loads(row["admission"])
+            admission.setdefault("timing", {}).setdefault("invoked_at", float(at))
+            self.db.execute(
+                "UPDATE operations SET admission=? WHERE id=?",
+                (encode(admission), operation_id),
+            )
+            if hasattr(self, "_usage_cache"):
+                self._usage_cache.pop(row["study"], None)
+
     def admissions(self):
         import json
 
@@ -1053,6 +1077,21 @@ class Store:
                 raw["data"]["data"] = {"usage": json.loads(row["reader_usage"])}
             if row["cost_dollars"] is not None:
                 raw["data"]["costDollars"] = json.loads(row["cost_dollars"])
+            timing = admission.get("timing", {})
+            queued_at = admission.get("queued_at")
+            admitted_at = admission.get("at")
+            invoked_at = timing.get("invoked_at")
+            settled_at = timing.get("settled_at")
+
+            def elapsed(start: Any, end: Any) -> float | None:
+                if (
+                    type(start) not in (int, float)
+                    or type(end) not in (int, float)
+                    or end < start
+                ):
+                    return None
+                return end - start
+
             records.append(
                 {
                     "operation": row["id"],
@@ -1062,7 +1101,13 @@ class Store:
                     "tool": row["tool"],
                     "status": row["status"],
                     "http_status": row["http_status"],
-                    "admitted_at": admission.get("at"),
+                    "queued_at": queued_at,
+                    "admitted_at": admitted_at,
+                    "invoked_at": invoked_at,
+                    "settled_at": settled_at,
+                    "queue_seconds": elapsed(queued_at, admitted_at),
+                    "admission_to_invoke_seconds": elapsed(admitted_at, invoked_at),
+                    "external_seconds": elapsed(invoked_at, settled_at),
                     "usage": counters(raw, admission.get("resource")),
                 }
             )
@@ -1146,10 +1191,17 @@ class Store:
             raise UnknownOutcome(operation_id)
         return json.loads(row[0])
 
-    def settle(self, operation_id: str, result: Any) -> None:
-        """Persist the returned envelope, including explicit provider failures."""
+    def settle(
+        self, operation_id: str, result: Any, *, settled_at: float | None = None
+    ) -> None:
+        """Persist the returned envelope and first receipt time atomically."""
+        import json
+
         if result is None:
             raise ValueError("operation result must have an envelope")
+        at = time.time() if settled_at is None else settled_at
+        if type(at) not in (int, float) or not math.isfinite(at):
+            raise ValueError("finite operation timestamp required")
         serialized = encode(result)
         with self.transaction():
             row = self.db.execute(
@@ -1159,10 +1211,19 @@ class Store:
                 raise ValueError("operation was not admitted")
             if row["status"] == "succeeded" and row["result"] != serialized:
                 raise Conflict("cannot replace a settled result")
+            admission = json.loads(row["admission"]) if row["admission"] else None
+            if admission is not None:
+                admission.setdefault("timing", {}).setdefault("settled_at", float(at))
             self.db.execute(
-                "UPDATE operations SET status='succeeded',result=? WHERE id=?",
-                (serialized, operation_id),
+                "UPDATE operations SET status='succeeded',result=?,admission=? WHERE id=?",
+                (
+                    serialized,
+                    encode(admission) if admission is not None else None,
+                    operation_id,
+                ),
             )
+            if hasattr(self, "_usage_cache"):
+                self._usage_cache.pop(row["study"], None)
 
     def observation(
         self,
@@ -1251,7 +1312,6 @@ class Store:
             if (
                 report.kind != "report"
                 or direction not in report.parents
-                or review.kind != "review"
                 or report.ref not in review.parents
                 or review.body.get("accepted") is not True
             ):
@@ -1259,11 +1319,18 @@ class Store:
             author = self.get(study, report.body.get("producer", report.ref))
             if (
                 author.kind != "work"
-                or author.body["role"] != "writer"
-                or author.body["owner"] != work
+                or author.body["role"]
+                not in {"lead", "investigator", "synthesizer", "writer"}
+                or not (author.ref == work or author.body["owner"] == work)
+                or author.body["direction"] != direction
                 or author.ref not in report.parents
             ):
-                raise Conflict("report must come from this lead's writer")
+                raise Conflict(
+                    "report must come from this research owner or its authorized helper"
+                )
+            drafts = self.related(study, "draft_saved", author.ref, producer=True)
+            if drafts and drafts[-1].body["ref"] != report.ref:
+                raise Conflict("report is not the author's current saved version")
             reviewer = self.get(study, review.body["work"])
             if any(
                 other.seq > review.seq and report.ref in other.parents
@@ -1278,6 +1345,7 @@ class Store:
                 or report.ref not in reviewer.body["inputs"]
             ):
                 raise Conflict("review must come from a separate bound review work")
+            WritingWorkspace(self).require_publishable(study, report)
             validate_citations(report.body, lambda ref: self.get(study, ref))
             revisions = self.revisions(study, [report.ref], direction)
             if any(self.get(study, ref).seq > review.seq for ref in revisions.values()):

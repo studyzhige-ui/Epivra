@@ -103,7 +103,11 @@ class LongContextTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.harness.finished("s", work.ref))
 
     async def test_navigation_cannot_crowd_out_task_or_accepted_memory(self):
-        self.lead = self.store.work("s", self.c.ref, "lead", "task " * 6200)
+        # Keep this a near-capacity navigation test when the advertised capability
+        # surface changes; do not assume a particular prompt/schema byte count.
+        base = self.harness._request("s", self.lead)
+        task_chars = self.harness.context_chars - len(encode(base)) - 9000
+        self.lead = self.store.work("s", self.c.ref, "lead", "t" * task_chars)
         self.model.calls = (
             Call("save_memory", {"text": "remember " * 850, "refs": []}),
         )
@@ -158,7 +162,9 @@ class LongContextTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_small_preview_allocation_does_not_block_clarifications(self):
-        self.lead = self.store.work("s", self.c.ref, "lead", "t" * 39000)
+        base = self.harness._request("s", self.lead)
+        task_chars = self.harness.context_chars - len(encode(base)) - 1000
+        self.lead = self.store.work("s", self.c.ref, "lead", "t" * task_chars)
         child = self.store.work(
             "s", self.c.ref, "investigator", "inspect", (), self.lead.ref
         )
@@ -236,12 +242,18 @@ class LongContextTests(unittest.IsolatedAsyncioTestCase):
                     },
                 }
 
-        model = WireModel(API(), context_tokens=32768, max_tokens=8192)
+        model = WireModel(API(), context_tokens=1000000, max_tokens=8192)
         harness = Harness(self.store, model)
+        # Budget the current essential schema, then allow a small margin. This
+        # still rejects the same oversized memory rather than disabling checks.
+        essential = harness._request("s", self.lead)["wire"]["estimated_input_tokens"]
+        model.context_tokens = essential + model.max_tokens + 2000
         await harness.step("s", self.lead.ref)
         self.assertFalse(self.store.list("s", "memory"))
         request = harness._request("s", self.lead)
-        self.assertLessEqual(request["wire"]["estimated_input_tokens"] + 8192, 32768)
+        self.assertLessEqual(
+            request["wire"]["estimated_input_tokens"] + 8192, model.context_tokens
+        )
 
     async def test_finished_slot_refills_while_slow_work_is_running(self):
         import asyncio
