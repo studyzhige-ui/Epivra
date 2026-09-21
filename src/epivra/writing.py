@@ -113,19 +113,25 @@ class WritingWorkspace:
                 raise Conflict(
                     "draft changed; read the shared current version and apply the edit to that base"
                 )
+            mode = "patch" if edits is not None else "full_save"
+            if text is not None and edits is not None:
+                raise ValueError("choose a full manuscript or a patch, not both")
+            if text is None and edits is None:
+                if current is None or not basis or basis == current.body["basis"]:
+                    raise ValueError(
+                        "basis-only update requires a saved draft and a different explicit writing basis"
+                    )
+                if evidence is not None:
+                    raise ValueError(
+                        "basis-only update preserves the evidence set; use a content patch for evidence changes"
+                    )
+                text = current.body["manuscript"]
+                evidence = current.body["evidence"]
+                mode = "basis_rebind"
             if edits is not None:
                 if current is None:
                     raise ValueError("save the first manuscript before patching")
-                if text is not None:
-                    raise ValueError("provide either full text or edits, not both")
-                if not edits:
-                    if not basis or basis == current.body["basis"]:
-                        raise ValueError(
-                            "empty edits require an explicit different writing basis"
-                        )
-                    text = current.body["manuscript"]
-                else:
-                    text = apply_edits(current.body["manuscript"], edits)
+                text = apply_edits(current.body["manuscript"], edits)
                 evidence = current.body["evidence"] if evidence is None else evidence
                 basis = basis or current.body["basis"]
             if not isinstance(text, str) or not text.strip():
@@ -184,14 +190,8 @@ class WritingWorkspace:
                     "report_metrics": metrics,
                     "request_id": key,
                     "request_digest": request_digest,
-                    "edit_count": len(edits) if edits is not None else None,
-                    "mode": (
-                        "basis_rebind"
-                        if edits == []
-                        else "patch"
-                        if edits is not None
-                        else "full_save"
-                    ),
+                    "edit_count": len(edits) if edits is not None else 0 if mode == "basis_rebind" else None,
+                    "mode": mode,
                 },
                 (work, direction, step, item.ref, basis),
             )

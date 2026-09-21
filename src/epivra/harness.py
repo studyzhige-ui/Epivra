@@ -28,7 +28,7 @@ from .domain import (
     encode,
     identity,
 )
-from .prompts import ROLES, ROUTE, TOOLS, WRITING_GUIDES
+from .prompts import PROMPT_VERSION, ROLES, ROUTE_PROMPT, TOOLS, WRITING_GUIDES
 from .research import DISPOSITIONS, RESEARCH_KINDS, STATUSES, ResearchLedger
 from .review import report_metrics, text_metrics, units
 from .scheduling import Scheduler
@@ -442,7 +442,7 @@ BUILTINS.update(
                         "evidence": REFERENCES,
                         "edits": {
                             "type": "array",
-                            "description": "Batch exact non-overlapping edits. [] is only valid with an explicit new basis and unchanged manuscript.",
+                            "minItems": 1,
                             "items": object_schema(
                                 {
                                     "old": STRING,
@@ -453,10 +453,20 @@ BUILTINS.update(
                         "handoff": {"type": "string"},
                     }
                 ),
-                "required": ["base", "edits"],
+                "required": ["base"],
             },
         ),
     }
+)
+BUILTINS["patch_draft"][1]["properties"]["basis"] = {
+    **STRING,
+    "description": "New valid basis; required and different for basis-only updates.",
+}
+BUILTINS["patch_draft"][1]["properties"]["edits"]["description"] = (
+    "Simultaneous edits against base; omit only for basis-only update."
+)
+BUILTINS["record_finding"][1]["properties"]["support"]["description"] = (
+    "Only source or exact note refs; not summaries or control records."
 )
 BUILTINS["draft_report"][1]["properties"]["basis"] = STRING
 BUILTINS["find_artifacts"][1]["properties"]["kind"]["enum"].extend(
@@ -724,6 +734,49 @@ class Harness:
                     continue
             raise
 
+    def _focused_research_refs(self, study: str, work: Artifact) -> set[str]:
+        """Follow explicit shared research dependencies, never private transcripts.
+
+        Only focused helpers use this projection. Global directories remain
+        explicitly readable and permissions are unchanged. Corrected versions
+        travel alongside assigned historical records, rather than stale prose
+        silently being treated as current evidence.
+        """
+        pending = list(self._handoff_inputs(study, work))
+        memory = self._steps(study, "memory", work.ref, limit=1)
+        if memory:
+            pending.extend(memory[-1].body.get("refs", []))
+        replacements = {
+            item.body["replaces"]: item.ref
+            for kind in ("finding", "research_conflict", "writing_basis")
+            for item in self.store.list(study, kind)
+            if item.body.get("replaces")
+            and item.body.get("direction") == work.body["direction"]
+        }
+        visited: set[str] = set()
+        while pending:
+            ref = pending.pop()
+            if ref in visited:
+                continue
+            item = self.store.get(study, ref)
+            visited.add(ref)
+            if ref in replacements:
+                pending.append(replacements[ref])
+            if item.kind not in {
+                "work_result", "finding", "research_conflict", "writing_basis", "note", "report"
+            }:
+                continue
+            for key in ("refs", "support", "sources", "findings", "evidence"):
+                values = item.body.get(key, [])
+                if isinstance(values, list):
+                    pending.extend(
+                        value for value in values
+                        if isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value)
+                    )
+            if item.kind == "report" and item.body.get("basis"):
+                pending.append(item.body["basis"])
+        return visited
+
     def _assemble_request(
         self,
         study: str,
@@ -741,20 +794,18 @@ class Harness:
         plan = self.store.get(study, control.plan) if control.plan else None
         anchors = self._steps(study, "evidence_anchor", work.ref, limit=1)
         knowledge = self.research.snapshot(study)
-        focused = work.body["role"] in {"investigator", "synthesizer"} or (
-            work.body["role"] == "reviewer" and work.body.get("review_mode") == "check"
-        )
+        focused = work.body["role"] in {"investigator", "synthesizer"}
+        related = self._focused_research_refs(study, work) if focused else set()
         mandatory = {
             "provider": self.model.identity,
             "system": (
-                ROUTE
+                ROUTE_PROMPT
                 if work.body["role"] == "lead" and not control.approved
                 else ROLES[work.body["role"]]
             ),
-            "research_stage": "research" if control.approved else "route_approval",
-            "context_scope": "task_focused_with_full_lookup"
-            if focused
-            else "whole_research",
+            "prompt_version": PROMPT_VERSION,
+            "phase": "research" if control.approved else "route_approval",
+            "context_scope": "assigned_research_dependencies" if focused else "current_writing_basis",
             "role": work.body["role"],
             "work_ref": work.ref,
             "direction_ref": direction.ref,
@@ -845,6 +896,12 @@ class Harness:
         candidates.extend(self._steps(study, "note", work.ref, limit=64))
         if plan is not None and direction.ref in plan.parents:
             candidates.append(plan)
+        if focused:
+            candidates.extend(
+                item for ref in related
+                if (item := self.store.get(study, ref)).kind
+                in {"finding", "research_conflict", "note", "work_result"}
+            )
         candidates.extend(
             self.store.get(study, ref)
             for ref in self._handoff_inputs(study, work)
@@ -937,17 +994,16 @@ class Harness:
             // len(directories),
         )
         for key, items in directories.items():
-            deferred = focused and key in {"research_findings", "research_conflicts"}
+            # Do not inject unrelated conclusions into a clean helper context.
+            # read_context(section=...) above still returns the complete global
+            # directory with its real cursor; no hidden retrieval restrictions.
+            if focused and key in {"research_findings", "research_conflicts"}:
+                continue
             first = (
                 page(items, 0, 20, allocation)
-                if allocation >= 256 and not deferred
+                if allocation >= 256
                 else {"items": [], **mandatory["navigation"][key]}
             )
-            if deferred:
-                first["scope"] = (
-                    "full directory available through read_context; not preloaded"
-                )
-
             mandatory["navigation"][key] = {
                 k: v for k, v in first.items() if k != "items"
             }
@@ -1649,14 +1705,8 @@ class Harness:
                 "kind": item.kind,
                 "status": item.body.get("status", item.body.get("disposition")),
                 "semantic_verification": "Agent judgment, not host certification",
-                **(
-                    {
-                        "replaces": item.body["replaces"],
-                        "follow_up": "This replacement does not edit prose. Use current workspace version/staleness to update only remaining dependent records; do not repeat updates already completed.",
-                    }
-                    if item.body.get("replaces")
-                    else {}
-                ),
+                "replaces": item.body.get("replaces"),
+                "writing_basis": self.research.snapshot(study)["basis"],
             }
         if call.name == "read_draft":
             return self.writing.read(
