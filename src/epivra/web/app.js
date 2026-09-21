@@ -128,9 +128,17 @@ async function api(path, data, raw = false) {
 }
 const call = (action, fields = {}) =>
   api("/api/command", { action, ...fields });
+const studyActions = new Set(["approve", "plan-approve", "pause-resume", "steer", "cancel", "delete-study", "supplement", "reload-keys"]);
+function renderActions() {
+  for (const id of studyActions) {
+    const button = $(id);
+    if (button) button.disabled = mutating || !active || !status?.control;
+  }
+}
 async function act(button, work, feedback) {
-  if (mutating) return;
+  if (mutating || (studyActions.has(button?.id) && (!active || !status?.control))) return;
   mutating = true;
+  renderActions();
   if (button) button.disabled = true;
   try {
     await work();
@@ -140,6 +148,7 @@ async function act(button, work, feedback) {
   } finally {
     mutating = false;
     if (button) button.disabled = false;
+    renderActions();
   }
 }
 function markdown(target, text) {
@@ -216,6 +225,8 @@ async function openStudy(id) {
     button.classList.toggle("selected", button.dataset.study === id);
   }
   status = report = null;
+  renderActions();
+  materialsKey = "";
   sessionStorage.setItem("research-study", id);
   $("welcome").hidden = true;
   $("study-view").hidden = false;
@@ -231,6 +242,7 @@ async function openStudy(id) {
 function renderStatus(s) {
   const previous = status;
   status = s;
+  renderActions();
   if (previous?.direction !== s.direction) {
     sourceRead++;
     $("source-dialog").close();
@@ -287,6 +299,7 @@ function renderStatus(s) {
   );
   if (tab === "progress") loadProgress().catch(e => notice(e.message));
   renderUsage(s.usage || []);
+  if (tab === "materials") loadPanel().catch(e => notice(e.message));
   if (
     !previous ||
     previous.control !== s.control ||
@@ -325,6 +338,9 @@ async function refreshStudy(fresh = false) {
   if (active === id && serial === statusSerial) renderStatus(s);
 }
 function renderUsage(groups) {
+  const signature = JSON.stringify([language, groups]);
+  if ($("usage-list").dataset.signature === signature) return;
+  $("usage-list").dataset.signature = signature;
   $("usage-list").replaceChildren();
   if (!groups.length)
     $("usage-list").append(node("p", t("暂无调用用量。"), "muted"));
@@ -432,6 +448,7 @@ function sourceRows(target, sources, id, previewable = true) {
     target.append(row);
   }
 }
+let materialsPending = null, materialsKey = "";
 async function loadPanel() {
   const id = active,
     control = status?.control,
@@ -454,9 +471,18 @@ async function loadPanel() {
       id,
     );
   } else if (selected === "materials") {
-    const result = await call("sources", { study: id });
-    if (id === active && control === status?.control && tab === selected)
-      sourceRows($("source-list"), result.sources, id);
+    const key = JSON.stringify([id, control, status.source_count, language]);
+    if (materialsKey === key) return;
+    if (materialsPending?.key === key) return materialsPending.promise;
+    const promise = (async () => {
+      const result = await call("sources", { study: id });
+      if (key === JSON.stringify([active, status?.control, status?.source_count, language]) && tab === selected) {
+        sourceRows($("source-list"), result.sources, id);
+        materialsKey = key;
+      }
+    })().finally(() => { if (materialsPending?.promise === promise) materialsPending = null; });
+    materialsPending = {key, promise};
+    return promise;
   } else if (selected === "progress") {
     await loadProgress();
   }
@@ -494,7 +520,8 @@ async function loadProgress() {
     if (serial !== progressRead || id !== active || direction !== status?.direction || tab !== "progress") return;
     const signature = JSON.stringify([language, id, result]);
     if ($("work-list").dataset.signature === signature) return;
-    const opened = new Set(Array.from($("work-list").querySelectorAll("details[open]"), el => el.dataset.ref));
+    const existing = new Map(Array.from($("work-list").querySelectorAll("details"), el => [el.dataset.ref, el]));
+    const opened = new Set(Array.from(existing.values()).filter(el => el.open).map(el => el.dataset.ref));
     $("work-list").dataset.signature = signature;
     $("work-list").replaceChildren();
     const states = {delivered:t("已交付"), blocked:t("需要处理"), clarification:t("等待负责人澄清"), waiting:t("等待依赖成果"), pending:t("已安排，尚未交付")};
@@ -512,8 +539,12 @@ async function loadProgress() {
     }
     if (!result.work.length) $("work-list").append(node("p", t("尚未分配调查工作。"), "muted"));
     for (const w of result.work) {
+      const signature = JSON.stringify([language, w]);
+      const prior = existing.get(w.ref);
+      if (prior?.dataset.signature === signature) { $("work-list").append(prior); continue; }
       const row = node("details", undefined, "work-card card"), summary = node("summary");
       row.dataset.ref = w.ref;
+      row.dataset.signature = signature;
       summary.append(node("span", roles[w.role] || w.role, "work-role"), node("strong", w.task), node("small", states[w.state], "badge"));
       const body = node("div", undefined, "work-body markdown");
       row.append(summary, body);
@@ -739,6 +770,7 @@ $("create-form").onsubmit = (e) => {
     try {
       const created = await call("create", {
         ...defaults,
+        text_encoding: $("text-encoding").value,
         request,
         web: scope !== "local",
         local_roots: chosen
@@ -859,6 +891,7 @@ $("pause-resume").onclick = () =>
     await afterControl(id);
   });
 $("steer").onclick = () => {
+  if (!active || !status?.control || mutating) return;
   steering = { id: active, expected: status.control };
   $("steer-request").value = status.request;
   $("steer-dialog").showModal();
@@ -936,6 +969,7 @@ $("download-report").onclick = () => act($("download-report"), async () => {
 });
 let supplement = null;
 $("supplement").onclick = () => {
+  if (!active || !status?.control || mutating) return;
   supplement = { id: active, expected: status.control };
   $("supplement-feedback").textContent = "";
   $("supplement-dialog").showModal();
@@ -974,6 +1008,7 @@ $("supplement-upload").onchange = (e) => {
 
 async function loadConfig() {
   config = await api("/api/settings");
+  $("text-encoding").value = config.defaults.text_encoding || "utf-8-sig";
   const p = config.providers.find(
     (p) => p.id === (config.defaults.provider || "deepseek"),
   );

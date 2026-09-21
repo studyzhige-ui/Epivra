@@ -14,9 +14,9 @@ export function addMath(md) {
   };
   md.inline.ruler.before("escape", "math_inline", (state, silent) => {
     const rest = state.src.slice(state.pos);
-    const open = rest.startsWith("\\(") ? "\\(" : rest.startsWith("$") && !rest.startsWith("$$") ? "$" : null;
+    const open = ["\\(", "\\[", "$$", "$"].find(x => rest.startsWith(x));
     if (!open || (open === "$" && /\s/.test(rest[1] || " "))) return false;
-    const close = open === "$" ? "$" : "\\)";
+    const close = ({"\\(": "\\)", "\\[": "\\]"})[open] || open;
     const end = state.src.indexOf(close, state.pos + open.length);
     if (end < 0 || state.src.slice(state.pos, end).includes("\n")) return false;
     if (open === "$" && (/\s/.test(state.src[end - 1]) || /\d/.test(state.src[end + 1] || ""))) return false;
@@ -31,9 +31,15 @@ export function addMath(md) {
     if (!open) return false;
     const close = open === "$$" ? "$$" : "\\]";
     let last = start, text = line.slice(2);
-    while (!text.trimEnd().endsWith(close) && ++last < end)
-      text += "\n" + state.src.slice(state.bMarks[last] + state.tShift[last], state.eMarks[last]);
-    if (last >= end) return false;
+    while (true) {
+      const closing = text.indexOf(close);
+      if (closing >= 0) {
+        if (text.slice(closing + close.length).trim()) return false;
+        break;
+      }
+      if (++last >= end) return false;
+      text += "\n" + state.getLines(last, last + 1, state.blkIndent, false);
+    }
     if (silent) return true;
     const token = state.push("math_block", "math", 0);
     token.block = true;
@@ -51,11 +57,31 @@ export function renderReport(md, target, toc, report, onCitation, onCopy) {
   const chars = Array.from(report.text), parts = [];
   let end = 0;
   for (const mark of report.citation_marks || []) {
-    parts.push(chars.slice(end, mark.start).join(""), `[${mark.number}](#${prefix}${mark.number})`);
+    parts.push(chars.slice(end, mark.start).join(""), `[${prefix}${mark.number}]`);
     end = mark.end;
   }
   parts.push(chars.slice(end).join(""));
-  const tokens = md.parse(parts.join(""), {});
+  if (!md.__epivraCitations) {
+  md.__epivraCitations = true;
+  md.inline.ruler.before("link", "bound_citation", (state, silent) => {
+    const prefix = state.env.epivraCitationPrefix;
+    if (!prefix || state.linkLevel) return false;
+    const start = "[" + prefix;
+    if (!state.src.startsWith(start, state.pos)) return false;
+    const end = state.src.indexOf("]", state.pos + start.length);
+    const number = state.src.slice(state.pos + start.length, end);
+    if (end < 0 || !/^\d+$/.test(number)) return false;
+    if (!silent) {
+      const link = state.push("link_open", "a", 1);
+      link.attrSet("href", "#" + prefix + number);
+      state.push("text", "", 0).content = `[${number}]`;
+      state.push("link_close", "a", -1);
+    }
+    state.pos = end + 1;
+    return true;
+  });
+  }
+  const tokens = md.parse(parts.join(""), {epivraCitationPrefix: prefix});
   let heading = 0;
   const headings = [];
   for (let i = 0; i < tokens.length; i++) {

@@ -34,6 +34,7 @@ DEFAULT_FIELDS = {
     "parser",
     "docling_models",
     "parse_timeout",
+    "text_encoding",
     "analysis",
     "mcp_servers",
 }
@@ -260,6 +261,11 @@ class Server(ThreadingHTTPServer):
 
     def process_request(self, request, client_address):
         if not self.workers.acquire(blocking=False):
+            try:
+                request.settimeout(0.2)
+                request.sendall(b'HTTP/1.0 503 Service Unavailable\r\nContent-Type: application/json\r\nContent-Length: 23\r\nRetry-After: 1\r\nConnection: close\r\n\r\n{"error":"server_busy"}')
+            except OSError:
+                pass
             self.shutdown_request(request)
             return
         try:
@@ -465,16 +471,16 @@ class Handler(BaseHTTPRequestHandler):
     def upload(self):
         from urllib.parse import parse_qs
 
+        from .analysis import filename
+
         query = parse_qs(urlsplit(self.path).query, strict_parsing=True)
         name, study, expected = (query[k][0] for k in ("name", "study", "expected"))
-        if (
-            not name
-            or name in {".", ".."}
-            or name.endswith((".", " "))
-            or any(c in name for c in '/\\:\x00<>"|?*')
-            or any(ord(c) < 32 for c in name)
-        ):
-            raise WebError(tr("文件名无效。"))
+        try:
+            filename(name)
+            if "/" in name:
+                raise ValueError("upload requires one filename")
+        except ValueError:
+            raise WebError(tr("文件名无效。")) from None
         size = self.length(self.server.max_upload)
         state = self.server.app.root / ".epivra"
         state.mkdir(parents=True, exist_ok=True)

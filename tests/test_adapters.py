@@ -341,6 +341,20 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
                     with self.assertRaises(IncompleteStream):
                         await api.chat_stream("/chat/completions", {})
 
+    async def test_retry_after_http_date_and_safe_diagnostics(self):
+        from datetime import datetime, timedelta, timezone
+        from email.utils import format_datetime
+        future = format_datetime(datetime.now(timezone.utc) + timedelta(seconds=120), usegmt=True)
+        async with httpx.AsyncClient(transport=httpx.MockTransport(lambda request: httpx.Response(
+            429, headers={"Retry-After": future, "x-request-id": "req_12345678"},
+            json={"error": {"code": "rate_limit", "param": "max_tokens", "message": "secret-credential"}}
+        ))) as client:
+            raw = await JsonAPI("https://fixture.test", "key", client).post("/search", {})
+        self.assertGreater(raw["retry_after"], 115)
+        self.assertLessEqual(raw["retry_after"], 120)
+        self.assertNotIn("secret-credential", str(raw))
+        self.assertEqual("rate_limit", raw["provider_code"])
+
     async def test_rejection_preserves_only_safe_retry_metadata(self):
         class ErrorStream(httpx.AsyncByteStream):
             async def __aiter__(self):
@@ -354,7 +368,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
             raw = await JsonAPI("https://fixture.test", "key", client).chat_stream(
                 "/chat/completions", {}
             )
-            self.assertEqual(raw, {"http_status": 429, "error_kind": "quota"})
+            self.assertEqual(raw, {"http_status": 429, "error_kind": "quota", "provider_code": "insufficient_quota"})
         async with httpx.AsyncClient(
             transport=httpx.MockTransport(
                 lambda r: httpx.Response(

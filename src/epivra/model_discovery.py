@@ -45,7 +45,7 @@ def discover(provider_id, region, key, *, transport=None):
     deadline = time.monotonic() + 30
     try:
         with httpx.Client(
-            transport=transport, follow_redirects=False, trust_env=False
+            transport=transport, follow_redirects=False
         ) as client:
             for _ in range(100):
                 remaining = deadline - time.monotonic()

@@ -29,3 +29,15 @@ context.renderReport(md,headingTarget,{replaceChildren(){},append(link){labels.p
 assert.deepEqual(labels,['标题 [1]']);
 assert.ok(!labels[0].includes('epivra-citation'));
 console.log('Reader: exact citations, Unicode offsets, escaped/code literals, MathML and untrusted content OK');
+
+for (let i=0; i<100; i++) context.renderReport(md,target,toc,report,()=>{},()=>{});
+assert.equal(md.inline.ruler.__rules__.filter(r=>r.name==='bound_citation').length,1);
+assert.ok(!md.render('[epivra-citation-test-1]').includes('href="#epivra-citation'));
+for (const old of ['formula $x[1]$', '[label [1]](https://example.com)']) {
+  context.renderReport(md,target,toc,{text:old,citation_marks:[],citations:[{number:1}]},()=>{},()=>{});
+  assert.ok(!target.innerHTML.includes('epivra-citation'));
+  if (old.startsWith('[label')) assert.match(target.innerHTML, /href="https:\/\/example.com"/);
+}
+assert.equal((md.render('$$x$$ after\n\nnext\n\n$$y$$').match(/<math/g)||[]).length,2);
+assert.match(md.render('$$\n x\n\n  y\n$$'), /<math/);
+assert.ok(!md.render('Price $5 to $10').includes('<math'));

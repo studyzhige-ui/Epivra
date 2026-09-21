@@ -29,6 +29,22 @@ class CitationTests(unittest.TestCase):
         validate(result, self.resolve)
         return result
 
+    def test_historical_math_and_link_citations_remain_readable(self):
+        from epivra.presentation import published_report
+        for text in (f"Formula $x[[cite:{self.a.ref}]]$.", f"[label [[cite:{self.a.ref}]]](https://example.com)"):
+            old = render(text, [self.a.ref], self.resolve, _historical=True)
+            old.pop("citation_marks")
+            old["evidence"] = [self.a.ref]
+            validate(old, self.resolve)
+            report = self.store.put("s", "report", old)
+            direction = self.store.control("s").direction
+            self.store._put("s", "publication", {"report": report.ref}, (direction, report.ref))
+            view = published_report(self.store, "s")
+            self.assertEqual([], view["citation_marks"])
+            self.assertEqual(old["text"], view["text"])
+            with self.assertRaises(ValueError):
+                render(text, [self.a.ref], self.resolve)
+
     def test_first_appearance_not_evidence_order_and_repeat(self):
         report = self.report(
             f"B [[cite:{self.b.ref}]]. A [[cite:{self.a.ref}]]. B [[cite:{self.b.ref}]]."
@@ -89,10 +105,6 @@ class CitationTests(unittest.TestCase):
         for text in [
             "[[cite:" + "a" * 64 + "]]",
             "[[cite:no]]",
-            "Claim [1]",
-            "Claim [1](https://example.org)",
-            "Claim [1,2]",
-            "Claim [1-3]",
             "Lone ` opener.\n\n[[cite:" + "a" * 64 + "]].\n\nLone ` closer.",
         ]:
             with self.subTest(text=text), self.assertRaises(ValueError):
@@ -141,7 +153,6 @@ class CitationTests(unittest.TestCase):
             f"> `{marker}` then {marker}",
             f"- [Docs](https://example.org/`) {marker} `sample`",
             f"## Heading {marker}\r\n\r\n> Quote {marker}",
-            f"[Label {marker}](https://example.org)",
         ):
             with self.subTest(text=text):
                 report = self.report(text)
@@ -182,3 +193,15 @@ class CitationTests(unittest.TestCase):
         ]:
             with self.subTest(change=change), self.assertRaises(ValueError):
                 validate({**report, **change}, self.resolve)
+
+    def test_ordinary_brackets_are_not_citation_bindings(self):
+        text = f"Year [2024], range [0, 1], weights[0], claim [[cite:{self.a.ref}]] then [1]."
+        report = self.report(text)
+        self.assertEqual(1, len(report["citation_marks"]))
+        self.assertTrue(report["text"].startswith("Year [2024], range [0, 1], weights[0], claim [1] then [1]."))
+
+    def test_citation_placement_respects_math_and_links(self):
+        marker = f"[[cite:{self.a.ref}]]"
+        for text in (f"$x{marker}$", f"[Label {marker}](https://example.org)", f"$$\nx{marker}\n$$"):
+            with self.subTest(text=text), self.assertRaisesRegex(ValueError, "outside"):
+                self.report(text)

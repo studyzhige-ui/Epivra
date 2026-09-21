@@ -21,6 +21,13 @@ class Model:
 
 
 class AnalysisTests(unittest.IsolatedAsyncioTestCase):
+    def test_mount_uses_csv_fields_for_comma_and_space_paths(self):
+        import csv
+        folder = Path("inputs, 中文 folder").resolve()
+        args = DockerSandbox().command("name", "job", folder, DEFAULTS)
+        fields = next(csv.reader([args[args.index("--mount") + 1]]))
+        self.assertEqual(["type=bind", "src=" + str(folder), "dst=/inputs", "readonly"], fields)
+
     async def asyncSetUp(self):
         self.folder = tempfile.TemporaryDirectory()
         self.store = Store(Path(self.folder.name) / "state.db")

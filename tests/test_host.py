@@ -20,6 +20,41 @@ from epivra.storage import Store
 
 
 class HostTests(unittest.IsolatedAsyncioTestCase):
+    async def test_real_response_frame_exceeds_old_line_limit(self):
+        host = Host.__new__(Host)
+        body = {"text": "中文" * (2 * 1024 * 1024)}
+        host.dispatch = AsyncMock(return_value=body)
+        server = await asyncio.start_server(host.connection, "127.0.0.1", 0)
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / ".epivra").mkdir()
+            (root / ".epivra/host.json").write_text(json.dumps({"port": server.sockets[0].getsockname()[1], "token": "fixture"}), encoding="utf-8")
+            try:
+                self.assertEqual(body, await send(root, {"action": "report"}))
+            finally:
+                server.close()
+                await server.wait_closed()
+
+    async def test_truncated_and_old_response_frames_are_transport_errors(self):
+        for payload in (b"", b"123", (10).to_bytes(8, "big") + b"{}", b'{"old":"host"}\n', (300 * 1024 * 1024).to_bytes(8, "big")):
+            async def connection(reader, writer):
+                await reader.readline()
+                writer.write(payload)
+                await writer.drain()
+                writer.close()
+                await writer.wait_closed()
+            server = await asyncio.start_server(connection, "127.0.0.1", 0)
+            with tempfile.TemporaryDirectory() as folder:
+                root = Path(folder)
+                (root / ".epivra").mkdir()
+                (root / ".epivra/host.json").write_text(json.dumps({"port": server.sockets[0].getsockname()[1], "token": "fixture"}), encoding="utf-8")
+                try:
+                    with self.assertRaises(OSError):
+                        await send(root, {"action": "list"})
+                finally:
+                    server.close()
+                    await server.wait_closed()
+
     async def test_disconnected_ipc_client_closes_without_secondary_error(self):
         host = Host.__new__(Host)
         host.dispatch = AsyncMock(return_value={"studies": []})
@@ -346,7 +381,7 @@ class HostTests(unittest.IsolatedAsyncioTestCase):
                 writer.write(b'{"action":"shutdown","token":"wrong"}\n')
                 await writer.drain()
                 self.assertEqual(
-                    {"error": "unauthorized"}, json.loads(await reader.readline())
+                    {"error": "unauthorized"}, json.loads(await reader.readexactly(int.from_bytes(await reader.readexactly(8), "big")))
                 )
                 writer.close()
                 await writer.wait_closed()

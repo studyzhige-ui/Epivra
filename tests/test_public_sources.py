@@ -16,6 +16,22 @@ from epivra.web_providers import connect
 
 
 class PublicTests(unittest.IsolatedAsyncioTestCase):
+    async def test_pubmed_mixed_records_preserve_success_and_contact(self):
+        xml = "<PubmedArticleSet><ERROR>Missing record</ERROR><PubmedArticle><MedlineCitation><PMID>123</PMID><Article><ArticleTitle>Valid</ArticleTitle><Abstract><AbstractText>Evidence</AbstractText></Abstract></Article></MedlineCitation></PubmedArticle></PubmedArticleSet>"
+        requests = []
+        def handle(request):
+            requests.append(request)
+            return httpx.Response(200, text=xml)
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
+            provider = PublicSource("pubmed", client)
+            with patch.dict("os.environ", {"EPIVRA_CONTACT_EMAIL": "research@example.org"}):
+                raw = await provider.invoke("read_pubmed", {"ids": ["123", "456"]})
+            result = provider.decode(raw)
+        self.assertEqual("research@example.org", requests[0].url.params["email"])
+        self.assertEqual("123", result["records"][0]["pmid"])
+        self.assertEqual(1, len(result["failures"]))
+        self.assertIn("Missing record", result["sources"][0]["text"])
+
     async def test_http_contracts_and_record_identity(self):
         fixtures = {
             "search_crossref": (

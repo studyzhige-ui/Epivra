@@ -32,6 +32,7 @@ LAYERS = (
                 "research",
                 "writing",
                 "citations",
+                "markdown_rules",
                 "calculation",
                 "analysis",
                 "mcp_client",
@@ -59,10 +60,11 @@ LAYERS = (
     ),
 )
 ALLOWED = {
-    "report_export": set(),
+    "report_export": {"markdown_rules"},
     "presentation": {"domain", "citations", "research", "writing"},
     "locale": set(),
     "webui": {
+        "analysis",
         "report_export",
         "locale",
         "host",
@@ -119,7 +121,8 @@ ALLOWED = {
     "storage": {"domain", "usage", "citations", "review", "local_security", "writing"},
     "local_security": set(),
     "diagnostics": {"domain", "review"},
-    "citations": set(),
+    "citations": {"markdown_rules"},
+    "markdown_rules": set(),
     "usage": set(),
     "context": {"domain"},
     "research": {"domain"},

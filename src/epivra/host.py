@@ -268,6 +268,7 @@ class Host:
                 policy.update(search_providers=[], reader_providers=[])
             policy["parsing"] = {
                 "parser": request.get("parser", "auto"),
+                "encoding": request.get("text_encoding", "utf-8-sig"),
                 "artifacts_path": request.get("docling_models")
                 or (
                     "models/docling"
@@ -276,6 +277,10 @@ class Host:
                 ),
                 "timeout": request.get("parse_timeout", 300),
             }
+            try:
+                b"".decode(policy["parsing"]["encoding"])
+            except (LookupError, TypeError):
+                raise ValueError("unknown text encoding") from None
             if policy["parsing"]["parser"] not in {"auto", "light", "docling"}:
                 raise ValueError("unknown parser mode")
             if policy["parsing"]["artifacts_path"] is not None:
@@ -501,7 +506,13 @@ class Host:
             except Exception as exc:
                 result = {"error": type(exc).__name__}
             try:
-                writer.write((json.dumps(result, ensure_ascii=False) + "\n").encode())
+                payload = json.dumps(result, ensure_ascii=True).encode("utf-8")
+                if len(payload) > 256 * 1024 * 1024:
+                    payload = b'{"error":"ResponseCapacity"}'
+                writer.write(len(payload).to_bytes(8, "big"))
+                for offset in range(0, len(payload), 64 * 1024):
+                    writer.write(payload[offset:offset + 64 * 1024])
+                    await writer.drain()
                 await writer.drain()
             except OSError:
                 pass
@@ -575,7 +586,15 @@ async def send(root: Path, request: dict):
             if request.get("action") in {"upload", "import_file", "import_study"}
             else 30
         )
-        return json.loads(await asyncio.wait_for(reader.readline(), timeout))
+        async with asyncio.timeout(timeout):
+            try:
+                size = int.from_bytes(await reader.readexactly(8), "big")
+                if not 0 < size <= 256 * 1024 * 1024:
+                    raise OSError("invalid host response frame; restart the host after updating")
+                payload = await reader.readexactly(size)
+                return json.loads(payload)
+            except (asyncio.IncompleteReadError, ValueError, UnicodeError) as exc:
+                raise OSError("host connection ended or returned an invalid response; check status before resubmitting") from exc
     finally:
         writer.close()
         try:
@@ -661,6 +680,7 @@ def main():
         "--parser", choices=("auto", "light", "docling"), default="auto"
     )
     create.add_argument("--docling-models")
+    create.add_argument("--text-encoding", default="utf-8-sig")
     create.add_argument("--parse-timeout", type=float, default=300)
     create.add_argument("--analysis", action="store_true")
     create.add_argument("--mcp-server", action="append", default=[])
@@ -746,6 +766,7 @@ def main():
                         "parser",
                         "docling_models",
                         "parse_timeout",
+                        "text_encoding",
                         "analysis",
                     )
                     if getattr(args, name) is not None

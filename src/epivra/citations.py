@@ -5,6 +5,8 @@ from urllib.parse import urlsplit
 
 from markdown_it import MarkdownIt
 
+from .markdown_rules import math_plugin
+
 MARKER = re.compile(r"\[\[cite:([0-9a-f]{64})\]\]")
 NUMBER = re.compile(r"\[(\d+)\]")
 
@@ -14,7 +16,7 @@ def source_lines(text):
     return re.findall(r"[^\r\n]*(?:\r\n|\r|\n|$)", text)[:-1]
 
 
-def occurrences(text, numbered=False):
+def occurrences(text, numbered=False, *, historical=False):
     """Recognize citations through inline grammar; map only recognized markers back.
 
     Container prefixes cannot contain citation markers. Counting identical markers
@@ -31,14 +33,18 @@ def occurrences(text, numbered=False):
     prior = {}
     pattern = NUMBER if numbered else MARKER
     parser = MarkdownIt("default", {"html": False})
+    if not historical:
+        math_plugin(parser)
 
     def citation(state, silent):
+        if silent:
+            return False  # Let CommonMark inspect complete link labels first.
         if active is None or state.src != active.content:
             return False  # Image attributes use a separate nested inline source.
         match = pattern.match(state.src, state.pos)
         if match is None:
             if re.match(
-                r"\[\[\s*cite\b|\[\d+(?:\s*[,–-]\s*\d+)*\]",
+                r"\[\[\s*cite\b",
                 state.src[state.pos :],
                 re.I,
             ):
@@ -47,6 +53,10 @@ def occurrences(text, numbered=False):
                         "Use [[cite:<full source or evidence-note ref>]], not manual citation numbers"
                     )
             return False
+        if state.linkLevel and not historical:
+            if numbered:
+                return False
+            raise ValueError("Place citations outside link labels and math expressions")
         if not silent:
             before = state.src[: state.pos]
             relative_line = before.count("\n")
@@ -73,6 +83,8 @@ def occurrences(text, numbered=False):
         for token in state.tokens:
             if token.map is not None:
                 block_line = token.map[0]
+            if token.type == "math_block" and "[[cite:" in token.content:
+                raise ValueError("Place citations outside math expressions")
             if token.type == "inline":
                 active = token
                 active_line = block_line
@@ -80,6 +92,16 @@ def occurrences(text, numbered=False):
                 state.md.inline.parse(
                     token.content, state.md, state.env, token.children
                 )
+                depth = 0
+                for child in token.children:
+                    if child.type == "link_open":
+                        depth += 1
+                    elif child.type == "link_close":
+                        depth -= 1
+                    elif not historical and depth and child.type == "text" and MARKER.search(child.content):
+                        raise ValueError("Place citations outside link labels")
+                if any(t.type == "math_inline" and "[[cite:" in t.content for t in token.children):
+                    raise ValueError("Place citations outside math expressions")
                 # Cells share a row: count raw occurrences in earlier cells,
                 # including literals in code/URLs, to preserve original offsets.
                 for match in pattern.finditer(token.content):
@@ -99,7 +121,7 @@ def occurrences(text, numbered=False):
     return sorted(found, key=lambda m: m.start())
 
 
-def render(text, evidence, resolve):
+def render(text, evidence, resolve, *, _historical=False):
     lookup = resolve
 
     def resolve(ref):
@@ -111,7 +133,7 @@ def render(text, evidence, resolve):
     sources = {ref: resolve(ref) for ref in evidence}
     if any(s.kind != "source" for s in sources.values()):
         raise ValueError("report evidence must name source snapshots")
-    matches = occurrences(text)
+    matches = occurrences(text, historical=_historical)
     refs = [m[1] for m in matches]
     targets = []
     for ref in refs:
@@ -134,9 +156,14 @@ def render(text, evidence, resolve):
         targets.append(source)
     unique = list({source.ref: source for source in targets}.values())
     numbers = {source.ref: i + 1 for i, source in enumerate(unique)}
-    result, end = [], 0
+    result, end, size, marks = [], 0, 0, []
     for match, source in zip(matches, targets):
-        result.extend((text[end : match.start()], f"[{numbers[source.ref]}]"))
+        prefix, number = text[end : match.start()], numbers[source.ref]
+        start = size + len(prefix)
+        rendered_mark = f"[{number}]"
+        size = start + len(rendered_mark)
+        marks.append({"start": start, "end": size, "number": number})
+        result.extend((prefix, rendered_mark))
         end = match.end()
     result.append(text[end:])
     body = "".join(result)
@@ -173,6 +200,7 @@ def render(text, evidence, resolve):
         "text": rendered,
         "citations": refs,
         "citation_body_length": len(body),
+        "citation_marks": marks,
     }
 
 
@@ -184,7 +212,19 @@ def validate(report, resolve):
     if type(length) is not int or not 0 <= length <= len(text):
         raise ValueError("invalid citation body boundary")
     body = text[:length]
-    matches = occurrences(body, numbered=True)
+    marks = report.get("citation_marks")
+    if marks is None:
+        matches = occurrences(body, numbered=True, historical=True)  # Read-only historical records.
+    else:
+        matches = []
+        end = 0
+        for mark in marks:
+            start, stop, number = mark["start"], mark["end"], mark["number"]
+            if (type(start) is not int or type(stop) is not int or type(number) is not int
+                    or not end <= start < stop <= len(body) or body[start:stop] != f"[{number}]"):
+                raise ValueError("invalid citation span")
+            matches.append(NUMBER.match(body, start))
+            end = stop
     parts, end = [], 0
     if len(matches) != len(refs):
         raise ValueError("citation occurrence binding has changed")
@@ -194,6 +234,11 @@ def validate(report, resolve):
         parts.extend((body[end : m.start()], "[[cite:" + refs[index] + "]]"))
         end = m.end()
     parts.append(body[end:])
-    expected = render("".join(parts), report["evidence"], resolve)
-    if expected != {"text": text, "citations": refs, "citation_body_length": length}:
+    expected = render("".join(parts), report["evidence"], resolve, _historical=marks is None)
+    if marks is None:
+        expected.pop("citation_marks")
+    actual = {"text": text, "citations": refs, "citation_body_length": length}
+    if marks is not None:
+        actual["citation_marks"] = marks
+    if expected != actual:
         raise ValueError("report citation rendering or binding has changed")

@@ -49,25 +49,22 @@ def published_report(store, study, expected=None):
             if quote not in entry["quotes"]:
                 entry["quotes"].append(quote)
     length = report.body.get("citation_body_length", len(report.body["text"]))
-    marks = (
-        list(occurrences(report.body["text"][:length], numbered=True))
-        if numbers
-        else []
-    )
-    if len(marks) != len(numbers) or any(
-        int(mark[1]) != n for mark, n in zip(marks, numbers)
-    ):
+    marks = report.body.get("citation_marks")
+    if marks is None:
+        marks = [{"start": m.start(), "end": m.end(), "number": int(m[1])}
+                 for m in occurrences(report.body["text"][:length], numbered=True, historical=True)] if numbers else []
+    if len(marks) != len(numbers) or any(mark["number"] != n for mark, n in zip(marks, numbers)):
         raise ValueError("citation occurrence binding changed")
+    if "citation_marks" not in report.body:
+        safe = {m.start() for m in occurrences(report.body["text"][:length], numbered=True)}
+        marks = [mark for mark in marks if mark["start"] in safe]
     return {
         "ref": report.ref,
         "direction": direction,
         "text": report.body["text"],
         "citation_body_length": report.body.get("citation_body_length"),
         "citations": list(citations.values()),
-        "citation_marks": [
-            {"start": mark.start(), "end": mark.end(), "number": n}
-            for mark, n in zip(marks, numbers)
-        ],
+        "citation_marks": marks,
         "sources": [source_info(s) for s in sources.values()],
     }
 

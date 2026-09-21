@@ -1474,11 +1474,15 @@ class Harness:
                             "step": step.ref,
                             "operation": retry.body["next"] if retry else operation,
                         }
-                        result = (
-                            observe(envelope["value"], acquisition)
-                            if observe
-                            else envelope
-                        )
+                        try:
+                            result = (
+                                observe(envelope["value"], acquisition)
+                                if observe
+                                else envelope
+                            )
+                            encode(result)
+                        except ValueError:
+                            result = {"error": "invalid_external_result", "instruction": "Saved provider response is unusable; use another source or revise the request."}
                 self.store.observation(
                     study,
                     work_ref,
@@ -1772,17 +1776,14 @@ class Harness:
                 "resumed_work": self.store.get(study, args["question"]).body["work"],
             }
         if call.name == "finish_work":
-            draft = self._draft_head(study, work)
+            receipts = self.store.matching(study, "draft_saved", {"producer": work.ref})
             draft_binding = {}
-            if (
-                draft
-                and self.store.get(study, draft["ref"]).body.get("producer") == work.ref
-            ):
-                if draft["ref"] not in args["refs"]:
+            if receipts:
+                saved_receipt = receipts[-1]
+                if saved_receipt.body["ref"] not in args["refs"]:
                     raise ValueError(
-                        "include the current saved report ref when completing author work"
+                        "include your latest saved report ref when completing author work"
                     )
-                saved_receipt = self.store.get(study, draft["receipt"])
                 draft_binding = {
                     key: saved_receipt.body[key]
                     for key in ("ref", "handoff", "report_metrics")
@@ -2117,7 +2118,7 @@ class Harness:
                     "text_metrics": text_metrics(report.body["text"]),
                     "report_metrics": metrics,
                     "displayed_units_metrics": text_metrics(
-                        "\n\n".join(p["text"] for p in delivered)
+                        "".join(p["text"] for p in delivered)
                     ),
                     "unit_metrics": {
                         str(p["unit"]): text_metrics(p["text"]) for p in delivered

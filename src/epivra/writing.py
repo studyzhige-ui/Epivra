@@ -71,10 +71,15 @@ class WritingWorkspace:
             )
         if base and actor.body["role"] != "lead":
             report = self.store.get(study, base)
-            if report.body.get("producer") != work and base not in actor.body["inputs"]:
-                raise NotAllowed(
-                    "a helper edits only its own draft or an explicitly assigned base"
-                )
+            while report.kind == "report" and report.body.get("document") == actor.body["direction"]:
+                if report.body.get("producer") == work or report.ref in actor.body["inputs"]:
+                    break
+                previous = report.body.get("previous_report")
+                if not previous:
+                    raise NotAllowed("a helper edits only an assigned manuscript lineage")
+                report = self.store.get(study, previous)
+            else:
+                raise NotAllowed("draft must belong to this research direction")
         return actor
 
     def save(

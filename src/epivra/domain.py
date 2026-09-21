@@ -45,13 +45,18 @@ INLINE_TOOL_RESULT_CHARS = 12000
 
 
 def encode(value: Any) -> str:
-    return json.dumps(
+    serialized = json.dumps(
         value,
         ensure_ascii=False,
         sort_keys=True,
         separators=(",", ":"),
         allow_nan=False,
     )
+    try:
+        serialized.encode("utf-8")
+    except UnicodeEncodeError:
+        raise ValueError("invalid Unicode scalar in public data") from None
+    return serialized
 
 
 def identity(*values: Any) -> str:
@@ -128,6 +133,7 @@ class Reply:
             raise ValueError("model calls must be a list")
         if len(calls) > 1024:
             raise ValueError("single response exceeds tool-call capacity")
+        encode(data)  # Reject malformed Unicode before publishing any model output.
         parsed = []
         for item in calls:
             if (

@@ -490,5 +490,7 @@
   "当前文稿已交付": "Current manuscript delivered",
   "当前稿件持续编辑中，尚未交付": "Manuscript remains in editing, not delivered",
   "成立条件：{0}": "Condition: {0}",
-  "资料限制：{0}": "Evidence limitation: {0}"
+  "资料限制：{0}": "Evidence limitation: {0}",
+  "PDF / 打印": "PDF / Print",
+  "文本编码": "Text encoding"
 }

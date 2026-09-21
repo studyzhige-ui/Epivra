@@ -1,6 +1,7 @@
 """Keyless discovery and data protocols. One HTTP request per tool invocation."""
 
 import json
+import os
 import re
 from datetime import date, datetime, timezone
 from urllib.parse import urlencode
@@ -199,6 +200,12 @@ class PublicSource:
 
     async def invoke(self, tool, args):
         path, params, xml = request(tool, args)
+        contact = os.environ.get("EPIVRA_CONTACT_EMAIL", "").strip()
+        if contact:
+            if not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", contact):
+                raise ValueError("EPIVRA_CONTACT_EMAIL must be a valid contact email")
+            if self.name in {"pubmed", "crossref"}:
+                params["email" if self.name == "pubmed" else "mailto"] = contact
         raw = await self.api.request("GET", path, params=params, text=xml)
         return {
             **raw,
@@ -212,16 +219,23 @@ class PublicSource:
         if raw.get("http_status") != 200:
             raise ProviderFailure(self.name, raw.get("http_status", 0))
         data, tool = raw.get("data"), raw["tool"]
+        failures = []
         if tool == "read_pubmed":
             from xml.etree import ElementTree
 
             text = data["html"]
             root = ElementTree.fromstring(text)
-            if root.tag != "PubmedArticleSet" or root.find(".//ERROR") is not None:
+            if root.tag != "PubmedArticleSet":
                 raise ValueError("invalid PubMed records")
             if not list(root):
                 return {"records": [], "sources": [], "failures": []}
-            summary = {"record_type": "bibliographic_records_with_available_abstracts"}
+            failures = [{"error": "pubmed_record_failed", "message": " ".join(e.itertext())}
+                        for e in root.findall(".//ERROR")]
+            records = [{"pmid": item.findtext(".//PMID"),
+                        "title": "".join(item.find(".//ArticleTitle").itertext()) if item.find(".//ArticleTitle") is not None else "",
+                        "abstract": "\n".join("".join(a.itertext()) for a in item.findall(".//AbstractText"))}
+                       for item in root if item.tag in {"PubmedArticle", "PubmedBookArticle"} and item.find(".//ERROR") is None]
+            summary = {"record_type": "bibliographic_records_with_available_abstracts", "records": records}
         else:
             if self.name == "crossref":
                 if not isinstance(data, dict) or data.get("status") != "ok":
@@ -306,5 +320,5 @@ class PublicSource:
                     "parser": "public-api-v1",
                 }
             ],
-            "failures": [],
+            "failures": failures,
         }

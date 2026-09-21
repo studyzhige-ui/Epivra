@@ -218,36 +218,39 @@ class WebProvider:
             items = data.get("results")
         if not isinstance(items, list):
             raise ValueError("expected search results array")
-        results = []
+        results, failures = [], []
         seen = set()
-        for item in items:
-            if not isinstance(item, dict) or not isinstance(item.get("url"), str):
-                raise ValueError("invalid search result")
-            url = item["url"]
-            self.validate_extract({"url": url})
-            if url in seen:
-                continue
-            seen.add(url)
-            snippet = (
-                item.get("snippet")
-                or item.get("description")
-                or "\n".join(item.get("highlights") or [])
-            )
-            title = item.get("title") or item.get("name") or ""
-            if not isinstance(title, str) or not isinstance(snippet, str):
-                raise ValueError("invalid search text")
-            results.append(
-                {
-                    "url": url,
-                    "title": title,
-                    "snippet": snippet,
-                    "content_type": "search_snippet",
-                    "published_at": item.get("publishedDate")
-                    or item.get("datePublished")
-                    or item.get("date"),
-                }
-            )
-        return {"results": results, "provider": self.resource}
+        for index, item in enumerate(items):
+            try:
+                if not isinstance(item, dict) or not isinstance(item.get("url"), str):
+                    raise ValueError("invalid search result")
+                url = item["url"]
+                self.validate_extract({"url": url})
+                if url in seen:
+                    continue
+                snippet = (
+                    item.get("snippet")
+                    or item.get("description")
+                    or "\n".join(item.get("highlights") or [])
+                )
+                title = item.get("title") or item.get("name") or ""
+                if not isinstance(title, str) or not isinstance(snippet, str):
+                    raise ValueError("invalid search text")
+                seen.add(url)
+                results.append(
+                    {
+                        "url": url,
+                        "title": title,
+                        "snippet": snippet,
+                        "content_type": "search_snippet",
+                        "published_at": item.get("publishedDate")
+                        or item.get("datePublished")
+                        or item.get("date"),
+                    }
+                )
+            except (ValueError, TypeError, KeyError):
+                failures.append({"index": index, "error": "invalid_search_result"})
+        return {"results": results, "provider": self.resource, "failures": failures}
 
     def decode_extract(self, raw):
         data = self._data(raw)

@@ -46,12 +46,19 @@ def report_metrics(report: dict[str, Any]) -> dict[str, Any]:
 
 
 def units(text: str) -> list[dict]:
-    """Stable bounded navigation units, including very long paragraphs/tables."""
+    """Lossless bounded slices; concatenation reconstructs the exact report."""
     result: list[dict] = []
-    for part in re.split(r"\n\s*\n", text.strip()):
-        part = part.strip()
-        for offset in range(0, len(part), 1024):
-            result.append({"unit": len(result), "text": part[offset : offset + 1024]})
+    offset = 0
+    paragraph_break = re.compile(r"\n[ \t]*\n")
+    while offset < len(text):
+        paragraph = paragraph_break.search(text, offset, min(offset + 1024, len(text)))
+        end = min(paragraph.end() if paragraph else len(text), offset + 1024)
+        if end < len(text):
+            boundary = text.rfind("\n", offset, end)
+            if boundary >= offset:
+                end = boundary + 1
+        result.append({"unit": len(result), "offset": offset, "end": end, "text": text[offset:end]})
+        offset = end
     return result
 
 

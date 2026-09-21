@@ -20,6 +20,35 @@ from epivra.webui import App, Handler, Server
 
 
 class WebTests(unittest.IsolatedAsyncioTestCase):
+    async def test_saturated_server_returns_bounded_retryable_response(self):
+        held = 0
+        while self.server.workers.acquire(blocking=False):
+            held += 1
+        try:
+            response = await self.http.get("/")
+            self.assertEqual(503, response.status_code)
+            self.assertEqual("1", response.headers["retry-after"])
+            self.assertEqual({"error": "server_busy"}, response.json())
+        finally:
+            for _ in range(held):
+                self.server.workers.release()
+        self.assertEqual(200, (await self.http.get("/")).status_code)
+
+    async def test_explicit_encoding_reaches_host_and_imported_source(self):
+        response = await self.call("create", request="Chinese evidence", text_encoding="gb18030")
+        self.assertEqual(200, response.status_code, response.text)
+        study = response.json()["study"]
+        control = self.host.store.control(study)
+        path = self.root / "chinese.txt"
+        path.write_bytes("中文原始证据".encode("gb18030"))
+        imported = await self.call("import_file", study=study, expected=control.ref, path=str(path))
+        self.assertEqual(200, imported.status_code, imported.text)
+        sources = self.host.store.list(study, "source")
+        self.assertEqual("中文原始证据", sources[-1].body["text"])
+        original = self.host.store.get(study, sources[-1].body["original_ref"])
+        import base64
+        self.assertEqual(path.read_bytes(), base64.b64decode(original.body["data"]))
+
     async def test_report_export_is_version_bound_and_rejects_client_text(self):
         study = (await self.call("create", request="Export fixture")).json()["study"]
         c = self.host.store.control(study)
@@ -299,7 +328,7 @@ class WebTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.host.store.control(study).paused)
         self.assertEqual([], self.host.store.list(study, "source"))
         self.assertEqual([], list((self.root / ".epivra").glob("web-upload-*")))
-        for name in ("../escape.txt", "..\\escape.txt", "x:y.txt"):
+        for name in ("../escape.txt", "..\\escape.txt", "x:y.txt", "NUL", "CON.txt", "aux.TXT", "LPT1.txt"):
             params = urlencode({"study": study, "expected": c.ref, "name": name})
             reply = await self.http.post("/api/upload?" + params, content=b"x")
             self.assertEqual(400, reply.status_code)

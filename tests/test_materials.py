@@ -79,6 +79,53 @@ class MaterialTests(unittest.TestCase):
         self.store.close()
         self.folder.cleanup()
 
+    def test_private_directory_ignores_only_vanished_children(self):
+        from epivra.local_security import private_directory
+        with patch("epivra.local_security.os.walk", return_value=[(str(self.root), [], ["gone"])]):
+            with patch("epivra.local_security.protect", side_effect=[None, FileNotFoundError()]):
+                private_directory(self.root)
+            with patch("epivra.local_security.protect", side_effect=[None, PermissionError()]), self.assertRaises(PermissionError):
+                private_directory(self.root)
+
+    def test_pdf_subset_merge_preserves_pages_and_maps_nested_issues(self):
+        from pypdf import PdfReader
+        writer = PdfWriter()
+        original = PdfReader(io.BytesIO(pdf_bytes()))
+        writer.add_page(original.pages[0])
+        page = writer.add_blank_page(300, 200)
+        stream = DecodedStreamObject()
+        stream.set_data(b"q Q")  # Visual content without a text layer.
+        page[NameObject("/Contents")] = writer._add_object(stream)
+        writer.add_page(original.pages[0])
+        output = io.BytesIO()
+        writer.write(output)
+        raw = output.getvalue()
+        converted = {"text": "OCR", "segments": [{"start": 0, "end": 3, "locator": {"page": 1, "locations": [{"page": 1}]}}], "issues": [{"locator": {"page": 1, "locations": [{"page": 1}]}, "reason": "image"}], "parser": "fixture"}
+        with patch("epivra.document_parser.convert", return_value=converted) as converter:
+            result = parse("book.pdf", raw, {"artifacts_path": "fixture"})
+        self.assertEqual(1, len(PdfReader(io.BytesIO(converter.call_args.args[1])).pages))
+        self.assertEqual([1, 2, 3], [x["locator"]["page"] for x in result["segments"]])
+        self.assertEqual(2, result["issues"][0]["locator"]["page"])
+        self.assertEqual(2, result["issues"][0]["locator"]["locations"][0]["page"])
+        converted["text"] = "X" * 10000
+        converted["segments"][0]["end"] = 10000
+        converted["segments"][0]["locator"] = {"page": 1}
+        with patch("epivra.document_parser.convert", return_value=converted), patch("epivra.materials.MAX_OUTPUT_BYTES", 2000):
+            fallback = parse("book.pdf", raw, {"artifacts_path": "fixture"})
+        self.assertEqual([1, 2, 3], [x["locator"]["page"] for x in fallback["segments"]])
+        self.assertEqual(2, fallback["text"].count("Primary evidence"))
+        self.assertTrue(any("retained_partial" in i["reason"] for i in fallback["issues"]))
+
+    def test_output_limit_counts_actual_serialized_utf8(self):
+        from epivra.domain import encode
+        for name, raw in (("a.txt", "中文\n".encode()), ("a.csv", b"a,b\n1,2\n")):
+            result = parse(name, raw)
+            size = len(encode({"result": result}).encode("utf-8"))
+            with patch("epivra.materials.MAX_OUTPUT_BYTES", size):
+                self.assertEqual(result, parse(name, raw))
+            with patch("epivra.materials.MAX_OUTPUT_BYTES", size - 1), self.assertRaises(ValueError):
+                parse(name, raw)
+
     def test_pdf_text_and_missing_page_have_exact_locators(self):
         raw = pdf_bytes()
         source = self.workspace.upload("s", "evidence.pdf", raw)
@@ -86,7 +133,7 @@ class MaterialTests(unittest.TestCase):
         first, second = body["segments"]
         self.assertEqual({"page": 1}, first["locator"])
         self.assertIn("Primary evidence", body["text"][first["start"] : first["end"]])
-        self.assertEqual("needs_ocr_or_visual_review", second["status"])
+        self.assertEqual("blank_page", second["status"])
         original = self.store.get("s", body["original_ref"])
         self.assertEqual(raw, base64.b64decode(original.body["data"]))
         self.assertIn(original.ref, source.parents)

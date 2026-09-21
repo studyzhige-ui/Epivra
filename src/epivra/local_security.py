@@ -132,4 +132,7 @@ def private_directory(path: Path):
     # Existing children may carry explicit ACLs that do not inherit the new DACL.
     for root, directories, files in os.walk(path, followlinks=False):
         for name in directories + files:
-            protect(Path(root) / name)
+            try:
+                protect(Path(root) / name)
+            except FileNotFoundError:
+                pass  # A transient child disappeared; other ACL failures remain fatal.

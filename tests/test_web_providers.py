@@ -7,6 +7,17 @@ from epivra.web_providers import CONNECTIONS, SEARCH, connect
 
 
 class WebProtocolTests(unittest.IsolatedAsyncioTestCase):
+    async def test_partial_batch_retains_valid_duplicate_after_invalid_item(self):
+        async with httpx.AsyncClient() as client:
+            provider = connect("exa", {"EXA_API_KEY": "fixture"}, client)
+            result = provider.decode_search({"http_status": 200, "data": {"results": [
+                {"url": "https://example.com/a", "title": 123},
+                {"url": "https://example.com/a", "title": "Valid", "highlights": ["Evidence"]},
+                {"url": "/invalid", "title": "Invalid"},
+            ]}})
+        self.assertEqual(["Valid"], [x["title"] for x in result["results"]])
+        self.assertEqual([0, 2], [x["index"] for x in result["failures"]])
+
     async def test_six_search_requests_and_original_result_shapes(self):
         fixtures = {
             "tavily": {

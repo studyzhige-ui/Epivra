@@ -122,6 +122,47 @@ class WorkspaceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(obs.get("failure"), obs)
         return self.store.get("s", obs["result"]["ref"])
 
+    async def test_shared_lineage_and_own_completion_survive_interleaved_writes(self):
+        await self.basis([await self.finding()])
+        draft = await self.draft()
+        helper = self.store.work("s", self.c.ref, "writer", "Revise", (draft.ref,), self.owner.ref)
+        async def edit(base, old, new, work=None):
+            return await self.call("patch_draft", {"base": base, "edits": [{"old": old, "new": new}]}, work)
+        saved = await edit(draft.ref, "17 registered", "Seventeen registered", helper)
+        self.assertIsNone(saved["failure"])
+        d2 = saved["result"]["ref"]
+        owner = await edit(d2, "12 attended", "Twelve attended")
+        self.assertIsNone(owner["failure"])
+        d3 = owner["result"]["ref"]
+        self.assertIsNotNone((await edit(d2, "Seventeen", "17", helper))["failure"])
+        revised = await edit(d3, "Seventeen", "17", helper)
+        self.assertIsNone(revised["failure"])
+        d4 = revised["result"]["ref"]
+        owner = await edit(d4, "Twelve", "12")
+        stranger = self.store.work("s", self.c.ref, "writer", "Unassigned", (), self.owner.ref)
+        self.assertIsNotNone((await edit(owner["result"]["ref"], "17", "18", stranger))["failure"])
+        result = await self.call("finish_work", {"text": "Revision saved", "refs": [d4]}, helper)
+        self.assertIsNone(result["failure"])
+        completed = self.h._steps("s", "work_result", helper.ref)[-1].body
+        self.assertEqual(d4, completed["ref"])
+        self.assertIn("handoff", completed)
+        self.assertIn("report_metrics", completed)
+
+    async def test_bad_unicode_receipt_replays_without_repeating_model_call(self):
+        from unittest.mock import AsyncMock
+        raw = Reply("\ud800", ()).to_json()
+        self.model.complete = AsyncMock(return_value=raw)
+        with patch.object(self.h, "_done", side_effect=RuntimeError("crash after receipt")):
+            with self.assertRaisesRegex(RuntimeError, "crash after receipt"):
+                await self.h.step("s", self.owner.ref)
+        self.store.close()
+        self.store = Store(self.path)
+        self.h = Harness(self.store, self.model)
+        self.assertEqual("continue", await self.h.step("s", self.owner.ref))
+        self.model.complete.assert_awaited_once()
+        observation = self.h._steps("s", "observation", self.owner.ref)[-1].body
+        self.assertIn("invalid Unicode", observation["error"])
+
     async def test_no_draft_before_readiness_and_no_false_host_certification(self):
         obs = await self.call("draft_report", {"text": "Premature", "evidence": []})
         self.assertIsNotNone(obs.get("failure"))

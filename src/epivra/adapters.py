@@ -6,7 +6,10 @@ import asyncio
 import json
 import math
 import os
+import re
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any
 
@@ -222,13 +225,32 @@ class JsonAPI:
                 result["error_kind"] = "authentication"
         except (ValueError, AttributeError, TypeError):
             pass
+        try:
+            error = response.json().get("error", {})
+            if isinstance(error, dict):
+                for key in ("code", "type"):
+                    value = error.get(key)
+                    if isinstance(value, str) and re.fullmatch(r"[a-z_]{1,64}", value):
+                        result["provider_" + key] = value
+                if error.get("param") in {"model", "max_tokens", "max_completion_tokens", "messages", "tools", "thinking", "reasoning_effort", "output_config", "stream"}:
+                    result["parameter"] = error["param"]
+        except (ValueError, AttributeError, TypeError):
+            pass
+        request_id = response.headers.get("x-request-id", response.headers.get("request-id", ""))
+        if re.fullmatch(r"(?:req_)?[a-zA-Z0-9-]{8,100}", request_id) and not request_id.startswith("sk-"):
+            result["request_id"] = request_id
         if response.status_code == 429:
             try:
                 seconds = float(response.headers.get("retry-after", ""))
                 if math.isfinite(seconds) and seconds >= 0:
                     result["retry_after"] = seconds
             except ValueError:
-                pass
+                try:
+                    date = parsedate_to_datetime(response.headers.get("retry-after", ""))
+                    if date.tzinfo is not None:
+                        result["retry_after"] = max(0, (date - datetime.now(timezone.utc)).total_seconds())
+                except (TypeError, ValueError, OverflowError):
+                    pass
         return result
 
     async def post(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
@@ -490,6 +512,7 @@ class ChatCompletions:
                         and len(encode(o["result"])) <= INLINE_TOOL_RESULT_CHARS
                     }
                     prior_fields = {}
+                    seen_handles = set()
                     for message in previous["request"]["messages"]:
                         if message.get("role") not in {"user", "tool"}:
                             continue
@@ -506,6 +529,7 @@ class ChatCompletions:
                                     seen.add(prior_state["observation_ref"])
                                 continue
                             prior_fields.update(prior_state)
+                            seen_handles.update(encode(item) for item in prior_state.get("context", []) if item.get("body_omitted"))
                             seen.update(
                                 item["ref"]
                                 for item in prior_state.get("context", [])
@@ -529,7 +553,7 @@ class ChatCompletions:
                                 "context": [
                                     item
                                     for item in state.get("context", [])
-                                    if item["ref"] not in seen
+                                    if item["ref"] not in seen and not (item.get("body_omitted") and encode(item) in seen_handles)
                                 ],
                             }
                         ),
@@ -760,21 +784,22 @@ class Tavily:
 
     @classmethod
     def decode_search(cls, raw: dict) -> dict:
-        results = []
-        for item in cls._data(raw)["results"]:
-            if not isinstance(item, dict) or not isinstance(item.get("url"), str):
-                raise ValueError("invalid Tavily search result URL")
-            if any(not isinstance(item.get(k, ""), str) for k in ("title", "content")):
-                raise ValueError("invalid Tavily search title or content")
-            results.append(
-                {
-                    "url": item["url"],
-                    "title": item.get("title", ""),
-                    "snippet": item.get("content", ""),
-                    "content_type": "search_snippet",
-                }
-            )
-        return {"results": results}
+        results, failures = [], []
+        items = cls._data(raw)["results"]
+        if not isinstance(items, list):
+            raise ValueError("expected search results array")
+        for index, item in enumerate(items):
+            try:
+                if not isinstance(item, dict) or not isinstance(item.get("url"), str):
+                    raise ValueError("invalid search result URL")
+                cls.validate_extract({"url": item["url"]})
+                if any(not isinstance(item.get(k, ""), str) for k in ("title", "content")):
+                    raise ValueError("invalid search text")
+                results.append({"url": item["url"], "title": item.get("title", ""),
+                                "snippet": item.get("content", ""), "content_type": "search_snippet"})
+            except (ValueError, TypeError):
+                failures.append({"index": index, "error": "invalid_search_result"})
+        return {"results": results, "failures": failures}
 
     @classmethod
     def decode_extract(cls, raw: dict) -> dict:

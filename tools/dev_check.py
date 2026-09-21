@@ -74,8 +74,12 @@ def check_environment() -> dict[str, str]:
 
 def stop_process_tree(process: subprocess.Popen) -> None:
     if os.name == "nt":
-        subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"],
+        result = subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"],
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15, check=False)
+        if result.returncode and process.poll() is None:
+            process.kill()  # Terminate the owned child even if tree enumeration is denied.
+            process.wait(timeout=15)
+            raise RuntimeError("validation process-tree termination failed; descendants unverified")
     else:
         try:
             os.killpg(process.pid, signal.SIGKILL)

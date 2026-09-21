@@ -8,6 +8,8 @@ from docx.oxml.ns import qn
 from docx.shared import Cm, Pt, RGBColor
 from markdown_it import MarkdownIt
 
+from .markdown_rules import math_plugin
+
 
 def word_report(report):
     document = Document()
@@ -27,26 +29,7 @@ def word_report(report):
         style = document.styles[f"Heading {level}"]
         style.font.color.rgb = RGBColor.from_string("1D5545")
         style.element.get_or_add_rPr().rFonts.set(qn("w:eastAsia"), "Microsoft YaHei")
-    parser = MarkdownIt("default", {"html": False})
-
-    def formula(state, silent):
-        rest = state.src[state.pos :]
-        opener = next(
-            (s for s in (r"\(", r"\[", "$$", "$") if rest.startswith(s)), None
-        )
-        if not opener:
-            return False
-        closer = {r"\(": r"\)", r"\[": r"\]"}.get(opener, opener)
-        end = state.src.find(closer, state.pos + len(opener))
-        if end == -1:
-            return False
-        if not silent:
-            token = state.push("code_inline", "code", 0)
-            token.content = state.src[state.pos : end + len(closer)]
-        state.pos = end + len(closer)
-        return True
-
-    parser.inline.ruler.before("escape", "formula", formula)
+    parser = math_plugin(MarkdownIt("default", {"html": False}))
     tokens = parser.parse(report["text"])
     paragraph = None
     table = None
@@ -75,10 +58,10 @@ def word_report(report):
                 target.add_run().add_break()
             elif token.type == "image":
                 target.add_run(f"[{token.content}] ({token.attrGet('src')})")
-            elif token.type in {"text", "code_inline", "html_inline"}:
+            elif token.type in {"text", "code_inline", "html_inline", "math_inline"}:
                 run = target.add_run(token.content)
                 run.bold, run.italic, run.font.strike = bold, italic, strike
-                if token.type == "code_inline":
+                if token.type in {"code_inline", "math_inline"}:
                     run.font.name = "Consolas"
                 if href:
                     run.font.color.rgb = RGBColor.from_string("1D5545")
@@ -133,21 +116,20 @@ def word_report(report):
         elif kind == "paragraph_open":
             paragraph = document.add_paragraph()
             if lists:
-                paragraph.paragraph_format.left_indent = Cm(0.5 * len(lists))
                 if lists[-1]["first"]:
                     number = lists[-1]["number"]
                     paragraph.add_run(f"{number}. " if number is not None else "• ")
                     if number is not None:
                         lists[-1]["number"] += 1
                     lists[-1]["first"] = False
-            if quote_depth:
-                paragraph.paragraph_format.left_indent = Cm(0.6 * quote_depth)
+            if quote_depth or lists:
+                paragraph.paragraph_format.left_indent = Cm(0.6 * quote_depth + 0.5 * len(lists))
         elif kind == "inline":
             add_inline(paragraph, token.children or [])
             if table is not None and row == 0:
                 for run in paragraph.runs:
                     run.bold = True
-        elif kind in {"fence", "code_block"}:
+        elif kind in {"fence", "code_block", "math_block"}:
             p = document.add_paragraph()
             run = p.add_run(token.content.rstrip("\n"))
             run.font.name, run.font.size = "Consolas", Pt(9)

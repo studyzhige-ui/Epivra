@@ -11,6 +11,7 @@ import subprocess
 import sys
 import weakref
 import zipfile
+from copy import deepcopy
 from datetime import date, datetime, time
 from pathlib import Path
 
@@ -23,6 +24,12 @@ MAX_INPUT_BYTES = 256 * 1024 * 1024
 MAX_OUTPUT_BYTES = 64 * 1024 * 1024
 MAX_ELEMENTS = 1_000_000
 _parse_slots = weakref.WeakKeyDictionary()
+
+
+def _bounded(result):
+    if len(encode({"result": result}).encode("utf-8")) > MAX_OUTPUT_BYTES:
+        raise ValueError("material extraction exceeds parser capacity")
+    return result
 
 
 async def parse_isolated(
@@ -157,17 +164,18 @@ def parse(name: str, raw: bytes, options=None) -> dict:
     if (mode == "docling" and suffix == ".pdf") or suffix in FORMATS:
         from .document_parser import convert
 
-        return convert(name, raw, options)
+        return _bounded(convert(name, raw, options))
     parts, segments, issues = [], [], []
     position = 0
+    output_bytes = 0
+    encoding = options.get("encoding", "utf-8-sig")
 
     def append(text, locator, status="extracted"):
-        nonlocal position
+        nonlocal position, output_bytes
         block = text + "\n"
-        if (
-            len(segments) >= MAX_ELEMENTS
-            or position + len(block) > MAX_OUTPUT_BYTES // 4
-        ):
+        segment = {"start": position, "end": position + len(block), "locator": locator, "status": status}
+        output_bytes += len(encode(block)[1:-1].encode("utf-8")) + len(encode(segment).encode("utf-8")) + 1
+        if len(segments) >= MAX_ELEMENTS or output_bytes > MAX_OUTPUT_BYTES:
             raise ValueError("material extraction exceeds parser capacity")
         segments.append(
             {
@@ -181,8 +189,8 @@ def parse(name: str, raw: bytes, options=None) -> dict:
         parts.append(block)
 
     if suffix in TEXT_SUFFIXES:
-        text = raw.decode("utf-8-sig")
-        return {
+        text = raw.decode(encoding)
+        result = {
             "text": text,
             "segments": [
                 {
@@ -194,11 +202,12 @@ def parse(name: str, raw: bytes, options=None) -> dict:
             ],
             "coverage": "text_extracted_not_reviewed",
             "issues": [],
-            "parser": "utf8-v1",
+            "parser": "text-" + encoding,
         }
+        return _bounded(result)
     if suffix in {".csv", ".tsv"}:
         reader = csv.reader(
-            io.StringIO(raw.decode("utf-8-sig"), newline=""),
+            io.StringIO(raw.decode(encoding), newline=""),
             delimiter="," if suffix == ".csv" else "\t",
             strict=True,
         )
@@ -220,7 +229,9 @@ def parse(name: str, raw: bytes, options=None) -> dict:
             for number, page in enumerate(reader.pages, 1):
                 text = page.extract_text() or ""
                 status = (
-                    "text_extracted" if text.strip() else "needs_ocr_or_visual_review"
+                    "text_extracted" if text.strip() else "blank_page"
+                    if page.get_contents() is None and not page.get("/Resources", {}).get("/XObject")
+                    else "needs_ocr_or_visual_review"
                 )
                 append(text, {"page": number}, status)
                 if not text.strip():
@@ -237,9 +248,51 @@ def parse(name: str, raw: bytes, options=None) -> dict:
         ):
             from .document_parser import convert
 
+            original = parts[:], segments[:], issues[:], position, output_bytes
             try:
-                return convert(name, raw, options)
+                from pypdf import PdfWriter
+
+                selected = [i["page"] for i in issues if i["reason"] == "needs_ocr_or_visual_review"]
+                subset = PdfWriter()
+                for number in selected:
+                    subset.add_page(reader.pages[number - 1])
+                stream = io.BytesIO()
+                subset.write(stream)
+                converted = convert(name, stream.getvalue(), options)
+                by_page = {}
+                for segment in converted["segments"]:
+                    locator = deepcopy(segment["locator"])
+                    page_no = locator.get("page")
+                    if page_no is None or not 1 <= page_no <= len(selected):
+                        continue
+                    locator["page"] = selected[page_no - 1]
+                    for location in locator.get("locations", []):
+                        location["page"] = selected[location["page"] - 1]
+                    by_page.setdefault(locator["page"], []).append((converted["text"][segment["start"]:segment["end"]], locator))
+                old_parts, old_segments = parts[:], segments[:]
+                parts.clear()
+                segments.clear()
+                position = output_bytes = 0
+                for block, segment in zip(old_parts, old_segments):
+                    number = segment["locator"]["page"]
+                    if number in by_page:
+                        for value, locator in by_page[number]:
+                            append(value, locator, "extracted_not_reviewed")
+                    else:
+                        append(block[:-1], segment["locator"], segment["status"])
+                issues = [i for i in issues if i.get("page") not in by_page]
+                for issue in deepcopy(converted.get("issues", [])):
+                    locator = issue.get("locator", {})
+                    if "page" in locator:
+                        locator["page"] = selected[locator["page"] - 1]
+                    for location in locator.get("locations", []):
+                        location["page"] = selected[location["page"] - 1]
+                    if "page" in issue and 1 <= issue["page"] <= len(selected):
+                        issue["page"] = selected[issue["page"] - 1]
+                    issues.append(issue)
+                parser += "+" + converted["parser"]
             except (ValueError, RuntimeError, ImportError):
+                parts, segments, issues, position, output_bytes = original
                 issues.append(
                     {"reason": "docling_unavailable; retained_partial_text_layer"}
                 )
@@ -294,13 +347,15 @@ def parse(name: str, raw: bytes, options=None) -> dict:
             if book is not None:
                 book.close()
         parser = "openpyxl-" + __version__
-    return {
+    result = {
         "text": "".join(parts),
         "segments": segments,
         "coverage": "partial_extraction" if issues else "table_extracted_not_reviewed",
         "issues": issues,
         "parser": parser,
     }
+
+    return _bounded(result)
 
 
 if __name__ == "__main__":
@@ -323,4 +378,4 @@ if __name__ == "__main__":
         result = {"error": str(exc)}
     except Exception as exc:
         result = {"error": "material extraction failed: " + type(exc).__name__}
-    sys.stdout.buffer.write(json.dumps(result, ensure_ascii=False).encode("utf-8"))
+    sys.stdout.buffer.write(encode(result).encode("utf-8"))

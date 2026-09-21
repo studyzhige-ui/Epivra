@@ -1202,14 +1202,14 @@ class Store:
         at = time.time() if settled_at is None else settled_at
         if type(at) not in (int, float) or not math.isfinite(at):
             raise ValueError("finite operation timestamp required")
-        serialized = encode(result)
+        serialized = json.dumps(result, ensure_ascii=True, sort_keys=True, separators=(",", ":"), allow_nan=False)
         with self.transaction():
             row = self.db.execute(
                 "SELECT * FROM operations WHERE id=?", (operation_id,)
             ).fetchone()
             if row is None:
                 raise ValueError("operation was not admitted")
-            if row["status"] == "succeeded" and row["result"] != serialized:
+            if row["status"] == "succeeded" and json.dumps(json.loads(row["result"]), ensure_ascii=True, sort_keys=True, separators=(",", ":"), allow_nan=False) != serialized:
                 raise Conflict("cannot replace a settled result")
             admission = json.loads(row["admission"]) if row["admission"] else None
             if admission is not None:

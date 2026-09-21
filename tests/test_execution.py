@@ -107,6 +107,21 @@ class StorageTests(Fixture):
         with self.assertRaises(UnknownOutcome):
             self.store.admit("s", self.work.ref, self.c.epoch, "paid", {"q": "x"})
 
+    def test_settled_receipt_preserves_json_types_and_unicode(self):
+        for i, (old, new) in enumerate(((True, 1), (1, 1.0), (False, 0))):
+            operation = "typed-" + str(i)
+            self.store.admit("s", self.work.ref, self.c.epoch, operation, {})
+            self.store.settle(operation, {"value": old})
+            with self.assertRaises(Conflict):
+                self.store.settle(operation, {"value": new})
+            replay = self.store.admit("s", self.work.ref, self.c.epoch, operation, {})
+            self.assertIs(type(old), type(replay["value"]))
+        self.store.admit("s", self.work.ref, self.c.epoch, "unicode", {})
+        self.store.settle("unicode", {"text": "中文"})
+        self.store.db.execute("UPDATE operations SET result=? WHERE id=?", ('{"text":"中文"}', "unicode"))
+        self.store.settle("unicode", {"text": "中文"})
+        self.assertEqual({"text": "中文"}, self.store.admit("s", self.work.ref, self.c.epoch, "unicode", {}))
+
     def test_completed_call_replays_without_new_operation(self):
         self.store.admit("s", self.work.ref, self.c.epoch, "paid", {"q": "x"})
         self.store.settle("paid", {"answer": 42})

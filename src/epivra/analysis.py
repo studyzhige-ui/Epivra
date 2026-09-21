@@ -1,6 +1,8 @@
 """Local Docker execution. No research decisions, provider calls or persistence."""
 
 import asyncio
+import csv
+import io
 import json
 import os
 import re
@@ -133,6 +135,8 @@ class DockerSandbox:
         return json.loads(await docker("inspect", name))[0] if ids else None
 
     def command(self, name, job, folder, config):
+        mount = io.StringIO(newline="")
+        csv.writer(mount, lineterminator="").writerow(["type=bind", "src=" + str(Path(folder).resolve()), "dst=/inputs", "readonly"])
         return [
             "create",
             "--name",
@@ -161,7 +165,7 @@ class DockerSandbox:
             "--tmpfs",
             "/outputs:rw,nosuid,nodev,size=" + str(config["output_mb"]) + "m,mode=1777",
             "--mount",
-            "type=bind,src=" + str(Path(folder).resolve()) + ",dst=/inputs,readonly",
+            mount.getvalue(),
             "--log-driver",
             "local",
             "--log-opt",

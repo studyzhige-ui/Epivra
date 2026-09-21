@@ -2,14 +2,14 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
 function node(tag, text) {
-  return {tag, text, children: [],
+  return {tag, text, children: [], dataset: {},
     append(...items) { this.children.push(...items); },
     replaceChildren(...items) { this.children = items; },
     get childElementCount() { return this.children.length; }};
 }
 const list = node('div');
 const source = fs.readFileSync('src/epivra/web/app.js', 'utf8');
-const context = vm.createContext({node, labels: {}, $: () => list,
+const context = vm.createContext({node, labels: {}, language: "zh-CN", $: () => list,
   t: (s, ...args) => s.replace(/\{(\d+)\}/g, (_, i) => args[i])});
 vm.runInContext(source.slice(source.indexOf('function renderUsage'), source.indexOf('function sourceRows')), context);
 context.groups = [
@@ -43,3 +43,10 @@ assert.ok(JSON.stringify(list.children[2]).includes('4 次调用'));
 vm.runInContext('renderUsage(groups)', context);
 assert.equal(list.children.length, 4); // Polling replaces, never appends duplicate cards.
 console.log('usage rendering: functional metrics, zero, missing and partial coverage OK');
+
+const originalChildren = list.children;
+vm.runInContext('renderUsage(groups)', context);
+assert.equal(list.children, originalChildren);
+context.language = 'en';
+vm.runInContext('renderUsage(groups)', context);
+assert.notEqual(list.children, originalChildren);
