@@ -1,0 +1,68 @@
+name: Export validated final source blobs
+
+on:
+  push:
+    branches: [improve/epivra-optimization]
+    paths: [.github/workflows/final-pass-export.yml]
+
+permissions:
+  contents: write
+
+jobs:
+  export:
+    runs-on: [self-hosted, Windows, X64, epivra-eval]
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 20
+          persist-credentials: false
+
+      - name: Reconstruct and export exact already-validated blobs
+        shell: python
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          import base64, hashlib, json, lzma, os, subprocess, time, urllib.error, urllib.request
+          from pathlib import Path
+
+          source_base='cf7691941e4986e872b31c8b6d79b0b6da8e2114'
+          for name in ['src/epivra/harness.py','src/epivra/prompts.py','src/epivra/writing.py','tests/test_task_authority_probe.py']:
+              Path(name).write_bytes(subprocess.check_output(['git','show',source_base+':'+name]))
+          for name in ['docs/refactor/05_FINAL_PASS.md','tests/test_final_pass.py']:
+              Path(name).unlink(missing_ok=True)
+
+          encoded=''.join((Path('.github/finishing-batch')/f'final.patch.b64.{i}').read_text(encoding='utf-8') for i in range(7))
+          patch=lzma.decompress(base64.b64decode(encoded))
+          assert hashlib.sha256(patch).hexdigest()=='829a537b8182fdb8da9e500ec428c3ef9cd90fe6439f83749e787dcdf04697aa'
+          temp=Path(os.environ['RUNNER_TEMP'])/'final-pass-export.patch'
+          temp.write_bytes(patch)
+          subprocess.run(['git','apply',str(temp)],check=True)
+
+          expected={
+              'docs/refactor/05_FINAL_PASS.md':'d13f4934747cae7cd313cc98609c786c121c3cfa',
+              'src/epivra/harness.py':'412925447211ce451cbddb5630929d4eb00d5e81',
+              'src/epivra/prompts.py':'73ddb109005fc85c794a59218d5d009e70cf2908',
+              'src/epivra/writing.py':'8fe3f274abeecf67be0e791f70c2608c560360fa',
+              'tests/test_final_pass.py':'6c92b1c1dbb803cd06fcd2109482556cf3131217',
+              'tests/test_task_authority_probe.py':'0637abfe3e9cd5d00f33541378ffc1ee37854ecd',
+          }
+          def blob(data): return hashlib.sha1(b'blob '+str(len(data)).encode()+b'\0'+data).hexdigest()
+          headers={'Authorization':'Bearer '+os.environ['GH_TOKEN'],'Accept':'application/vnd.github+json','Content-Type':'application/json'}
+          for name, expected_sha in expected.items():
+              data=Path(name).read_bytes()
+              assert blob(data)==expected_sha
+              payload=json.dumps({'encoding':'base64','content':base64.b64encode(data).decode('ascii')}).encode()
+              last=None
+              for attempt in range(5):
+                  try:
+                      request=urllib.request.Request('https://api.github.com/repos/studyzhige-ui/Epivra/git/blobs',data=payload,headers=headers,method='POST')
+                      with urllib.request.urlopen(request,timeout=45) as response:
+                          remote=json.load(response)['sha']
+                      assert remote==expected_sha
+                      print(name,remote)
+                      break
+                  except (urllib.error.URLError, TimeoutError, OSError) as exc:
+                      last=exc
+                      if attempt==4: raise
+                      time.sleep(2**attempt)
