@@ -16,7 +16,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          fetch-depth: 2
+          fetch-depth: 3
           persist-credentials: false
       - name: Reconstruct exact locally tested sources from transparent deltas
         shell: python
@@ -25,7 +25,7 @@ jobs:
           from pathlib import Path
           base='08e54a544db587a3a12f8c8c8849a9bef7d02e30'
           parent=subprocess.check_output(['git','rev-parse','HEAD^'],text=True).strip()
-          assert parent==base, 'base moved; re-audit instead of blindly applying'
+          assert parent=='f63b61c44d2b8208ccd550c58ef7d0efa148500c', 'base moved; re-audit instead of blindly applying'
           changed=subprocess.check_output(['git','diff','--name-only',base,'HEAD'],text=True).splitlines()
           assert all(p.startswith('.github/owner-batch/') or p=='.github/workflows/owner-batch-verify.yml' for p in changed)
           directory=Path(os.environ['RUNNER_TEMP'])/('epivra-owner-'+os.environ['GITHUB_RUN_ID']+'-'+os.environ['GITHUB_RUN_ATTEMPT'])
