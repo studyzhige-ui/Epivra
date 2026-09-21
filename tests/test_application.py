@@ -260,6 +260,11 @@ class WorkflowTests(unittest.IsolatedAsyncioTestCase):
                             },
                         )
                     ]
+                elif role == "writer" and request.get("draft"):
+                    calls = [Call("finish_work", {
+                        "text": "Saved the checked draft for independent editing.",
+                        "refs": [request["draft"]["ref"]],
+                    })]
                 elif role == "writer":
                     answer = store.get("s", request["inputs"][0]["ref"])
                     self.assertIn("17", answer.body["text"])

@@ -101,6 +101,15 @@ class AnalysisTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("mean\n2\n", observation["text"])
         self.assertEqual(job.ref, observation["analysis"])
 
+    async def test_owner_analysis_uses_the_same_authorization_and_lineage(self):
+        self.work = self.lead
+        result = await self.execute()
+        self.assertEqual("succeeded", result.body["status"])
+        self.sandbox.run.assert_awaited_once()
+        job = self.store.get("s", result.body["job"])
+        self.assertIn(self.lead.ref, job.parents)
+        self.assertFalse(self.harness.finished("s", self.lead.ref))
+
     async def test_pause_during_analysis_records_cancel_and_reaps(self):
         async def paused(job, folder, config, fresh, guard):
             self.store.command("s", "pause", self.c.ref, "pause")
@@ -131,8 +140,8 @@ class AnalysisTests(unittest.IsolatedAsyncioTestCase):
         other = Workspace(self.store).upload("other", "private.txt", b"private")
         with self.assertRaises((ValueError, KeyError)):
             self.harness.workspace.analysis_inputs("s", {"x.txt": other.ref}, 100)
-        self.assertNotIn(
-            "run_analysis", self.harness._schema("lead", {"analysis": DEFAULTS})
+        self.assertIn(
+            "run_analysis", self.harness._schema("lead", {"analysis": DEFAULTS, "_approved": True})
         )
         self.assertNotIn("run_analysis", self.harness._schema("investigator", {}))
         self.sandbox.run.return_value["files"][0]["data"] = "invalid-base64"

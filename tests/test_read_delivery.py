@@ -141,8 +141,8 @@ class DeliveryTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn(name, BUILTINS)
         source = self.store.put("s", "source", {"text": "private to source-reading roles"})
         denied = await self.call(self.lead, "read_artifact", {"ref": source.ref})
-        self.assertIsNotNone(denied.body["failure"])
-        self.assertNotIn(source.body["text"], str(denied.body["result"]))
+        self.assertIsNone(denied.body["failure"])
+        self.assertEqual(source.body["text"], denied.body["result"]["body"]["text"])
 
     async def test_real_read_selection_remains_savable_as_exact_quote(self):
         source = self.store.put("s", "source", {"text": "Known condition.\n\nPossible counterexample.", "origin": "q.txt"})
@@ -178,7 +178,7 @@ class DeliveryTests(unittest.IsolatedAsyncioTestCase):
         writer = self.child("writer", "Write original task", [finding.ref])
         real_put = self.store._put
         def faulty(study, kind, *args, **kwargs):
-            if kind == "work_result":
+            if kind == "draft_saved":
                 raise ValueError("receipt persistence failed")
             return real_put(study, kind, *args, **kwargs)
         with patch.object(self.store, "_put", side_effect=faulty):

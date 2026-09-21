@@ -501,7 +501,7 @@ class Store:
                 "direction",
                 {
                     "request": request,
-                    "runtime": "research-mainline-v2",
+                    "runtime": "continuous-research-v1",
                     "policy": policy,
                 },
             )
@@ -646,6 +646,8 @@ class Store:
             direction, cancelled = current.direction, False
             approved_plan = current.plan
             if action == "approve":
+                if current.approved:
+                    raise NotAllowed("research route is already approved; no second approval")
                 plan = self.get(study, payload["plan"])
                 if plan.kind != "plan" or direction not in plan.parents:
                     raise Conflict(
@@ -694,7 +696,7 @@ class Store:
             return result
 
     def require_runtime(self, study: str, direction: str) -> None:
-        if self.get(study, direction).body.get("runtime") != "research-mainline-v2":
+        if self.get(study, direction).body.get("runtime") != "continuous-research-v1":
             raise RuntimeMismatch(
                 "Archived research runtime: read-only audit; start a new study"
             )
@@ -738,25 +740,15 @@ class Store:
                     raise NotAllowed("only a lead may delegate")
                 if parent.body["direction"] != current.direction:
                     raise Conflict("delegating work belongs to a superseded direction")
-            if role in {"synthesizer", "writer"}:
-                expected_roles = {"investigator", "synthesizer"}
-                results = [self.get(study, ref) for ref in inputs]
-                valid = set()
-                for result in results:
-                    if result.kind != "work_result" or not result.body.get("producer"):
-                        continue
-                    producer = self.get(study, result.body["producer"])
-                    if (
-                        producer.kind == "work"
-                        and producer.ref in result.parents
-                        and producer.body["role"] in expected_roles
-                        and producer.body["direction"] == current.direction
-                    ):
-                        valid.add(result.ref)
-                if not valid:
-                    raise NotAllowed(
-                        f"{role} requires research results from current research"
-                    )
+            # Specialization is not a prerequisite chain. A helper may start
+            # from direct evidence; its authority is inherited from this study.
+            if role in {"writer", "synthesizer"}:
+                for ref in inputs:
+                    result = self.get(study, ref)
+                    if result.kind == "work_result" and result.body.get("producer"):
+                        producer = self.get(study, result.body["producer"])
+                        if producer.kind == "work" and producer.body["direction"] != current.direction:
+                            raise NotAllowed("historical findings require reassessment from their sources")
             if role == "reviewer":
                 reports = [
                     self.get(study, ref)
@@ -1320,11 +1312,15 @@ class Store:
             author = self.get(study, report.body.get("producer", report.ref))
             if (
                 author.kind != "work"
-                or author.body["role"] != "writer"
-                or author.body["owner"] != work
+                or author.body["role"] not in {"lead", "investigator", "synthesizer", "writer"}
+                or not (author.ref == work or author.body["owner"] == work)
+                or author.body["direction"] != direction
                 or author.ref not in report.parents
             ):
-                raise Conflict("report must come from this lead's writer")
+                raise Conflict("report must come from this research owner or its authorized helper")
+            drafts = self.related(study, "draft_saved", author.ref, producer=True)
+            if drafts and drafts[-1].body["ref"] != report.ref:
+                raise Conflict("report is not the author's current saved version")
             reviewer = self.get(study, review.body["work"])
             if any(
                 other.seq > review.seq and report.ref in other.parents

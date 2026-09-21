@@ -31,7 +31,7 @@ PRIVATE_FIELDS = {
     "authorization", "api_key", "request_headers", "response_headers",
 }
 PUBLIC_KINDS = {
-    "direction", "plan", "work", "work_result", "work_wait", "clarification",
+    "direction", "plan", "work", "work_result", "draft_saved", "work_wait", "clarification",
     "clarification_answer", "source", "evidence_anchor", "note", "memory",
     "report", "review", "publication", "observation", "retry", "cooldown",
 }

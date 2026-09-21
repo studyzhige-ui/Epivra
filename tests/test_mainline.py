@@ -131,7 +131,7 @@ class MainlineTests(unittest.IsolatedAsyncioTestCase):
         report = self.store.list("s", "report")[0]
         self.assertEqual(text, report.body["text"])
         self.assertNotIn("handoff", report.body)
-        result = h._steps("s", "work_result", writer.ref)[0]
+        result = h._steps("s", "draft_saved", writer.ref)[0]
         self.assertEqual(args["handoff"], result.body["handoff"])
         reviewer = self.child("reviewer", "Check", (report.ref,))
         await self.execute(reviewer, Call("read_report", {"offset": 0, "limit": 20}))
@@ -272,13 +272,12 @@ class MainlineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("sample only", note.body["limits"])
         self.assertIn(source.ref, note.parents)
 
-    async def test_no_lead_drafting_or_unapproved_external_tool(self):
+    async def test_owner_can_draft_but_unapproved_external_tool_is_unavailable(self):
         await self.execute(
             self.lead, Call("draft_report", {"text": "Bypass", "evidence": []})
         )
-        self.assertFalse(self.store.list("s", "report"))
-        with self.assertRaises(NotAllowed):
-            self.child("writer", "No synthesis")
+        self.assertEqual(1, len(self.store.list("s", "report")))
+        self.assertEqual("writer", self.child("writer", "No mandatory synthesis").body["role"])
         c = self.store.create("p", "Plan", {"network": True})
         lead = self.store.work("p", c.ref, "lead", "Plan")
 
@@ -292,8 +291,8 @@ class MainlineTests(unittest.IsolatedAsyncioTestCase):
             self.store, Model(), {"paid": Tool("Paid", object_schema({}), paid)}
         )
         self.assertNotIn("paid", h._request("p", lead)["tools"])
-        self.assertNotIn("read_source", h._request("s", self.lead)["tools"])
-        self.assertNotIn("snapshot_local", h._request("s", self.lead)["tools"])
+        self.assertIn("read_source", h._request("s", self.lead)["tools"])
+        self.assertIn("snapshot_local", h._request("s", self.lead)["tools"])
 
     async def test_report_dependency_cannot_impersonate_author(self):
         inv = self.child("investigator", "Find")

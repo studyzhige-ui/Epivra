@@ -146,12 +146,14 @@ class StorageTests(Fixture):
             self.store.put("other", "note", {}, (self.work.ref,))
 
     def test_plan_version_is_required(self):
-        old = self.c
-        plan = self.store.put("s", "plan", {"text": "old"}, (old.direction,))
-        revised = self.command("steer", {"request": "new"})
+        # Initial route approval must name a current plan. Steering an already
+        # approved study retains authority and no longer allows reapproval.
+        old = self.store.create("pending", "Original question", {})
+        plan = self.store.put("pending", "plan", {"text": "old"}, (old.direction,))
+        revised = self.store.command("pending", "steer", old.ref, "steer", {"request": "new"})
         with self.assertRaises(Conflict):
             self.store.command(
-                "s", "wrong-plan", revised.ref, "approve", {"plan": plan.ref}
+                "pending", "wrong-plan", revised.ref, "approve", {"plan": plan.ref}
             )
 
     def test_publication_needs_bound_independent_review(self):

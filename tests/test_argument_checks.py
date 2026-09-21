@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from epivra.domain import Call, Conflict, NotAllowed, Reply
+from epivra.domain import Call, Conflict, Reply
 from epivra.harness import Harness
 from epivra.storage import Store
 
@@ -134,7 +134,7 @@ class ArgumentCheckTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.report.ref, publication.body["report"])
         self.assertEqual(review.ref, publication.body["review"])
 
-    async def test_check_cannot_transfer_acceptance_to_another_report_or_replace_research(
+    async def test_check_cannot_transfer_acceptance_but_can_be_revision_input(
         self,
     ):
         _, finding = await self.completed_check()
@@ -146,8 +146,10 @@ class ArgumentCheckTests(unittest.IsolatedAsyncioTestCase):
         )
         with self.assertRaises(Conflict):
             self.child("reviewer", "Check revised report", (other.ref, finding.ref))
-        with self.assertRaises(NotAllowed):
-            self.child("writer", "Write from check alone", (finding.ref,))
+        writer = self.child("writer", "Inspect this check and its bound source report", (finding.ref,))
+        self.assertEqual([finding.ref], list(writer.body["inputs"]))
+        self.assertFalse(self.harness.finished("s", writer.ref))
+        self.assertEqual([], self.store.list("s", "review"))
         self.assertEqual([], self.store.list("s", "publication"))
 
     async def test_forged_accepted_review_from_check_work_cannot_publish(self):

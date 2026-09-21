@@ -98,7 +98,7 @@ def progress(store, study, errors=None):
     for wait in store.list(study, "work_wait"):
         waits[wait.body.get("producer")] = wait
     revisions = {}
-    for kind in ("note", "clarification_answer"):
+    for kind in ("note", "clarification_answer", "draft_saved"):
         for item in store.list(study, kind):
             revisions.setdefault(item.body.get("producer"), {})[kind] = item.ref
     items = []
@@ -139,12 +139,12 @@ def work_detail(store, study, ref):
     if work.kind != "work" or work.body["direction"] != store.control(study).direction:
         raise Conflict("work is no longer current")
     entries = []
-    for kind in ("note", "clarification_answer", "work_result"):
+    for kind in ("note", "clarification_answer", "draft_saved", "work_result"):
         for item in store.list(study, kind):
             if item.body.get("producer") != work.ref:
                 continue
             body = item.body
-            if kind == "work_result" and body.get("ref"):
+            if kind in {"work_result", "draft_saved"} and body.get("ref"):
                 target = store.get(study, body["ref"])
                 body = target.body
                 kind_label = target.kind

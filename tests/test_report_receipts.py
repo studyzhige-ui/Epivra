@@ -48,14 +48,14 @@ class ReportReceiptTests(unittest.IsolatedAsyncioTestCase):
         text = "Draft\n\nAppendix with additional author content."
         receipt = await self.execute("draft_report", {"text": text, "evidence": [], "handoff": "Old draft had 5 characters"})
         report = self.store.get("s", receipt["ref"])
-        result = self.harness._steps("s", "work_result", self.writer.ref)[-1]
+        result = self.harness._steps("s", "draft_saved", self.writer.ref)[-1]
         self.assertEqual(report_metrics(report.body), receipt["report_metrics"])
         self.assertEqual(receipt["report_metrics"], result.body["report_metrics"])
         self.assertEqual(report.ref, result.body["ref"])
         self.assertNotEqual(measured["body"], result.body["report_metrics"]["body"])
         self.assertEqual(text_metrics(text), result.body["report_metrics"]["body"])
         self.assertNotIn("Old draft", report.body["text"])
-        self.assertTrue(self.harness.finished("s", self.writer.ref))
+        self.assertFalse(self.harness.finished("s", self.writer.ref))
 
     async def test_rendered_citations_match_reviewer_receipt(self):
         source = self.store.put("s", "source", {"origin": "source.txt", "text": "Count: 17."})
@@ -80,7 +80,8 @@ class ReportReceiptTests(unittest.IsolatedAsyncioTestCase):
         text = "Long report " * 100
         receipt = await self.execute("draft_report", {"text": text, "evidence": []})
         self.assertEqual(len(text), receipt["report_metrics"]["characters"])
-        self.assertEqual(2, len(self.store.list("s", "work_result")))
+        self.assertEqual(1, len(self.store.list("s", "work_result")))
+        self.assertEqual(1, len(self.store.list("s", "draft_saved")))
         other = self.store.work("s", self.c.ref, "writer", "Other", (self.finding_ref,), self.lead.ref)
         error = await self.execute("draft_report", {"text": "x", "evidence": [], "report_metrics": {}}, other)
         self.assertIn("error", error)
@@ -94,6 +95,7 @@ class ReportReceiptTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_handoff_survives_reopen_and_reaches_owner(self):
         receipt = await self.execute("draft_report", {"text": "Bounded finding", "evidence": []})
+        await self.execute("finish_work", {"text": "Ready for editing", "refs": [receipt["ref"]]})
         result = self.harness._steps("s", "work_result", self.writer.ref)[-1]
         self.store.close()
         self.store = Store(self.path)

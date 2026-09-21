@@ -102,19 +102,18 @@ class ReadContractTests(unittest.IsolatedAsyncioTestCase):
                     for name in ("read_artifact", "read_artifact_range"):
                         desc = schema[name]["description"]
                         denied = desc.split("Not readable with this tool: ")[1].split(".")[0]
-                        self.assertEqual(private | ({"source"} if role == "lead" else set()), set(denied.split(", ")))
-                        if role == "lead":
-                            self.assertIn("Delegate source examination", desc)
+                        self.assertEqual(private | ({"source"} if not approved else set()), set(denied.split(", ")))
+                        self.assertNotIn("Delegate source examination", desc)
         # Per-role assembly must not mutate the base description used by later roles.
         desc = self.harness._schema("investigator", {})["read_artifact"]["description"]
         self.assertNotIn("This lead", desc)
         self.assertNotIn("Delegate source examination", desc)
 
-    async def test_forbidden_source_reads_stay_denied_and_findings_readable(self):
+    async def test_owner_sources_and_helper_findings_are_directly_readable(self):
         for name in ("read_artifact", "read_artifact_range"):
             obs = await self.execute(self.lead, name, {"ref": self.source.ref})
-            self.assertIsNotNone(obs["failure"])
-            self.assertIn("Delegate source examination", obs["result"]["error"])
+            self.assertIsNone(obs["failure"])
+            self.assertNotIn("error", obs["result"])
         result = self.store.put("s", "note", {"text": "17 arrivals, not registrations."})
         obs = await self.execute(self.lead, "read_artifact", {"ref": result.ref})
         self.assertIsNone(obs["failure"])
@@ -180,6 +179,7 @@ class ReadContractTests(unittest.IsolatedAsyncioTestCase):
             tools = request["wire"]["payload"]["tools"]
             descriptions = {t["function"]["name"]: t["function"]["description"] for t in tools}
             for name in ("read_artifact", "read_artifact_range"):
-                self.assertIn("Delegate source examination", descriptions[name])
+                self.assertNotIn("Delegate source examination", descriptions[name])
+                self.assertIn("step_done", descriptions[name])
         finally:
             await api.close()

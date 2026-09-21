@@ -207,7 +207,6 @@ BUILTINS = {
                                             "source_statement",
                                             "observation",
                                             "inference",
-                                            "assumption",
                                             "prediction",
                                         ],
                                     },
@@ -275,7 +274,7 @@ BUILTINS = {
                     {
                         "subject": {
                             **STRING,
-                            "description": "用户指定的研究对象或主题；与关于它的待检验经验主张分开。",
+                            "description": "用户指定的研究对象或主题；不填写研究假设或预定结论。",
                         },
                         "given_context": STRINGS,
                         "questions": {**STRINGS, "minItems": 1},
@@ -302,7 +301,9 @@ BUILTINS = {
         "writer",
         {
             **object_schema(
-                {"text": STRING, "evidence": STRINGS, "handoff": {"type": "string"}}
+                {"text": STRING, "evidence": STRINGS, "handoff": {"type": "string"},
+                 "base": {**STRING, "pattern": "^[0-9a-f]{64}$",
+                          "description": "Exact current report ref for a revision; omit only for a first draft."}}
             ),
             "required": ["text", "evidence"],
         },
@@ -444,8 +445,6 @@ PRIVATE_ARTIFACT_KINDS = frozenset({"step", "step_done", "control", "material_by
 
 def artifact_read_denial(role: str, kind: str) -> str | None:
     """Shared by runtime rejection and the model-visible read-tool contract."""
-    if role == "lead" and kind == "source":
-        return "Delegate source examination; lead reads research findings"
     if kind in PRIVATE_ARTIFACT_KINDS:
         return "execution and provider-private records are not research materials"
     return None
@@ -484,16 +483,21 @@ class Harness:
         self._locks: dict[str, asyncio.Lock] = {}
 
     def _schema(self, role: str, policy: dict[str, Any]) -> dict[str, dict[str, Any]]:
+        # "lead" is the persisted name of the continuous research owner, not a
+        # coordinator that must outsource reading and authorship. External tools
+        # still require their explicit role grant AND the study's authorization.
+        research = role in {"lead", "investigator", "synthesizer", "writer"}
+        shared_research = {
+            "record_evidence", "draft_report", "read_writing_guide", "measure_text",
+            "save_note", "discover_local", "snapshot_local",
+        }
         result: dict[str, dict[str, Any]] = {
             name: {"description": TOOLS.get(name, name), "parameters": schema}
             for name, (allowed, schema) in BUILTINS.items()
             if allowed in (role, "all")
-            or (role == "lead" and name == "discover_local")
-            or (role == "synthesizer" and name == "finish_work")
-            or (
-                role in {"investigator", "reviewer", "synthesizer", "writer"}
-                and name in {"save_note", "discover_local", "snapshot_local"}
-            )
+            or (research and name in shared_research)
+            or (role in {"synthesizer", "writer"} and name == "finish_work")
+            or (role == "reviewer" and name in {"save_note", "discover_local", "snapshot_local"})
         }
         if role == "reviewer" and policy.get("_review_mode") == "check":
             result.pop("submit_review")
@@ -501,68 +505,37 @@ class Harness:
                 "description": TOOLS["finish_work"],
                 "parameters": BUILTINS["finish_work"][1],
             }
-        if not policy.get("analysis") or role == "lead":
+        if not policy.get("analysis"):
             result.pop("run_analysis", None)
-        if role == "lead" and policy.get("_approved"):
-            result = {
-                k: v
-                for k, v in result.items()
-                if k
-                in {
-                    "read_context",
-                    "delegate_work",
-                    "answer_clarification",
-                    "wait_for_work",
-                    "save_memory",
-                    "save_note",
-                    "read_artifact",
-                    "read_artifact_range",
-                    "find_artifacts",
-                    "publish_report",
-                }
-            }
-        elif role == "lead":
-            result = {
-                k: v
-                for k, v in result.items()
-                if k
-                in {
-                    "read_context",
-                    "propose_plan",
-                    "discover_local",
-                    "read_catalog",
-                    "find_artifacts",
-                    "read_artifact",
-                    "read_artifact_range",
-                    "save_memory",
-                }
-            }
-        # Advertise the same restrictions that the read handlers enforce. Metadata
-        # lookup stays available; no responsibility gains source-reading authority.
+        if role == "lead":
+            result.pop("request_clarification", None)  # No questions to the user.
+            if policy.get("_approved"):
+                result.pop("propose_plan", None)
+            else:
+                result = {k: v for k, v in result.items() if k in {
+                    "read_context", "propose_plan", "discover_local", "read_catalog",
+                    "find_artifacts", "read_artifact", "read_artifact_range", "save_memory",
+                }}
         denied = set(PRIVATE_ARTIFACT_KINDS)
-        if artifact_read_denial(role, "source"):
+        if not policy.get("_approved"):
             denied.add("source")
         for name in ("read_artifact", "read_artifact_range"):
             result[name]["description"] += (
                 " Not readable with this tool: " + ", ".join(sorted(denied)) + "."
             )
-            if role == "lead":
-                result[name]["description"] += (
-                    " Delegate source examination to an investigator; read work_result,"
-                    " note or clarification_answer for findings. Source refs from"
-                    " find_artifacts are navigation/hand-off, not permission to read."
-                )
         for name, tool in self.tools.items():
             if (
                 policy.get("_approved")
                 and role in tool.roles
                 and (tool.permission is None or policy.get(tool.permission) is True)
             ):
-                result[name] = {
-                    "description": tool.description,
-                    "parameters": tool.schema,
-                }
+                result[name] = {"description": tool.description, "parameters": tool.schema}
         return result
+
+    def _read_denial(self, study: str, work: Artifact, kind: str) -> str | None:
+        if kind == "source" and not self.store.control(study).approved:
+            return "source examination requires initial route approval"
+        return artifact_read_denial(work.body["role"], kind)
 
     def _review(self, study: str, work: Artifact):
         reports = [
@@ -652,6 +625,7 @@ class Harness:
             "task": work.body["task"],
             "shared_context": work.body.get("shared_context", ""),
             "deliverable": work.body.get("deliverable", ""),
+            "draft": self._draft_head(study, work),
             "current_date": direction.body["policy"].get("as_of_date")
             or datetime.now(timezone.utc).date().isoformat(),
             "direction": direction.body,
@@ -991,7 +965,7 @@ class Harness:
             kind,
             work,
             producer=kind
-            in {"work_result", "note", "memory", "evidence_anchor", "work_wait"},
+            in {"work_result", "draft_saved", "note", "memory", "evidence_anchor", "work_wait"},
             # Only step has one parent; multi-parent artifacts are sorted by ref.
             first_parent=kind == "step",
             limit=limit,
@@ -1028,6 +1002,13 @@ class Harness:
 
     def waiting(self, study: str, work: str) -> bool:
         return bool(self.store.clarifications(study, work=work, open_only=True))
+
+    def _draft_head(self, study: str, work: Artifact) -> dict | None:
+        receipts = self._steps(study, "draft_saved", work.ref, limit=1)
+        if not receipts:
+            return None
+        return {"ref": receipts[-1].body["ref"], "receipt": receipts[-1].ref,
+                "state": "saved_not_finished"}
 
     def finished(self, study: str, work: str) -> bool:
         return bool(self._steps(study, "work_result", work))
@@ -1437,6 +1418,11 @@ class Harness:
     ) -> Any:
         self.store.require_work(study, work.ref, epoch)
         direction = work.body["direction"]
+        if not self.store.control(study).approved and call.name in {
+            "read_source", "snapshot_local", "record_evidence", "draft_report",
+            "delegate_work", "run_analysis", "publish_report",
+        }:
+            raise NotAllowed("initial research route approval required")
         args = call.arguments
         if call.name in {"read_source", "read_artifact_range", "read_report"}:
             args = {
@@ -1512,6 +1498,14 @@ class Harness:
                 "resumed_work": self.store.get(study, args["question"]).body["work"],
             }
         if call.name == "finish_work":
+            draft = self._draft_head(study, work)
+            draft_binding = {}
+            if draft:
+                if draft["ref"] not in args["refs"]:
+                    raise ValueError("include the current saved report ref when completing author work")
+                saved_receipt = self.store.get(study, draft["receipt"])
+                draft_binding = {key: saved_receipt.body[key]
+                                 for key in ("ref", "handoff", "report_metrics")}
             for ref in args.get("supersedes", []):
                 old = self.store.get(study, ref)
                 producer = self.store.get(study, old.body.get("producer", ref))
@@ -1545,7 +1539,7 @@ class Harness:
             item = self.store.put(
                 study,
                 "work_result",
-                {**args, "producer": work.ref, **binding},
+                {**args, "producer": work.ref, **draft_binding, **binding},
                 (
                     *parents,
                     *self._handoff_inputs(study, work),
@@ -1589,7 +1583,7 @@ class Harness:
             return {"ref": item.ref}
         if call.name == "read_artifact_range":
             artifact = self.store.get(study, args["ref"])
-            denial = artifact_read_denial(work.body["role"], artifact.kind)
+            denial = self._read_denial(study, work, artifact.kind)
             if denial:
                 raise NotAllowed(denial)
             body = encode(artifact.body)
@@ -1699,7 +1693,7 @@ class Harness:
             )
         if call.name == "read_artifact":
             artifact = self.store.get(study, args["ref"])
-            denial = artifact_read_denial(work.body["role"], artifact.kind)
+            denial = self._read_denial(study, work, artifact.kind)
             if denial:
                 raise NotAllowed(denial)
             result = {
@@ -1779,6 +1773,8 @@ class Harness:
                 study, "note", {**args, "producer": work.ref}, (*parents, *args["refs"])
             )
         elif call.name == "propose_plan":
+            if self.store.control(study).approved:
+                raise NotAllowed("research route is already approved")
             item = self.store.put(study, "plan", args, parents)
             self.store.put(
                 study,
@@ -1800,21 +1796,31 @@ class Harness:
                 "status": "advisory; user requirements take precedence",
             }
         elif call.name == "draft_report":
+            current_draft = self._draft_head(study, work)
+            base = args.get("base")
+            if current_draft and base != current_draft["ref"]:
+                raise Conflict("draft changed; revise the current report from the draft receipt")
+            if base:
+                original = self.store.get(study, base)
+                if (original.kind != "report" or direction not in original.parents
+                        or (not current_draft and base not in self._handoff_inputs(study, work))):
+                    raise NotAllowed("revision base must be the current or explicitly assigned report")
             rendered = render_citations(
                 args["text"], args["evidence"], lambda ref: self.store.get(study, ref)
             )
             receipt = report_metrics(rendered)
-            # A report and its delivered work_result are one logical completion.
-            # Keep this correctness fix independently of the reverted edit tools.
+            # Saving is not task completion: preserve one authoring context.
+            # The immutable report and durable save receipt commit atomically.
             with self.store.transaction():
                 item = self.store._put(
                     study, "report",
-                    {**rendered, "evidence": args["evidence"], "producer": work.ref},
+                    {**rendered, "evidence": args["evidence"], "producer": work.ref,
+                     **({"previous_report": base} if base else {})},
                     (*parents, *self._handoff_inputs(study, work),
-                     *args["evidence"], *rendered["citations"]),
+                     *args["evidence"], *rendered["citations"], *((base,) if base else ())),
                 )
                 self.store._put(
-                    study, "work_result",
+                    study, "draft_saved",
                     {"ref": item.ref, "producer": work.ref,
                      "handoff": args.get("handoff", ""), "report_metrics": receipt},
                     (work.ref, item.ref),
