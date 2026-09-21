@@ -4,6 +4,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from research_fixture import prepare_basis
+
 from epivra.application import ResearchService
 from epivra.domain import Call, Conflict, NotAllowed, Reply
 from epivra.harness import BUILTINS, Harness, Tool, object_schema, validate
@@ -36,6 +38,9 @@ class MainlineTests(unittest.IsolatedAsyncioTestCase):
         return self.store.work("s", self.c.ref, role, task, refs, self.lead.ref)
 
     async def execute(self, work, call):
+        if call.name == "draft_report":
+            prepare_basis(self.store, work)
+
         class Model:
             identity = "boundary"
 
@@ -277,7 +282,9 @@ class MainlineTests(unittest.IsolatedAsyncioTestCase):
             self.lead, Call("draft_report", {"text": "Bypass", "evidence": []})
         )
         self.assertEqual(1, len(self.store.list("s", "report")))
-        self.assertEqual("writer", self.child("writer", "No mandatory synthesis").body["role"])
+        self.assertEqual(
+            "writer", self.child("writer", "No mandatory synthesis").body["role"]
+        )
         c = self.store.create("p", "Plan", {"network": True})
         lead = self.store.work("p", c.ref, "lead", "Plan")
 

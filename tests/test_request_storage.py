@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import unittest
 
+from research_fixture import save_report
 from test_execution import FakeModel, Fixture
 
 from epivra.domain import Conflict, Reply, UnknownOutcome, identity
@@ -178,19 +179,25 @@ class CompletedImportTests(Fixture):
         writer = self.store.work(
             "s", self.c.ref, "writer", "Write", (finding.ref,), self.work.ref
         )
-        report = self.store.put(
-            "s",
-            "report",
-            {"text": "Result", "producer": writer.ref, "evidence": []},
-            (self.c.direction, writer.ref),
-        )
+        report = save_report(self.store, writer, "Result", [])
         reviewer = self.store.work(
             "s", self.c.ref, "reviewer", "Check", (report.ref,), self.work.ref
         )
-        request = {"context": [{"ref": report.ref, "kind": "report", "body": report.body}]}
+        request = {
+            "context": [{"ref": report.ref, "kind": "report", "body": report.body}]
+        }
         step = self.store.put("s", "step", {"request": request}, (reviewer.ref,))
-        self.store.admit("s", reviewer.ref, self.c.epoch, "review-input", request, request_step=step.ref)
-        self.store.settle("review-input", {"complete": True, "text": "checked", "calls": []})
+        self.store.admit(
+            "s",
+            reviewer.ref,
+            self.c.epoch,
+            "review-input",
+            request,
+            request_step=step.ref,
+        )
+        self.store.settle(
+            "review-input", {"complete": True, "text": "checked", "calls": []}
+        )
         review = self.store.put(
             "s",
             "review",

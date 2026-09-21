@@ -4,6 +4,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from research_fixture import prepare_basis
+
 from epivra.domain import Call, Conflict, Reply
 from epivra.harness import Harness
 from epivra.storage import Store
@@ -57,6 +59,8 @@ class ArgumentCheckTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def execute(self, work, name, args):
+        if name == "draft_report":
+            prepare_basis(self.store, work)
         self.model.calls = (Call(name, args),)
         await self.harness.step("s", work.ref)
         return self.harness._steps("s", "observation", work.ref)[-1].body["result"]
@@ -146,7 +150,9 @@ class ArgumentCheckTests(unittest.IsolatedAsyncioTestCase):
         )
         with self.assertRaises(Conflict):
             self.child("reviewer", "Check revised report", (other.ref, finding.ref))
-        writer = self.child("writer", "Inspect this check and its bound source report", (finding.ref,))
+        writer = self.child(
+            "writer", "Inspect this check and its bound source report", (finding.ref,)
+        )
         self.assertEqual([finding.ref], list(writer.body["inputs"]))
         self.assertFalse(self.harness.finished("s", writer.ref))
         self.assertEqual([], self.store.list("s", "review"))

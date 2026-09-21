@@ -10,6 +10,7 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 import httpx
+from research_fixture import prepare_basis
 
 from epivra.adapters import IncompleteStream, JsonAPI
 from epivra.diagnostics import windows
@@ -204,6 +205,8 @@ class RuntimeBoundaries(unittest.IsolatedAsyncioTestCase):
         self.folder.cleanup()
 
     async def execute(self, work, name, args):
+        if name == "draft_report":
+            prepare_basis(self.store, work)
         self.model.calls = (Call(name, args),)
         await self.harness.step("s", work.ref)
         return self.harness._steps("s", "observation", work.ref)[-1].body["result"]
@@ -290,15 +293,6 @@ class RuntimeBoundaries(unittest.IsolatedAsyncioTestCase):
                 "text": "Registration grew 20%; effects were not measured.",
                 "refs": [],
                 "supersedes": [old["ref"]],
-                "findings": [
-                    {
-                        "statement": "Registration grew 20%",
-                        "status": "observation",
-                        "support": [],
-                        "conditions": ["registration metric"],
-                        "not_supported": ["effectiveness growth"],
-                    }
-                ],
             },
         )
         self.assertIn("ref", new)
@@ -372,13 +366,6 @@ class RuntimeBoundaries(unittest.IsolatedAsyncioTestCase):
             {
                 "text": "Manuscript contains tentative answer",
                 "refs": [report.ref],
-                "findings": [
-                    {
-                        "statement": "The manuscript states a tentative answer",
-                        "status": "observation",
-                        "support": [report.ref],
-                    }
-                ],
             },
         )
         self.assertIn("ref", checked)
@@ -539,22 +526,22 @@ class ParserLifecycle(unittest.IsolatedAsyncioTestCase):
 class InputBoundaries(unittest.TestCase):
     def test_finding_contract_distinguishes_reference_from_evidence_prose(self):
         value = {
-            "text": "supported conclusion",
-            "refs": [],
-            "findings": [
-                {
-                    "statement": "observed outcome",
-                    "status": "observation",
-                    "support": ["source says the outcome improved"],
-                }
-            ],
+            "statement": "observed outcome",
+            "status": "observation",
+            "support": ["source says the outcome improved"],
         }
         with self.assertRaisesRegex(
-            ValueError, r"arguments.findings\[0\].support\[0\].*exact artifact ref"
+            ValueError, r"arguments.support\[0\].*exact artifact ref"
         ):
-            validate(value, BUILTINS["finish_work"][1])
-        value["findings"][0]["support"] = ["a" * 64]
-        validate(value, BUILTINS["finish_work"][1])
+            validate(value, BUILTINS["record_finding"][1])
+        value["support"] = ["a" * 64]
+        validate(value, BUILTINS["record_finding"][1])
+        # The legacy completion payload cannot establish a second fact ledger.
+        with self.assertRaises(ValueError):
+            validate(
+                {"text": "done", "refs": [], "findings": [value]},
+                BUILTINS["finish_work"][1],
+            )
 
     def test_json_depth_and_nonfinite_numbers(self):
         nested = []

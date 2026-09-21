@@ -5,6 +5,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from research_fixture import save_report
+
 from epivra.domain import (
     Call,
     Conflict,
@@ -150,7 +152,9 @@ class StorageTests(Fixture):
         # approved study retains authority and no longer allows reapproval.
         old = self.store.create("pending", "Original question", {})
         plan = self.store.put("pending", "plan", {"text": "old"}, (old.direction,))
-        revised = self.store.command("pending", "steer", old.ref, "steer", {"request": "new"})
+        revised = self.store.command(
+            "pending", "steer", old.ref, "steer", {"request": "new"}
+        )
         with self.assertRaises(Conflict):
             self.store.command(
                 "pending", "wrong-plan", revised.ref, "approve", {"plan": plan.ref}
@@ -179,16 +183,7 @@ class StorageTests(Fixture):
             "s", self.c.ref, "writer", "Write", (synthesis.ref,), self.work.ref
         )
         source = self.store.put("s", "source", {"text": "Evidence"})
-        report = self.store.put(
-            "s",
-            "report",
-            {
-                "text": "Result",
-                "producer": writer.ref,
-                "evidence": [source.ref],
-            },
-            (self.c.direction, source.ref, writer.ref),
-        )
+        report = save_report(self.store, writer, "Result", [source.ref])
         review_work = self.store.work(
             "s",
             self.c.ref,
@@ -208,10 +203,21 @@ class StorageTests(Fixture):
         )
         with self.assertRaisesRegex(ValueError, "has not reached"):
             self.store.publish("s", self.work.ref, self.c.epoch, report.ref, review.ref)
-        request = {"context": [{"ref": report.ref, "kind": "report", "body": report.body}]}
+        request = {
+            "context": [{"ref": report.ref, "kind": "report", "body": report.body}]
+        }
         step = self.store.put("s", "step", {"request": request}, (review_work.ref,))
-        self.store.admit("s", review_work.ref, self.c.epoch, "review-input", request, request_step=step.ref)
-        self.store.settle("review-input", {"complete": True, "text": "checked", "calls": []})
+        self.store.admit(
+            "s",
+            review_work.ref,
+            self.c.epoch,
+            "review-input",
+            request,
+            request_step=step.ref,
+        )
+        self.store.settle(
+            "review-input", {"complete": True, "text": "checked", "calls": []}
+        )
         published = self.store.publish(
             "s", self.work.ref, self.c.epoch, report.ref, review.ref
         )

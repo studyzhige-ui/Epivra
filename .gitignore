@@ -37,3 +37,7 @@ analysis-settings.json
 /AGENTS.md
 /CLAUDE.md
 /PROJECT_CHARTER.md
+
+# Versioned architecture and acceptance contracts accompany the refactor.
+!/docs/refactor/
+!/docs/refactor/**

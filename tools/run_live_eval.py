@@ -27,13 +27,37 @@ from tools.run_review_eval import run as review_run
 
 CLOSED_CASES = {"archive", "decision", "measurement", "training"}
 PRIVATE_FIELDS = {
-    "reasoning_content", "reasoning_details", "encrypted_content", "signature",
-    "authorization", "api_key", "request_headers", "response_headers",
+    "reasoning_content",
+    "reasoning_details",
+    "encrypted_content",
+    "signature",
+    "authorization",
+    "api_key",
+    "request_headers",
+    "response_headers",
 }
 PUBLIC_KINDS = {
-    "direction", "plan", "work", "work_result", "draft_saved", "work_wait", "clarification",
-    "clarification_answer", "source", "evidence_anchor", "note", "memory",
-    "report", "review", "publication", "observation", "retry", "cooldown",
+    "direction",
+    "plan",
+    "work",
+    "work_result",
+    "draft_saved",
+    "work_wait",
+    "clarification",
+    "clarification_answer",
+    "source",
+    "evidence_anchor",
+    "note",
+    "memory",
+    "report",
+    "review",
+    "publication",
+    "observation",
+    "retry",
+    "cooldown",
+    "finding",
+    "research_conflict",
+    "writing_basis",
 }
 
 
@@ -67,7 +91,9 @@ def validate_request(value: object) -> dict:
         if cases or not value["probe_providers"]:
             raise ValueError("provider mode requires probes and no research cases")
     else:
-        raise ValueError("large/benchmark batches need separate owner approval and workflow")
+        raise ValueError(
+            "large/benchmark batches need separate owner approval and workflow"
+        )
     return value
 
 
@@ -75,12 +101,15 @@ def scrub(value: object, secrets: tuple[str, ...]) -> object:
     """Defense in depth after allowlist projection; never export native protocol."""
     if isinstance(value, dict):
         if isinstance(value.get("type"), str) and value["type"] in {
-            "thinking", "redacted_thinking", "reasoning"
+            "thinking",
+            "redacted_thinking",
+            "reasoning",
         }:
             return {"type": "omitted_private_block"}
         return {
             str(scrub(k, secrets)): scrub(v, secrets)
-            for k, v in value.items() if str(k).lower() not in PRIVATE_FIELDS
+            for k, v in value.items()
+            if str(k).lower() not in PRIVATE_FIELDS
         }
     if isinstance(value, (tuple, list)):
         return [scrub(v, secrets) for v in value]
@@ -92,7 +121,9 @@ def scrub(value: object, secrets: tuple[str, ...]) -> object:
 
 
 def save(path: Path, value: object, secrets: tuple[str, ...] = ()) -> None:
-    text = json.dumps(scrub(value, secrets), ensure_ascii=False, indent=2, allow_nan=False)
+    text = json.dumps(
+        scrub(value, secrets), ensure_ascii=False, indent=2, allow_nan=False
+    )
     temporary = path.with_suffix(path.suffix + ".tmp")
     temporary.write_text(text + "\n", encoding="utf-8")
     temporary.replace(path)
@@ -104,24 +135,39 @@ def collect(database: Path) -> dict:
         raise ValueError("missing evaluation database")
     store = Store(database)
     try:
-        studies = [r[0] for r in store.db.execute(
-            "SELECT DISTINCT study FROM artifacts ORDER BY study"
-        )]
+        studies = [
+            r[0]
+            for r in store.db.execute(
+                "SELECT DISTINCT study FROM artifacts ORDER BY study"
+            )
+        ]
         artifacts, window_records, calls = [], [], []
         unknown = 0
         for study in studies:
             for kind in sorted(PUBLIC_KINDS):
-                artifacts.extend({
-                    "study": study, "seq": a.seq, "ref": a.ref, "kind": a.kind,
-                    "parents": a.parents, "body": a.body,
-                } for a in store.iter_artifacts(study, kind))
-            window_records.extend({"study": study, **row} for row in windows(store, study))
+                artifacts.extend(
+                    {
+                        "study": study,
+                        "seq": a.seq,
+                        "ref": a.ref,
+                        "kind": a.kind,
+                        "parents": a.parents,
+                        "body": a.body,
+                    }
+                    for a in store.iter_artifacts(study, kind)
+                )
+            window_records.extend(
+                {"study": study, **row} for row in windows(store, study)
+            )
             calls.extend({"study": study, **r} for r in store.usage_records(study))
             unknown += len(store.unsettled(study))
         artifacts.sort(key=lambda a: a["seq"])
         return {
-            "artifacts": artifacts, "windows": window_records, "calls": calls,
-            "usage": summarize(calls), "unknown_operations": unknown,
+            "artifacts": artifacts,
+            "windows": window_records,
+            "calls": calls,
+            "usage": summarize(calls),
+            "unknown_operations": unknown,
         }
     finally:
         store.close()
@@ -133,8 +179,10 @@ def review_checks(rows: object, selected: list[str]) -> dict:
     if {r.get("case") for r in rows} != set(selected):
         raise ValueError("review output case identities differ")
     completed = all(
-        r.get("error") is None and type(r.get("accepted")) is bool
-        and isinstance(r.get("review"), dict) for r in rows
+        r.get("error") is None
+        and type(r.get("accepted")) is bool
+        and isinstance(r.get("review"), dict)
+        for r in rows
     )
     matches = sum(r.get("accepted") is r.get("expected_accept") for r in rows)
     return {
@@ -151,32 +199,58 @@ async def provider_probe(keys: dict, record) -> bool:
     api = JsonAPI("https://api.deepseek.com", keys["DEEPSEEK_API_KEY"], deadline=120)
     try:
         model = DeepSeek(api, thinking=False, max_tokens=32)
-        raw = await api.post("/chat/completions", model._payload(
-            [{"role": "user", "content": "Reply with exactly OK."}], []
-        ))
+        raw = await api.post(
+            "/chat/completions",
+            model._payload([{"role": "user", "content": "Reply with exactly OK."}], []),
+        )
         decoded = model.decode(raw)
-        ok = decoded["complete"] and decoded["text"].strip() == "OK" and not decoded["calls"]
-        record({"provider": "deepseek", "ok": ok, "http_status": raw.get("http_status"),
-                "usage": counters(raw, "deepseek")})
+        ok = (
+            decoded["complete"]
+            and decoded["text"].strip() == "OK"
+            and not decoded["calls"]
+        )
+        record(
+            {
+                "provider": "deepseek",
+                "ok": ok,
+                "http_status": raw.get("http_status"),
+                "usage": counters(raw, "deepseek"),
+            }
+        )
         if not ok:
             return False
     finally:
         await api.close()
-    slots = list(dict.fromkeys(k.strip() for k in keys["TAVILY_API_KEY"].split(",") if k.strip()))
+    slots = list(
+        dict.fromkeys(k.strip() for k in keys["TAVILY_API_KEY"].split(",") if k.strip())
+    )
     if not 1 <= len(slots) <= 4:
         raise ValueError("this small probe supports one to four Tavily slots")
     provider = connect("tavily", keys)
     try:
         all_ok = True
         for slot in range(1, len(slots) + 1):
-            raw = await provider.search({"query": "site:docs.python.org asyncio TaskGroup"})
+            raw = await provider.search(
+                {"query": "site:docs.python.org asyncio TaskGroup"}
+            )
             # A rejection is recorded, not retried with another account for this request.
             status = raw.get("http_status")
             decoded = provider.decode_search(raw) if status == 200 else {"results": []}
-            ok = status == 200 and bool(decoded["results"]) and raw.get("credential_slot") == slot
-            record({"provider": "tavily", "slot": slot, "ok": ok,
-                    "http_status": status, "results": len(decoded["results"]),
-                    "usage": counters(raw, "tavily")})
+            ok = (
+                status == 200
+                and bool(decoded["results"])
+                and raw.get("credential_slot") == slot
+            )
+            record(
+                {
+                    "provider": "tavily",
+                    "slot": slot,
+                    "ok": ok,
+                    "http_status": status,
+                    "results": len(decoded["results"]),
+                    "usage": counters(raw, "tavily"),
+                }
+            )
             all_ok = all_ok and ok
         return all_ok
     finally:
@@ -192,25 +266,40 @@ async def run(root: Path, request: dict, run_id: str) -> int:
     state = root / ".epivra" / f"live-{run_id}"
     output = root / "artifacts" / "live-eval"
     if state.exists() or output.exists():
-        raise ValueError("fresh run and export directory required; never blindly replay paid checks")
+        raise ValueError(
+            "fresh run and export directory required; never blindly replay paid checks"
+        )
     # Check legacy runner paths before any provider call, too.
-    legacy = root / ".epivra" / (
-        f"review-{run_id}" if request["mode"] == "review"
-        else f"closed-{request['cases'][0]}-{run_id}" if request["mode"] == "closed"
-        else f"probe-{run_id}"
+    legacy = (
+        root
+        / ".epivra"
+        / (
+            f"review-{run_id}"
+            if request["mode"] == "review"
+            else f"closed-{request['cases'][0]}-{run_id}"
+            if request["mode"] == "closed"
+            else f"probe-{run_id}"
+        )
     )
     if legacy.exists():
         raise ValueError("existing diagnostic run; inspect it instead of restarting")
     private_directory(state)
     output.mkdir(parents=True)
     keys = credentials(root / ".env")
-    secrets = tuple(v for key, value in keys.items() for v in (
-        value, *(k.strip() for k in value.split(","))
-    ) if v)
+    secrets = tuple(
+        v
+        for key, value in keys.items()
+        for v in (value, *(k.strip() for k in value.split(",")))
+        if v
+    )
     summary = {
-        "version": 1, "run_id": run_id, "request": request,
-        "commit": os.environ.get("GITHUB_SHA"), "started_at": time.time(),
-        "execution_pass": False, "semantic_acceptance": "not_evaluated",
+        "version": 1,
+        "run_id": run_id,
+        "request": request,
+        "commit": os.environ.get("GITHUB_SHA"),
+        "started_at": time.time(),
+        "execution_pass": False,
+        "semantic_acceptance": "not_evaluated",
         "provider_probes": [],
     }
     save(output / "summary.json", summary, secrets)
@@ -218,7 +307,12 @@ async def run(root: Path, request: dict, run_id: str) -> int:
     save(output / "request.json", request)
     fingerprints = {
         str(p.relative_to(root)): hashlib.sha256(p.read_bytes()).hexdigest()
-        for pattern in ("src/epivra/*.py", "tools/*eval*.py", "evals/*.json", "evals/*.py")
+        for pattern in (
+            "src/epivra/*.py",
+            "tools/*eval*.py",
+            "evals/*.json",
+            "evals/*.py",
+        )
         for p in sorted(root.glob(pattern))
     }
     save(output / "code-manifest.json", fingerprints)
@@ -240,7 +334,9 @@ async def run(root: Path, request: dict, run_id: str) -> int:
             # Existing diagnostic stdout may contain domain data. Only projections leave the runner.
             with redirect_stdout(log), redirect_stderr(log):
                 if request["mode"] == "review":
-                    await review_run(root, run_id, mechanisms=True, only=request["cases"])
+                    await review_run(
+                        root, run_id, mechanisms=True, only=request["cases"]
+                    )
                 elif request["mode"] == "closed":
                     await closed_run(root, request["cases"][0], run_id)
         if request["mode"] == "review":
@@ -253,13 +349,16 @@ async def run(root: Path, request: dict, run_id: str) -> int:
         elif request["mode"] == "closed":
             result = json.loads((legacy / "result.json").read_text(encoding="utf-8"))
             save(output / "closed-result.json", result, secrets)
-            summary["execution_pass"] = bool(result.get("published")) and not result.get("errors")
+            summary["execution_pass"] = bool(
+                result.get("published")
+            ) and not result.get("errors")
             summary["validation_pass"] = summary["execution_pass"]
             summary["semantic_acceptance"] = "pending_primary_review"
             report = legacy / "report.md"
             if report.is_file():
                 (output / "report.md").write_text(
-                    str(scrub(report.read_text(encoding="utf-8"), secrets)), encoding="utf-8"
+                    str(scrub(report.read_text(encoding="utf-8"), secrets)),
+                    encoding="utf-8",
                 )
         else:
             summary.update(execution_pass=True, validation_pass=True)
@@ -272,21 +371,33 @@ async def run(root: Path, request: dict, run_id: str) -> int:
         if database.is_file():
             try:
                 projection = collect(database)
-                for field, name in (("artifacts", "public-artifacts.json"),
-                                    ("windows", "window-manifest.json"), ("calls", "calls.json")):
+                for field, name in (
+                    ("artifacts", "public-artifacts.json"),
+                    ("windows", "window-manifest.json"),
+                    ("calls", "calls.json"),
+                ):
                     save(output / name, projection[field], secrets)
-                summary.update(usage=projection["usage"], unknown_operations=projection["unknown_operations"])
+                summary.update(
+                    usage=projection["usage"],
+                    unknown_operations=projection["unknown_operations"],
+                )
                 if projection["unknown_operations"]:
                     summary["validation_pass"] = False
             except Exception as exc:
-                summary.update(export_error_type=type(exc).__name__, validation_pass=False)
+                summary.update(
+                    export_error_type=type(exc).__name__, validation_pass=False
+                )
         summary["finished_at"] = time.time()
         summary["elapsed_seconds"] = summary["finished_at"] - summary["started_at"]
         save(output / "summary.json", summary, secrets)
-        save(output / "artifact-manifest.json", {
-            p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted(output.iterdir())
-            if p.is_file() and p.name != "artifact-manifest.json"
-        })
+        save(
+            output / "artifact-manifest.json",
+            {
+                p.name: hashlib.sha256(p.read_bytes()).hexdigest()
+                for p in sorted(output.iterdir())
+                if p.is_file() and p.name != "artifact-manifest.json"
+            },
+        )
     print(json.dumps(scrub(summary, secrets), ensure_ascii=False), flush=True)
     return 0 if summary.get("validation_pass") else 1
 
@@ -297,7 +408,9 @@ if __name__ == "__main__":
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
     try:
-        request = json.loads((root / "evals/live-request.json").read_text(encoding="utf-8"))
+        request = json.loads(
+            (root / "evals/live-request.json").read_text(encoding="utf-8")
+        )
         code = asyncio.run(run(root, request, args.run_id))
     except Exception as exc:
         print(json.dumps({"validation_pass": False, "error_type": type(exc).__name__}))

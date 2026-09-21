@@ -10,6 +10,7 @@ on:
       - '!evals/live-request.json'
       - '!evals/open-web-request.json'
       - '!evals/read-delivery-request.json'
+      - '!evals/refactor-smoke-request.json'
       - 'pyproject.toml'
       - '.github/workflows/self-hosted-fast.yml'
   workflow_dispatch:

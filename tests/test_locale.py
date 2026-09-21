@@ -26,7 +26,7 @@ class LocaleTests(unittest.TestCase):
         user_text = "原始资料 {0} Research 研究"
         rendered = strategy({"text": user_text, "brief": {"subject": user_text}})
         self.assertEqual(rendered.count(user_text), 2)
-        self.assertIn("Research scope and assumptions", rendered)
+        self.assertIn("Research scope and questions", rendered)
         self.assertEqual(tr("已选择：") + user_text, "Selected: " + user_text)
         set_language("zh-CN")
         self.assertEqual(stage({"paused": True}), "已暂停")

@@ -33,7 +33,7 @@ line-length = 88
 select = ["E4", "E7", "E9", "F", "I"]
 
 [tool.mypy]
-files = ["src/epivra/domain.py", "src/epivra/review.py", "src/epivra/storage.py", "src/epivra/harness.py"]
+files = ["src/epivra/domain.py", "src/epivra/review.py", "src/epivra/storage.py", "src/epivra/harness.py", "src/epivra/research.py", "src/epivra/writing.py"]
 follow_imports = "silent"
 ignore_missing_imports = true
 check_untyped_defs = true

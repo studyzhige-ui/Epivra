@@ -1,4 +1,21 @@
 <p align="center"><img src="src/epivra/web/favicon.svg" width="72" alt="Epivra" /></p>
+
+## Continuous research architecture (optimization branch)
+
+One user-approved research route starts a fully capable research owner. It gathers
+original evidence, invokes investigation/conflict helpers only when useful,
+assesses a versioned writing basis, and maintains one shared manuscript through
+exact local edits. Saving a draft does not end author work. Publication requires
+current evidence and the independent editor's acceptance of the exact current
+version. No research hypotheses, predetermined answers, post-approval user
+questions or default report-length limits are introduced.
+
+The runtime is `continuous-research-v2`. Older studies remain auditable, not
+silently replayed under changed semantics. See [workspace contracts](docs/refactor/02_RESEARCH_WORKSPACE.md)
+and [reference/acceptance map](docs/refactor/03_REFERENCE_AND_ACCEPTANCE.md).
+Engineering validation and real research quality are separate; this branch is not
+an authorization to merge or release.
+
 <h1 align="center">Epivra</h1>
 <p align="center">From questions to insight · Autonomous research on your desktop</p>
 <p align="center"><strong>English</strong> · <a href="README.zh-CN.md">简体中文</a></p>

@@ -24,6 +24,7 @@ from .domain import (
     identity,
 )
 from .local_security import protect
+from .writing import WritingWorkspace
 
 
 class Store:
@@ -501,7 +502,7 @@ class Store:
                 "direction",
                 {
                     "request": request,
-                    "runtime": "continuous-research-v1",
+                    "runtime": "continuous-research-v2",
                     "policy": policy,
                 },
             )
@@ -647,7 +648,9 @@ class Store:
             approved_plan = current.plan
             if action == "approve":
                 if current.approved:
-                    raise NotAllowed("research route is already approved; no second approval")
+                    raise NotAllowed(
+                        "research route is already approved; no second approval"
+                    )
                 plan = self.get(study, payload["plan"])
                 if plan.kind != "plan" or direction not in plan.parents:
                     raise Conflict(
@@ -696,7 +699,7 @@ class Store:
             return result
 
     def require_runtime(self, study: str, direction: str) -> None:
-        if self.get(study, direction).body.get("runtime") != "continuous-research-v1":
+        if self.get(study, direction).body.get("runtime") != "continuous-research-v2":
             raise RuntimeMismatch(
                 "Archived research runtime: read-only audit; start a new study"
             )
@@ -747,8 +750,13 @@ class Store:
                     result = self.get(study, ref)
                     if result.kind == "work_result" and result.body.get("producer"):
                         producer = self.get(study, result.body["producer"])
-                        if producer.kind == "work" and producer.body["direction"] != current.direction:
-                            raise NotAllowed("historical findings require reassessment from their sources")
+                        if (
+                            producer.kind == "work"
+                            and producer.body["direction"] != current.direction
+                        ):
+                            raise NotAllowed(
+                                "historical findings require reassessment from their sources"
+                            )
             if role == "reviewer":
                 reports = [
                     self.get(study, ref)
@@ -1312,12 +1320,15 @@ class Store:
             author = self.get(study, report.body.get("producer", report.ref))
             if (
                 author.kind != "work"
-                or author.body["role"] not in {"lead", "investigator", "synthesizer", "writer"}
+                or author.body["role"]
+                not in {"lead", "investigator", "synthesizer", "writer"}
                 or not (author.ref == work or author.body["owner"] == work)
                 or author.body["direction"] != direction
                 or author.ref not in report.parents
             ):
-                raise Conflict("report must come from this research owner or its authorized helper")
+                raise Conflict(
+                    "report must come from this research owner or its authorized helper"
+                )
             drafts = self.related(study, "draft_saved", author.ref, producer=True)
             if drafts and drafts[-1].body["ref"] != report.ref:
                 raise Conflict("report is not the author's current saved version")
@@ -1335,6 +1346,7 @@ class Store:
                 or report.ref not in reviewer.body["inputs"]
             ):
                 raise Conflict("review must come from a separate bound review work")
+            WritingWorkspace(self).require_publishable(study, report)
             validate_citations(report.body, lambda ref: self.get(study, ref))
             revisions = self.revisions(study, [report.ref], direction)
             if any(self.get(study, ref).seq > review.seq for ref in revisions.values()):

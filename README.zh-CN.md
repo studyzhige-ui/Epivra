@@ -1,4 +1,11 @@
 <p align="center"><img src="src/epivra/web/favicon.svg" width="72" alt="Epivra" /></p>
+
+## 连续研究架构（优化分支）
+
+一次研究路线审批后，完整研究主体自主取证、按需调用调查/冲突核实助手，维护有原文支持的研究判断与写作依据，在共享文稿上持续局部修改；独立编辑核查精确版本后交付。保存初稿不结束作者工作，过期依据/稿件/核查不能用于发布。路线不提出假设或预定答案，批准后不再请示用户；用户仍可主动暂停、取消或调整问题。
+
+本分支使用 `continuous-research-v2`；旧任务保持可读、可审计，不自动按新合同恢复未知调用。没有默认报告长度限制。实现与验收入口见 [研究工作台](docs/refactor/02_RESEARCH_WORKSPACE.md) 和 [源码/手册验收映射](docs/refactor/03_REFERENCE_AND_ACCEPTANCE.md)。重构的工程验证与真实质量结果分开报告，尚未授权合并 main 或发布。
+
 <h1 align="center">Epivra</h1>
 <p align="center">从问题到洞见 · 本地自主研究工作台</p>
 <p align="center"><a href="README.md">English</a> · <strong>简体中文</strong></p>

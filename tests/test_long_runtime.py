@@ -242,12 +242,18 @@ class LongContextTests(unittest.IsolatedAsyncioTestCase):
                     },
                 }
 
-        model = WireModel(API(), context_tokens=32768, max_tokens=8192)
+        model = WireModel(API(), context_tokens=1000000, max_tokens=8192)
         harness = Harness(self.store, model)
+        # Budget the current essential schema, then allow a small margin. This
+        # still rejects the same oversized memory rather than disabling checks.
+        essential = harness._request("s", self.lead)["wire"]["estimated_input_tokens"]
+        model.context_tokens = essential + model.max_tokens + 2000
         await harness.step("s", self.lead.ref)
         self.assertFalse(self.store.list("s", "memory"))
         request = harness._request("s", self.lead)
-        self.assertLessEqual(request["wire"]["estimated_input_tokens"] + 8192, 32768)
+        self.assertLessEqual(
+            request["wire"]["estimated_input_tokens"] + 8192, model.context_tokens
+        )
 
     async def test_finished_slot_refills_while_slow_work_is_running(self):
         import asyncio

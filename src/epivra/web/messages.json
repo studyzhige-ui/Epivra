@@ -477,5 +477,18 @@
   "导出需要当前报告版本。": "Export requires the current report version.",
   "Word 保留公式的原始表达；PDF 使用浏览器打印另存为 PDF。": "Word retains original formula notation; PDF uses the browser’s Save as PDF print option.",
   "对应报告：{0}": "Report version: {0}",
-  "进度读取失败，请刷新重试。若刚更新程序，请确认后台研究宿主也已更新。": "Could not load progress. Refresh to retry. After updating the program, make sure the background research host has also been updated."
+  "进度读取失败，请刷新重试。若刚更新程序，请确认后台研究宿主也已更新。": "Could not load progress. Refresh to retry. After updating the program, make sure the background research host has also been updated.",
+  "研究主体": "Research owner",
+  "冲突核实": "Conflict verification",
+  "编辑核查": "Editorial review",
+  "研究范围与问题": "Research scope and questions",
+  "研究依据与文稿": "Research basis and manuscript",
+  "当前记录：{0} 项研究判断，{1} 项分歧核实。": "Current records: {0} research findings and {1} conflict investigations.",
+  "仍在形成写作依据": "Building the writing basis",
+  "依据已变化，需要重新评估写作准备": "Evidence changed; reassess writing readiness",
+  "研究主体已记录写作准备判断；这不是自动正确性认证": "The research owner recorded a readiness assessment; this is not automated correctness certification",
+  "当前文稿已交付": "Current manuscript delivered",
+  "当前稿件持续编辑中，尚未交付": "Manuscript remains in editing, not delivered",
+  "成立条件：{0}": "Condition: {0}",
+  "资料限制：{0}": "Evidence limitation: {0}"
 }

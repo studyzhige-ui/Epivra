@@ -1,14 +1,18 @@
 {
-  "version": 2,
+  "version": 3,
   "date": "2026-09-21",
   "branch": "improve/epivra-optimization",
   "main_unchanged": "51d039dfc6ffdb88fb5768f1add72535029c2bd7",
-  "status": "Continuous owner source promoted after exact candidate validation; shared evidence and diff authoring under active development",
-  "owner_validation_run": 35548319212,
-  "owner_validation_artifact": 10617337188,
-  "owner_validation_zip_sha256": "6fad3904c5c81c0914722ca07ad0c0f0498bb4974e35c3ffe0b9733cf1558df8",
-  "verified_gates": ["requirements", "compile", "tests", "architecture", "lint", "types", "wheel"],
-  "paid_calls_this_batch": 0,
+  "runtime": "continuous-research-v2",
+  "status": "Core refactor implemented and promoted; final integrated CI and real smoke must be checked separately",
+  "owner_source_commit": "614ca1ca764e8c2926a50dd57a7def1c199b66ec",
+  "workspace_candidate_run": 35550444646,
+  "workspace_candidate_artifact": 10618710571,
+  "workspace_candidate_sha256": "73230841122db738fd4e362e845ef435b1025aef6272667c91b151037263501a",
+  "workspace_candidate_validation": "508 tests: 506 passed, 2 skipped; architecture, Ruff, six-file mypy, wheel and clean installed CLI/imports passed",
+  "additional_integration_fix": "Seal canonical evidence after publication against late helper mutations; two added local integrity tests passed. Three small live-evaluation admission tests passed locally. Final integrated CI is required.",
+  "temporary_transfer_files_removed": true,
+  "paid_calls_this_batch_so_far": 0,
   "unvalidated_unattached_blob_do_not_apply": "820e2d2962f74096af448b4aa0f429ab7515a5c2",
-  "resume": "Read live head and current validation receipts; do not restore removed owner-batch transfer files. Complete evidence and writing workspaces, then validate complete ResearchService tasks."
+  "resume": "Use live source head; no owner/refactor batch transfer remains. Check its normal CI before triggering the single frozen refactor smoke. Never rerun an unknown paid attempt. Keep main and PR #4 unmerged."
 }
