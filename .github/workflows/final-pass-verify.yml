@@ -1,0 +1,184 @@
+name: Verify exact final provider-neutral source
+
+on:
+  push:
+    branches: [improve/epivra-optimization]
+    paths: [.github/workflows/final-pass-verify.yml]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: epivra-final-pass
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: [self-hosted, Windows, X64, epivra-eval]
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 20
+          persist-credentials: false
+
+      - name: Reconstruct exact final source
+        shell: python
+        run: |
+          import base64, hashlib, lzma, os, subprocess
+          from pathlib import Path
+
+          staging_parent = '828e9543cc62e0cd2adf35c2ae8b6dd4eefcb762'
+          source_base = 'cf7691941e4986e872b31c8b6d79b0b6da8e2114'
+          assert subprocess.check_output(['git','rev-parse','HEAD^'],text=True).strip() == staging_parent
+
+          root = Path(os.environ['RUNNER_TEMP']) / ('epivra-final-pass-' + os.environ['GITHUB_RUN_ID'])
+          root.mkdir(exist_ok=False)
+          with open(os.environ['GITHUB_ENV'],'a',encoding='utf-8') as stream:
+              stream.write('FINAL_PASS_ROOT=' + str(root) + '\n')
+
+          targets = [
+              'src/epivra/harness.py',
+              'src/epivra/prompts.py',
+              'src/epivra/writing.py',
+              'tests/test_task_authority_probe.py',
+          ]
+          for name in targets:
+              data = subprocess.check_output(['git','show',source_base + ':' + name])
+              Path(name).write_bytes(data)
+
+          for name in [
+              'docs/refactor/05_FINAL_PASS.md',
+              'tests/test_final_pass.py',
+              'docs/refactor/05_PROMPT_FINISH.md',
+              'tests/test_prompt_finish.py',
+              '.github/workflows/prompt-finish-smoke.yml',
+          ]:
+              Path(name).unlink(missing_ok=True)
+
+          encoded = ''.join(
+              (Path('.github/finishing-batch') / f'final.patch.b64.{i}').read_text(encoding='utf-8')
+              for i in range(7)
+          )
+          patch = lzma.decompress(base64.b64decode(encoded))
+          assert hashlib.sha256(patch).hexdigest() == '829a537b8182fdb8da9e500ec428c3ef9cd90fe6439f83749e787dcdf04697aa'
+          patch_path = root / 'changes.patch'
+          patch_path.write_bytes(patch)
+          subprocess.run(['git','apply','--check',str(patch_path)],check=True)
+          subprocess.run(['git','apply',str(patch_path)],check=True)
+
+          expected = {
+              'docs/refactor/05_FINAL_PASS.md':'d13f4934747cae7cd313cc98609c786c121c3cfa',
+              'src/epivra/harness.py':'412925447211ce451cbddb5630929d4eb00d5e81',
+              'src/epivra/prompts.py':'73ddb109005fc85c794a59218d5d009e70cf2908',
+              'src/epivra/writing.py':'8fe3f274abeecf67be0e791f70c2608c560360fa',
+              'tests/test_final_pass.py':'6c92b1c1dbb803cd06fcd2109482556cf3131217',
+              'tests/test_task_authority_probe.py':'0637abfe3e9cd5d00f33541378ffc1ee37854ecd',
+          }
+          def blob(data):
+              return hashlib.sha1(b'blob ' + str(len(data)).encode() + b'\0' + data).hexdigest()
+          for name, sha in expected.items():
+              assert blob(Path(name).read_bytes()) == sha, name
+
+          (root/'expected.txt').write_text(
+              '\n'.join(f'{name} {sha}' for name,sha in expected.items()),
+              encoding='utf-8'
+          )
+
+      - name: Full dependency-complete gates
+        shell: python
+        run: |
+          import os, subprocess, venv
+          from pathlib import Path
+          root=Path(os.environ['FINAL_PASS_ROOT'])
+          venv.EnvBuilder(with_pip=True).create(root/'env')
+          p=str(root/'env/Scripts/python.exe')
+          with (root/'install.log').open('wb') as log:
+              subprocess.run([p,'-m','pip','install','.[mcp]','ruff','mypy','build'],stdout=log,stderr=subprocess.STDOUT,check=True,timeout=480)
+          subprocess.run([p,'tools/dev_check.py','run','--profile','full','--output',str(root/'evidence')],check=True)
+          subprocess.run([p,'tools/dev_check.py','inspect','--output',str(root/'evidence')],check=True)
+
+      - name: Verify wheel outside checkout
+        shell: python
+        run: |
+          import os, subprocess, venv
+          from pathlib import Path
+          root=Path(os.environ['FINAL_PASS_ROOT'])
+          wheels=list(Path('dist').glob('epivra-*.whl'))
+          assert len(wheels)==1
+          venv.EnvBuilder(with_pip=True).create(root/'clean')
+          p=str(root/'clean/Scripts/python.exe')
+          with (root/'clean-wheel.log').open('wb') as log:
+              subprocess.run([p,'-m','pip','install',str(wheels[0].resolve())],cwd=root,stdout=log,stderr=subprocess.STDOUT,check=True,timeout=300)
+              subprocess.run([p,'-m','pip','check'],cwd=root,stdout=log,stderr=subprocess.STDOUT,check=True)
+              subprocess.run([p,'-I','-c','import epivra.prompts as p; from epivra.writing import WritingWorkspace; assert p.PROMPT_VERSION'],cwd=root,stdout=log,stderr=subprocess.STDOUT,check=True)
+              subprocess.run([str(root/'clean/Scripts/epivra.exe'),'--help'],cwd=root,stdout=log,stderr=subprocess.STDOUT,check=True)
+
+      - name: Export validated ordinary blobs
+        shell: python
+        env:
+          BLOB_TOKEN: ${{ github.token }}
+        run: |
+          import base64, hashlib, json, os, urllib.request
+          from pathlib import Path
+          root=Path(os.environ['FINAL_PASS_ROOT'])
+          result={}
+          for line in (root/'expected.txt').read_text(encoding='utf-8').splitlines():
+              name, expected=line.split()
+              data=Path(name).read_bytes()
+              actual=hashlib.sha1(b'blob '+str(len(data)).encode()+b'\0'+data).hexdigest()
+              assert actual==expected
+              request=urllib.request.Request(
+                  'https://api.github.com/repos/studyzhige-ui/Epivra/git/blobs',
+                  data=json.dumps({'encoding':'base64','content':base64.b64encode(data).decode('ascii')}).encode(),
+                  headers={'Authorization':'Bearer '+os.environ['BLOB_TOKEN'],'Accept':'application/vnd.github+json','Content-Type':'application/json'},
+                  method='POST'
+              )
+              with urllib.request.urlopen(request,timeout=30) as response:
+                  remote=json.load(response)['sha']
+              assert remote==expected
+              result[name]=remote
+          (root/'validated-blobs.json').write_text(json.dumps(result,indent=2),encoding='utf-8')
+
+      - name: Preserve evidence
+        if: always() && env.FINAL_PASS_ROOT != ''
+        shell: python
+        run: |
+          import os, shutil
+          from pathlib import Path
+          root=Path(os.environ['FINAL_PASS_ROOT'])
+          if root.exists():
+              out=root/'files'
+              for name in [
+                  'docs/refactor/05_FINAL_PASS.md',
+                  'src/epivra/harness.py',
+                  'src/epivra/prompts.py',
+                  'src/epivra/writing.py',
+                  'tests/test_final_pass.py',
+                  'tests/test_task_authority_probe.py',
+              ]:
+                  src=Path(name)
+                  if src.exists():
+                      dst=out/name
+                      dst.parent.mkdir(parents=True,exist_ok=True)
+                      shutil.copy2(src,dst)
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always() && env.FINAL_PASS_ROOT != ''
+        with:
+          name: final-provider-neutral-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ env.FINAL_PASS_ROOT }}/validated-blobs.json
+            ${{ env.FINAL_PASS_ROOT }}/install.log
+            ${{ env.FINAL_PASS_ROOT }}/clean-wheel.log
+            ${{ env.FINAL_PASS_ROOT }}/evidence/
+            ${{ env.FINAL_PASS_ROOT }}/files/
+          retention-days: 14
+          if-no-files-found: warn
+
+      - name: Cleanup
+        if: always() && env.FINAL_PASS_ROOT != ''
+        shell: python
+        run: |
+          import os, shutil
+          shutil.rmtree(os.environ['FINAL_PASS_ROOT'],ignore_errors=True)
