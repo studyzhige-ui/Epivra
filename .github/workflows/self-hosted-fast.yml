@@ -1,18 +1,7 @@
 name: Self-hosted fast validation
 on:
   push:
-    branches: [improve/epivra-optimization]
-    paths:
-      - 'src/**'
-      - 'tests/**'
-      - 'tools/**'
-      - 'evals/**'
-      - '!evals/live-request.json'
-      - '!evals/open-web-request.json'
-      - '!evals/read-delivery-request.json'
-      - '!evals/refactor-smoke-request.json'
-      - 'pyproject.toml'
-      - '.github/workflows/self-hosted-fast.yml'
+    branches: [main, improve/epivra-optimization]
   workflow_dispatch:
 permissions:
   contents: read
@@ -21,8 +10,8 @@ concurrency:
   cancel-in-progress: false
 jobs:
   validate:
-    if: github.ref == 'refs/heads/improve/epivra-optimization'
-    runs-on: [self-hosted, Windows, X64, epivra-eval]
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/improve/epivra-optimization'
+    runs-on: [self-hosted, Windows, X64, epivra]
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -56,16 +45,6 @@ jobs:
           evidence = str(Path(os.environ['DEV_CHECK_ROOT']) / 'evidence')
           subprocess.run([p, 'tools/dev_check.py', 'run', '--profile', 'full', '--output', evidence], check=True)
           subprocess.run([p, 'tools/dev_check.py', 'inspect', '--output', evidence], check=True)
-      - name: Retain validation receipts even on failure
-        if: always() && env.DEV_CHECK_ROOT != ''
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: offline-validation-${{ github.run_id }}-${{ github.run_attempt }}
-          path: |
-            ${{ env.DEV_CHECK_ROOT }}/install.log
-            ${{ env.DEV_CHECK_ROOT }}/evidence/
-          retention-days: 14
-          if-no-files-found: warn
       - name: Remove only this validation environment
         if: always() && env.DEV_CHECK_ROOT != ''
         shell: python

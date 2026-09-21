@@ -1,5 +1,0 @@
-{
-  "version": 1,
-  "request_id": "selfhost-sqlite-wal-20260920-01",
-  "case": "sqlite-wal-concurrency"
-}

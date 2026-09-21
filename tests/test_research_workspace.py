@@ -180,6 +180,37 @@ class WorkspaceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(obs.get("failure"))
         self.assertEqual([f.ref], [a.ref for a in self.ledger.current("s", "finding")])
 
+    async def test_support_novelty_uses_original_ranges_not_note_identity(self):
+        def note(start, end, label):
+            return self.store.put(
+                "s", "note",
+                {"source": self.source.ref, "offset": start,
+                 "quote": self.source.body["text"][start:end], "text": label},
+                (self.source.ref,),
+            ).ref
+
+        original = note(0, 20, "first")
+        duplicate = note(0, 20, "another producer annotation")
+        subset = note(2, 10, "subset")
+        overlap = note(10, 25, "new tail")
+        left, right = note(0, 10, "left"), note(10, 20, "right")
+        for prior, proposed, allowed in (
+            ([original], [duplicate], False),
+            ([original], [subset], False),
+            ([left, right], [duplicate], False),
+            ([self.source.ref], [duplicate], False),
+            ([original], [overlap], True),
+            ([original], [self.source.ref], True),
+        ):
+            with self.subTest(prior=prior, proposed=proposed):
+                finding = await self.finding(status="inference", support=prior)
+                result = await self.call("record_finding", {
+                    "statement": "Reassessed claim", "status": "source_statement",
+                    "support": proposed, "replaces": finding.ref,
+                    "reason": "Reassess original evidence",
+                })
+                self.assertEqual(allowed, result.get("failure") is None, result)
+
     async def test_finding_replacement_is_cas_and_invalidates_written_basis(self):
         first = await self.finding()
         basis = await self.basis([first])

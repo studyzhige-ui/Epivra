@@ -1,6 +1,6 @@
 """Exact-output and complexity regressions for local context assembly.
 
-The frozen oracle is an evaluation fixture, not an alternate product runtime.
+The reference implementation is used only by unit tests.
 """
 
 from __future__ import annotations
@@ -10,9 +10,10 @@ import random
 import unittest
 from unittest.mock import patch
 
+import context_reference as reference
+
 from epivra import context
 from epivra.domain import Artifact, ContextCapacity, encode, identity
-from evals import context_assembly_reference as reference
 
 
 def artifact(seq, body, kind="note"):

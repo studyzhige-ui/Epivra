@@ -16,14 +16,14 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-WATCHED = ("src", "tests", "tools", "evals", ".github")
+WATCHED = ("src", "tests", "tools", ".github")
 MODULES = ("httpx", "pypdf", "openpyxl", "questionary", "rich", "markdown_it", "docx", "mcp", "ruff", "mypy", "build")
 FULL = (
     ("requirements", ("-m", "pip", "check")),
-    ("compile", ("-m", "compileall", "-q", "src", "tests", "tools", "evals")),
+    ("compile", ("-m", "compileall", "-q", "src", "tests", "tools")),
     ("tests", ("-m", "unittest", "discover", "-s", "tests")),
     ("architecture", ("tools/check_architecture.py",)),
-    ("lint", ("-m", "ruff", "check", "src", "tests", "tools", "evals")),
+    ("lint", ("-m", "ruff", "check", "src", "tests", "tools")),
     ("types", ("-m", "mypy")),
     ("wheel", ("-m", "build", "--wheel")),
 )

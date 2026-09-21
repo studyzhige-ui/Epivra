@@ -54,7 +54,6 @@ def word_report(report):
     cell = -1
     lists = []
     quote_depth = 0
-    heading = None
 
     def add_inline(target, children):
         bold = italic = strike = False
@@ -87,10 +86,7 @@ def word_report(report):
     for index, token in enumerate(tokens):
         kind = token.type
         if kind == "heading_open":
-            heading = int(token.tag[1:])
-            paragraph = document.add_heading(level=heading)
-        elif kind == "heading_close":
-            heading = None
+            paragraph = document.add_heading(level=int(token.tag[1:]))
         elif kind in {"bullet_list_open", "ordered_list_open"}:
             lists.append(
                 {

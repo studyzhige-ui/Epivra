@@ -1,6 +1,5 @@
 """Provider-neutral research instructions; runtime supplies state, not model tuning.
 
-Pinned design references and acceptance boundaries: docs/refactor/05_FINAL_PASS.md.
 """
 
 PROMPT_VERSION = "research-collaboration-20260921"

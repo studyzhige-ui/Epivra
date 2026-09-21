@@ -3,7 +3,6 @@ from __future__ import annotations
 import unittest
 
 from epivra.review import text_metrics, units
-from evals.review_cases import CASES
 
 
 class ReviewTests(unittest.TestCase):
@@ -19,9 +18,3 @@ class ReviewTests(unittest.TestCase):
             {"characters": 6, "non_whitespace_characters": 3},
             text_metrics("中 a\n😀\t"),
         )
-
-    def test_suite_has_positive_controls_and_full_coverage_transfer_pair(self):
-        self.assertEqual(5, sum(c["accept"] for c in CASES))
-        transfer = next(c for c in CASES if c["id"] == "coverage_transfer")
-        self.assertGreater(len(units(transfer["report"])), 5)
-        self.assertFalse(transfer["accept"])

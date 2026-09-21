@@ -1,7 +1,0 @@
-{
-  "version": 1,
-  "request_id": "selfhost-training-20260920-01",
-  "mode": "closed",
-  "cases": ["training"],
-  "probe_providers": false
-}

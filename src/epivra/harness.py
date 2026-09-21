@@ -19,7 +19,6 @@ from .domain import (
     INLINE_TOOL_RESULT_CHARS,
     Artifact,
     Call,
-    Conflict,
     NotAllowed,
     RecoveryExhausted,
     RepeatedFailure,
@@ -553,13 +552,6 @@ def validate(value: Any, schema: dict[str, Any], path: str = "arguments") -> Non
 PRIVATE_ARTIFACT_KINDS = frozenset({"step", "step_done", "control", "material_bytes"})
 
 
-def artifact_read_denial(role: str, kind: str) -> str | None:
-    """Shared by runtime rejection and the model-visible read-tool contract."""
-    if kind in PRIVATE_ARTIFACT_KINDS:
-        return "execution and provider-private records are not research materials"
-    return None
-
-
 class Harness:
     def _validate_call(self, call, schema):
         bounded_json(call.arguments)
@@ -666,16 +658,18 @@ class Harness:
                 }
         return result
 
-    def _read_denial(self, study: str, work: Artifact, kind: str) -> str | None:
+    def _read_denial(self, study: str, kind: str) -> str | None:
         if kind == "source" and not self.store.control(study).approved:
             return "source examination requires initial route approval"
-        return artifact_read_denial(work.body["role"], kind)
+        if kind in PRIVATE_ARTIFACT_KINDS:
+            return "execution and provider-private records are not research materials"
+        return None
 
     def _review(self, study: str, work: Artifact):
         reports = [
-            self.store.get(study, ref)
+            item
             for ref in work.body["inputs"]
-            if self.store.get(study, ref).kind == "report"
+            if (item := self.store.get(study, ref)).kind == "report"
         ]
         if len(reports) != 1:
             raise ValueError("review requires one bound report")
@@ -1374,7 +1368,7 @@ class Harness:
                             break
                         try:
                             self._validate_call(candidate, schema)
-                        except (ValueError, NotAllowed):
+                        except ValueError:
                             break
                         batch.append((j, candidate))
                     if len(batch) > 1:
@@ -1420,7 +1414,7 @@ class Harness:
                     if call.name not in schema:
                         raise NotAllowed("tool not available to this work")
                     self._validate_call(call, schema)
-                except (ValueError, NotAllowed) as exc:
+                except ValueError as exc:
                     invalid = True
                     result: Any = {"error": str(exc)}
                 else:
@@ -1449,7 +1443,7 @@ class Harness:
                                     "count": len(catalog.body["entries"]),
                                 }
                             elif call.name == "run_analysis":
-                                result = await self._analysis(
+                                result = await self.analysis.run(
                                     study,
                                     work,
                                     control.epoch,
@@ -1466,7 +1460,7 @@ class Harness:
                                     index,
                                     call,
                                 )
-                        except (ValueError, NotAllowed, Conflict) as exc:
+                        except ValueError as exc:
                             result = {"error": str(exc)}
                     else:
                         envelope = await self._external(
@@ -1652,9 +1646,6 @@ class Harness:
             study, "step_done", {"step": step, "failure": failure}, (work, step)
         )
 
-    async def _analysis(self, study, work, epoch, step, index, args):
-        return await self.analysis.run(study, work, epoch, step, index, args)
-
     def _builtin(
         self, study: str, work: Artifact, epoch: int, step: str, index: int, call: Call
     ) -> Any:
@@ -1712,7 +1703,7 @@ class Harness:
             return self.writing.read(
                 study, work.ref, epoch, capacity=self.context_chars // 3, **args
             )
-        if call.name == "patch_draft":
+        if call.name in {"draft_report", "patch_draft"}:
             return self.writing.save(
                 study,
                 work.ref,
@@ -1857,7 +1848,7 @@ class Harness:
             return {"ref": item.ref}
         if call.name == "read_artifact_range":
             artifact = self.store.get(study, args["ref"])
-            denial = self._read_denial(study, work, artifact.kind)
+            denial = self._read_denial(study, artifact.kind)
             if denial:
                 raise NotAllowed(denial)
             body = encode(artifact.body)
@@ -1984,7 +1975,7 @@ class Harness:
             )
         if call.name == "read_artifact":
             artifact = self.store.get(study, args["ref"])
-            denial = self._read_denial(study, work, artifact.kind)
+            denial = self._read_denial(study, artifact.kind)
             if denial:
                 raise NotAllowed(denial)
             result = {
@@ -2092,16 +2083,6 @@ class Harness:
                 "guidance": WRITING_GUIDES[args["genre"]],
                 "status": "advisory; user requirements take precedence",
             }
-        elif call.name == "draft_report":
-            return self.writing.save(
-                study,
-                work.ref,
-                epoch,
-                step,
-                index,
-                research_refs=self._handoff_inputs(study, work),
-                **args,
-            )
         elif call.name == "read_report":
             report, parts = self._review(study, work)
             offset, limit = args["offset"], args["limit"]

@@ -70,7 +70,7 @@ class AnalysisTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(self.source.ref, output.parents)
         self.assertIn(job.ref, output.parents)
         self.assertEqual(b"mean\n2\n", self.harness.workspace.original("s", output.ref))
-        replay = await self.harness._analysis(
+        replay = await self.harness.analysis.run(
             "s", self.work, self.c.epoch, job.body["step"], 0, self.args
         )
         self.assertEqual(result.body, replay)
@@ -145,7 +145,7 @@ class AnalysisTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertNotIn("run_analysis", self.harness._schema("investigator", {}))
         self.sandbox.run.return_value["files"][0]["data"] = "invalid-base64"
-        result = await self.harness._analysis(
+        result = await self.harness.analysis.run(
             "s", self.work, self.c.epoch, self.source.ref, 0, self.args
         )
         self.assertEqual("failed", result["status"])

@@ -1312,7 +1312,6 @@ class Store:
             if (
                 report.kind != "report"
                 or direction not in report.parents
-                or review.kind != "review"
                 or report.ref not in review.parents
                 or review.body.get("accepted") is not True
             ):

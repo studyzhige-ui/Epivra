@@ -95,10 +95,6 @@ class Control:
     cancelled: bool
     plan: str | None = None
 
-    @property
-    def runnable(self) -> bool:
-        return self.approved and not self.paused and not self.cancelled
-
 
 @dataclass(frozen=True)
 class Call:

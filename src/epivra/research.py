@@ -56,11 +56,7 @@ class ResearchLedger:
         return None
 
     def _records(self, study, kind, direction):
-        return [
-            a
-            for a in self.store.list(study, kind)
-            if a.body.get("direction") == direction
-        ]
+        return self.store.matching(study, kind, {"direction": direction})
 
     def current(self, study, kind, direction=None):
         direction = direction or self.store.control(study).direction
@@ -109,6 +105,34 @@ class ResearchLedger:
                 sources.append(item.ref)
         return sources
 
+    def _support_ranges(self, study, refs):
+        ranges: dict[str, list[tuple[int, int]]] = {}
+        for ref in refs:
+            item = self.store.get(study, ref)
+            if item.kind == "note":
+                source = item.body["source"]
+                start = item.body["offset"]
+                end = start + len(item.body["quote"])
+            else:
+                source, start, end = item.ref, 0, len(item.body["text"])
+            ranges.setdefault(source, []).append((start, end))
+        return ranges
+
+    def _adds_support(self, study, support, previous):
+        prior = self._support_ranges(study, previous)
+        for source, ranges in self._support_ranges(study, support).items():
+            if source not in prior:
+                return True
+            for start, end in ranges:
+                covered = start
+                for left, right in sorted(prior[source]):
+                    if left > covered:
+                        break
+                    covered = max(covered, right)
+                if covered < end:
+                    return True
+        return False
+
     def record_finding(
         self,
         study,
@@ -151,7 +175,7 @@ class ResearchLedger:
                 and status == "source_statement"
                 and prior.body["status"] != status
             ):
-                if set(support).issubset(prior.body["support"]):
+                if not self._adds_support(study, support, prior.body["support"]):
                     raise ValueError(
                         "a restatement cannot upgrade an inference to source fact; supply new direct support or retain its status"
                     )
@@ -250,7 +274,7 @@ class ResearchLedger:
         try:
             for ref in item.body["findings"]:
                 self._current(study, ref, "finding", direction)
-        except (ValueError, Conflict, NotAllowed):
+        except ValueError:
             return True
         return False
 

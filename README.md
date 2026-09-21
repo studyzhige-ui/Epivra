@@ -1,106 +1,94 @@
 <p align="center"><img src="src/epivra/web/favicon.svg" width="72" alt="Epivra" /></p>
-
-## Continuous research architecture (optimization branch)
-
-One user-approved research route starts a fully capable research owner. It gathers
-original evidence, invokes investigation/conflict helpers only when useful,
-assesses a versioned writing basis, and maintains one shared manuscript through
-exact local edits. Saving a draft does not end author work. Publication requires
-current evidence and the independent editor's acceptance of the exact current
-version. No research hypotheses, predetermined answers, post-approval user
-questions or default report-length limits are introduced.
-
-The runtime is `continuous-research-v2`. Older studies remain auditable, not
-silently replayed under changed semantics. See [workspace contracts](docs/refactor/02_RESEARCH_WORKSPACE.md)
-and [reference/acceptance map](docs/refactor/03_REFERENCE_AND_ACCEPTANCE.md).
-Engineering validation and real research quality are separate; this branch is not
-an authorization to merge or release.
-
 <h1 align="center">Epivra</h1>
-<p align="center">From questions to insight · Autonomous research on your desktop</p>
+<p align="center">Autonomous research on your desktop</p>
 <p align="center"><strong>English</strong> · <a href="README.zh-CN.md">简体中文</a></p>
 
-![Epivra English workbench](docs/images/home-en.png)
+![Epivra workbench](docs/images/home-en.png)
 
-Epivra researches questions using the public web and your materials. Approve the initial strategy, then let the agents investigate, analyze, synthesize, write, and review findings with traceable sources. Pause, add materials, or change direction as needed.
+Epivra is a local research workbench that turns a question and authorized materials into a source-linked report. It combines public web research, local documents, optional data analysis, and external MCP tools. Web, terminal, and MCP interfaces share the same local research workspace.
 
-## What you can do
+## Research workflow
 
-- **Set the direction** — approve a strategy before research starts; pause or redirect it later.
-- **Combine web and local materials** — search the web, upload files, or authorize folders and MCP resources.
-- **Choose your providers** — use 12 official model providers and multiple search and reading services.
-- **Work through Web, CLI, or MCP** — English and Simplified Chinese interfaces share the same local research records.
-- **Keep the evidence** — retain sources, research artifacts, and usage records; export Markdown, Word, or HTML, use browser PDF/printing, and run optional data analysis.
+Describe the question, intended use, and material scope, then review and approve the initial research route. A research owner investigates the question, maintains findings and unresolved conflicts, prepares the writing basis, and revises a shared manuscript. It can investigate and write directly or delegate focused tasks to assistants when useful.
 
-## How research proceeds
+Approval is required once. Research continues within that authorization without further approval requests; you can pause, cancel, add materials, or adjust direction through the workbench. A saved draft is not a published result. An independent reviewer must accept the current manuscript before publication, and changes to the manuscript require another review. Reports have no default word limit.
 
-Epivra draws on human research practices such as clarifying questions, evaluating evidence, selecting methods, checking counterevidence, and revising conclusions. These inform role responsibilities, tools, and artifact handoffs. The research path adapts to findings: the lead decides what to investigate, revisit, synthesize, or revise. Complete investigation results can go directly to writing.
-
-The research kernel is the set of methods, instructions, and material contracts that organize research judgment. It spans role instructions, tool semantics, context, and original artifact handoffs; it is not another model. All roles share a custom Harness, with authorization, the call ledger, scheduling, and recovery enforced by code. Internal agents collaborate through persistent work and artifact references, without A2A; MCP connects external tools and clients.
-
-The kernel influences how the model uses evidence, but quality also depends on the model, materials, tools, and actual context. Independent review and traceable citations do not guarantee correct judgments. Evaluate the conclusions, supporting evidence, and review reasoning together.
+Sources, excerpts, findings, reports, and recorded usage remain in the local workspace. Citation checks and independent review support inspection; they do not guarantee that conclusions are correct.
 
 ## Quick start
 
-Requires **Python 3.11+**. Run from the project directory (Windows PowerShell):
+Requires **Python 3.11 or later** and access to a supported model provider. Clone the repository and run these commands in Windows PowerShell:
 
 ```powershell
+git clone https://github.com/studyzhige-ui/Epivra.git
+cd Epivra
 python -m venv .venv
-.venv/Scripts/python.exe -m pip install -e .
-.venv/Scripts/epivra.exe --lang en web
+.venv/Scripts/python.exe -m pip install .
+.venv/Scripts/epivra.exe --lang en web --port 0
 ```
 
-On macOS / Linux, use `.venv/bin/python` and `.venv/bin/epivra`. Windows is the primary platform validated so far.
+Open **Connections & settings**, choose a provider, enter its API key, and select a model. Create a research question, select its materials, generate the route, and approve it. The browser opens automatically; port `0` selects an available port. Keep the host running while research proceeds.
 
-1. Open **Connections & settings**, choose a provider, enter its API key, and select a model.
-2. Describe your question and intended use, then choose the material scope.
-3. Generate and approve the strategy. Epivra then proceeds with the research.
+No Node.js, frontend build, or database server is needed to run the workbench. On macOS/Linux, virtual-environment executables are under `.venv/bin/`. Windows is the verified local environment; cross-platform acceptance is not claimed.
 
-Switch languages in the Web header without losing your input. No Node.js, frontend build, or database server is required.
+## Interfaces and capabilities
 
-## Three ways to work
-
-The commands below assume your virtual environment is activated:
-
-| Interface | Command |
+| Entry | Purpose |
 |---|---|
-| Web workbench | `epivra --lang en web` |
-| Interactive CLI | `epivra --lang en` |
-| MCP server | Run `epivra start`, then `epivra-mcp --lang en` |
+| `epivra --lang en web` | Browser workbench: configure connections, manage research, inspect sources, and export reports |
+| `epivra --lang en` | Interactive terminal workbench |
+| `epivra --help` | JSON commands for local automation |
+| `epivra-mcp --root <absolute-workspace-path>` | MCP access for another client; requires the MCP extra and a running host |
 
-Use `--lang zh-CN` for Simplified Chinese, or set `EPIVRA_LANG`. Interface language does not translate source materials or reports; specify your preferred output language in the research request.
+The Web interface switches between English and Simplified Chinese. Set the desired report language in the research request. Reports can be exported as Markdown, Word, or standalone HTML; PDF export uses the browser's print dialog.
 
-## Providers and extensions
+- **Model connections:** OpenAI, Claude, Gemini, Grok, DeepSeek, Qwen, Kimi, GLM, Doubao, MiniMax, Hunyuan, and ERNIE through official provider adapters. The default selection is DeepSeek / `deepseek-flash`; account availability varies.
+- **Search and reading:** Tavily, Exa, Brave, Perplexity, Bocha, a key-free DuckDuckGo fallback, and Jina reading. Network-enabled research can also use Crossref, PubMed, Europe PMC, and World Bank public data.
+- **Materials:** text, CSV/TSV, text PDFs, and spreadsheets; the optional documents extra adds Docling parsing and OCR. Sources are accessed within the selected permissions.
+- **Analysis:** optional Python calculations and charts in Docker Linux containers with no network access.
+- **External MCP:** explicitly permitted tools and resources can be used by research assistants. Local-material mode disables built-in web research but may still use selected external MCP services.
 
-| Capability | Supported options |
-|---|---|
-| Models | OpenAI, Claude, Gemini, Grok, DeepSeek, Qwen, Kimi, GLM, Doubao, MiniMax, Hunyuan, ERNIE |
-| Search | Tavily, Exa, Brave, Perplexity, Bocha; DuckDuckGo fallback |
-| Included public sources | Crossref, PubMed, Europe PMC, World Bank; no API keys required for these channels |
-| Web reading | Jina, Tavily, Exa |
-| Materials | Text, CSV/TSV, text-layer PDFs, XLSX; optional Docling document parsing and OCR |
-| Analysis | Optional Docker Python sandbox for statistics, data processing, and charts |
-| MCP | Connect external tools and resources, or expose research to other clients |
+Provider calls may incur charges. Epivra does not impose a total research time, token, or cost budget. Recorded usage is not a billing statement.
+
+## Optional components
+
+Use the virtual environment's Python for installation:
 
 ```powershell
-# Install extensions as needed
-python -m pip install -e ".[documents,mcp]"
-# Optional data analysis
-docker build -t epivra-analysis:1 sandbox
+.venv/Scripts/python.exe -m pip install ".[documents]"  # Document parsing and OCR
+.venv/Scripts/python.exe -m pip install ".[mcp]"        # MCP integration
 ```
 
-The default model is `deepseek-flash`. Only official model endpoints are supported; custom relay URLs are not. Model discovery and live account verification have different coverage. Unregistered models may need explicit capacity settings.
+Download parsing models using the [local model guide](models/README.en.md). For data analysis, install Docker with Linux containers and build `docker build -t epivra-analysis:1 sandbox`, then enable analysis in settings. These components are optional.
 
-## Local data and privacy
+## Workspace and repository
 
-Research records live in `.epivra/`, credentials in `.env`, and local parsing models in `models/docling/`. These are excluded from Git. Epivra protects its private `.epivra/` state for the local owner and does not change permissions on user source directories. Icons and interface assets are packaged with the application.
+| Path | Contents |
+|---|---|
+| `src/epivra/` | Application code, Web assets, and interface translations |
+| `tests/` | Offline regression tests |
+| `tools/` | Development checks and local diagnostics |
+| `sandbox/` | Isolated analysis image and runner |
+| `models/` | Parsing-model instructions and manifest; weights stay local |
+| `docs/` | English and Chinese user guides and README images |
+| `eval/` | Reference materials |
+| `.epivra/` | Private local research, imported materials, settings, and recovery records; excluded from Git |
+| `.env` | Local provider credentials; excluded from Git |
+| `mcp-servers.json` | Local MCP connections and permissions; excluded from Git |
 
-Local operation does not mean all data stays offline: online models, search services, and external tools receive the queries and materials needed for the task. Closing an interface does not stop background research; keep the computer and research host running.
+Run from a consistent workspace directory or specify `--root` explicitly. Before upgrading, stop work and back up the complete `.epivra/` directory. Saved responses are reused during recovery; calls with unknown outcomes are not automatically repeated. Studies created with incompatible runtime contracts remain available for inspection and export but cannot be silently resumed.
 
-## Help and project status
+See the [user guide](docs/USAGE.en.md) for configuration, materials, MCP, backups, and troubleshooting.
 
-- [User guide](docs/USAGE.en.md): setup, configuration, research, MCP, backups, and troubleshooting.
-- [Local models](models/README.en.md): downloads and directory layout.
-- [Validation tools](evals/README.en.md): engineering checks versus research quality evaluation.
+## Development checks
 
-This is a development release. Features are integrated, but not all providers have been tested with live accounts. Cross-topic, long-document, and larger-scale research quality still needs validation. Passing engineering tests does not guarantee correct research conclusions; OCR is not semantic understanding of complex charts.
+```powershell
+python -m pip install -e ".[mcp]" ruff mypy build
+python -m unittest discover -s tests
+python tools/check_architecture.py
+ruff check src tests tools
+mypy
+python -m build --wheel
+```
+
+These checks run without model or search API calls. The source includes Node-based Web regression tests; Node.js is only needed to run those tests, not the application.

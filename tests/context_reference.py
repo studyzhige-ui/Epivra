@@ -1,9 +1,5 @@
-"""Frozen comparison oracle, never imported by the production runtime.
+"""Independent reference implementation for context accounting unit tests."""
 
-Source: src/epivra/context.py at cc0d68d89981aa0730d1bf6fbbdd9bf511ede777
-Git blob: 918b2d8b6bfacb20b50193681d97e32c6b358d67.
-Retain historical selection/accounting behavior for differential verification.
-"""
 
 from __future__ import annotations
 
