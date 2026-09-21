@@ -1,7 +1,0 @@
-[
-{"path":"src/epivra/prompts.py","before":"7837c587f9b0913aa571356b63003a0e416c7d8f","after":"18061aedfb379e33080cdd1b1c170fa4d558edcb"},
-{"path":"src/epivra/harness.py","before":"61e3d754ade5536dd2ef0cba67948193e98d91ba","after":"a61ee49ea033e16bee2aed0e017f179eb5e8e509"},
-{"path":"src/epivra/writing.py","before":"3a32d843dd2998fa775ed6232b28483ce4bb1c14","after":"78d5b6a15f70b31d360f555c5e86ad0c005006f0"},
-{"path":"tests/test_task_authority_probe.py","before":"8558eb813fceabe8ebcd1ef62e9bfd02eab5f6ec","after":"ace054758c0ff0ebfeb999c6dabffb29a1e22933"},
-{"path":"tests/test_prompt_finish.py","before":null,"after":"fda9a07a7a28aae208ba030d18962fe90a8cc325"}
-]

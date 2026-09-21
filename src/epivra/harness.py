@@ -28,7 +28,7 @@ from .domain import (
     encode,
     identity,
 )
-from .prompts import ROLES, TOOLS, WRITING_GUIDES
+from .prompts import ROLES, ROUTE, TOOLS, WRITING_GUIDES
 from .research import DISPOSITIONS, RESEARCH_KINDS, STATUSES, ResearchLedger
 from .review import report_metrics, text_metrics, units
 from .scheduling import Scheduler
@@ -442,7 +442,7 @@ BUILTINS.update(
                         "evidence": REFERENCES,
                         "edits": {
                             "type": "array",
-                            "minItems": 1,
+                            "description": "Batch exact non-overlapping edits. [] is only valid with an explicit new basis and unchanged manuscript.",
                             "items": object_schema(
                                 {
                                     "old": STRING,
@@ -741,9 +741,20 @@ class Harness:
         plan = self.store.get(study, control.plan) if control.plan else None
         anchors = self._steps(study, "evidence_anchor", work.ref, limit=1)
         knowledge = self.research.snapshot(study)
+        focused = work.body["role"] in {"investigator", "synthesizer"} or (
+            work.body["role"] == "reviewer" and work.body.get("review_mode") == "check"
+        )
         mandatory = {
             "provider": self.model.identity,
-            "system": ROLES[work.body["role"]],
+            "system": (
+                ROUTE
+                if work.body["role"] == "lead" and not control.approved
+                else ROLES[work.body["role"]]
+            ),
+            "research_stage": "research" if control.approved else "route_approval",
+            "context_scope": "task_focused_with_full_lookup"
+            if focused
+            else "whole_research",
             "role": work.body["role"],
             "work_ref": work.ref,
             "direction_ref": direction.ref,
@@ -822,7 +833,7 @@ class Harness:
             if knowledge["basis"]
             else None
         )
-        if basis_ref:
+        if basis_ref and not focused:
             basis_item = self.store.get(study, basis_ref)
             candidates.append(basis_item)
             candidates.extend(
@@ -926,11 +937,17 @@ class Harness:
             // len(directories),
         )
         for key, items in directories.items():
+            deferred = focused and key in {"research_findings", "research_conflicts"}
             first = (
                 page(items, 0, 20, allocation)
-                if allocation >= 256
+                if allocation >= 256 and not deferred
                 else {"items": [], **mandatory["navigation"][key]}
             )
+            if deferred:
+                first["scope"] = (
+                    "full directory available through read_context; not preloaded"
+                )
+
             mandatory["navigation"][key] = {
                 k: v for k, v in first.items() if k != "items"
             }
@@ -1632,6 +1649,14 @@ class Harness:
                 "kind": item.kind,
                 "status": item.body.get("status", item.body.get("disposition")),
                 "semantic_verification": "Agent judgment, not host certification",
+                **(
+                    {
+                        "replaces": item.body["replaces"],
+                        "follow_up": "This replacement does not edit prose. Use current workspace version/staleness to update only remaining dependent records; do not repeat updates already completed.",
+                    }
+                    if item.body.get("replaces")
+                    else {}
+                ),
             }
         if call.name == "read_draft":
             return self.writing.read(

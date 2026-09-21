@@ -116,7 +116,16 @@ class WritingWorkspace:
             if edits is not None:
                 if current is None:
                     raise ValueError("save the first manuscript before patching")
-                text = apply_edits(current.body["manuscript"], edits)
+                if text is not None:
+                    raise ValueError("provide either full text or edits, not both")
+                if not edits:
+                    if not basis or basis == current.body["basis"]:
+                        raise ValueError(
+                            "empty edits require an explicit different writing basis"
+                        )
+                    text = current.body["manuscript"]
+                else:
+                    text = apply_edits(current.body["manuscript"], edits)
                 evidence = current.body["evidence"] if evidence is None else evidence
                 basis = basis or current.body["basis"]
             if not isinstance(text, str) or not text.strip():
@@ -176,7 +185,13 @@ class WritingWorkspace:
                     "request_id": key,
                     "request_digest": request_digest,
                     "edit_count": len(edits) if edits is not None else None,
-                    "mode": "patch" if edits is not None else "full_save",
+                    "mode": (
+                        "basis_rebind"
+                        if edits == []
+                        else "patch"
+                        if edits is not None
+                        else "full_save"
+                    ),
                 },
                 (work, direction, step, item.ref, basis),
             )
