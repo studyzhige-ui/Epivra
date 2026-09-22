@@ -117,7 +117,9 @@ def progress(store, study, errors=None):
         wait = waits.get(work.ref)
         waiting = wait and any(ref not in results for ref in wait.body.get("refs", []))
         state = (
-            "delivered"
+            "cancelled"
+            if result and result.body.get("status") == "cancelled"
+            else "delivered"
             if result
             else "blocked"
             if error

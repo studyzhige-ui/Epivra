@@ -37,6 +37,9 @@ def math_plugin(parser):
             last += 1
             if last >= end:
                 return False
+            if (state.bMarks[last] + state.tShift[last] < state.eMarks[last]
+                    and state.sCount[last] < state.blkIndent):
+                return False
             text += "\n" + state.getLines(last, last + 1, state.blkIndent, False)
         if silent:
             return True

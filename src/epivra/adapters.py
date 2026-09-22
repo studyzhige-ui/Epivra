@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import math
 import os
@@ -16,6 +17,15 @@ from typing import Any
 import httpx
 
 from .domain import INLINE_TOOL_RESULT_CHARS, ContextCapacity, encode, identity
+
+
+def _wire_json(value):
+    """Decode received JSON into values the immutable receipt can preserve."""
+    result = json.loads(value)
+    # Python accepts NaN/Infinity and overflows valid exponents to inf. Keep
+    # raw Unicode intact, but never return numbers the receipt cannot settle.
+    json.dumps(result, ensure_ascii=True, allow_nan=False)
+    return result
 
 
 def encode_state(state):
@@ -275,9 +285,12 @@ class JsonAPI:
         if text:
             return {"http_status": 200, "data": {"html": response.text}, **metadata}
         try:
-            return {"http_status": 200, "data": response.json(), **metadata}
+            return {"http_status": 200, "data": _wire_json(response.content), **metadata}
         except ValueError:
-            return {"http_status": 200, "malformed_json": True}
+            # Private operation receipt only; decoders expose a generic protocol error.
+            return {"http_status": 200, "malformed_json": True,
+                    "raw_response": {"encoding": "base64", "data": base64.b64encode(response.content).decode("ascii")},
+                    **metadata}
 
     async def close(self) -> None:
         if self._owns_client:
@@ -339,6 +352,7 @@ class JsonAPI:
                 response = await self._read_response(response)
                 return self._rejection(response)
             state = _ChatStream()
+            invalid_events: list[str] = []
             event = []
             event_bytes = 0
             try:
@@ -350,8 +364,14 @@ class JsonAPI:
                         event = []
                         event_bytes = 0
                         if value == "[DONE]":
-                            return state.result()
-                        state.add(json.loads(value))
+                            return {"http_status": 200, "malformed_json": True, "invalid_events": invalid_events} if invalid_events else state.result()
+                        try:
+                            chunk = _wire_json(value)
+                        except ValueError:
+                            invalid_events.append(value)
+                            continue
+                        if not invalid_events:
+                            state.add(chunk)
                     elif line.startswith("data:"):
                         event_bytes += len(line.encode("utf-8"))
                         if event_bytes > self.max_event_bytes:
@@ -795,8 +815,10 @@ class Tavily:
                 cls.validate_extract({"url": item["url"]})
                 if any(not isinstance(item.get(k, ""), str) for k in ("title", "content")):
                     raise ValueError("invalid search text")
-                results.append({"url": item["url"], "title": item.get("title", ""),
-                                "snippet": item.get("content", ""), "content_type": "search_snippet"})
+                result = {"url": item["url"], "title": item.get("title", ""),
+                          "snippet": item.get("content", ""), "content_type": "search_snippet"}
+                encode(result)
+                results.append(result)
             except (ValueError, TypeError):
                 failures.append({"index": index, "error": "invalid_search_result"})
         return {"results": results, "failures": failures}

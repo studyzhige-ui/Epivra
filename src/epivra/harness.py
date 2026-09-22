@@ -162,6 +162,7 @@ BUILTINS = {
         {**object_schema({"text": STRING, "evidence": STRINGS}), "required": ["text"]},
     ),
     "wait_for_work": ("lead", object_schema({"refs": STRINGS})),
+    "cancel_work": ("lead", object_schema({"work": STRING, "reason": STRING})),
     "pin_evidence": ("all", object_schema({"refs": STRINGS})),
     "delegate_work": (
         "lead",
@@ -593,7 +594,6 @@ class Harness:
         research = role in {"lead", "investigator", "synthesizer", "writer"}
         shared_research = {
             "record_evidence",
-            "draft_report",
             "read_writing_guide",
             "measure_text",
             "save_note",
@@ -611,6 +611,12 @@ class Harness:
                 and name in {"save_note", "discover_local", "snapshot_local"}
             )
         }
+        if role in {"lead", "writer"}:
+            for name in ("draft_report", "patch_draft"):
+                result[name] = {"description": TOOLS[name], "parameters": BUILTINS[name][1]}
+        else:
+            result.pop("draft_report", None)
+            result.pop("patch_draft", None)
         if role == "reviewer" and policy.get("_review_mode") == "check":
             result.pop("submit_review")
             result["finish_work"] = {
@@ -807,6 +813,7 @@ class Harness:
             "shared_context": work.body.get("shared_context", ""),
             "deliverable": work.body.get("deliverable", ""),
             "draft": self._draft_head(study, work),
+            "authoring": self.store.authoring_state(study, work.ref),
             "writing_basis": knowledge["basis"],
             "current_date": direction.body["policy"].get("as_of_date")
             or datetime.now(timezone.utc).date().isoformat(),
@@ -1425,6 +1432,7 @@ class Harness:
                                     study,
                                     call.arguments["catalog"],
                                     call.arguments["path"],
+                                    guard=lambda: self.store.require_work(study, work_ref, control.epoch),
                                 )
                                 result = {
                                     "ref": source.ref,
@@ -1435,7 +1443,8 @@ class Harness:
                                 }
                             elif call.name == "discover_local":
                                 catalog = await self.workspace.discover_async(
-                                    study, call.arguments["root"]
+                                    study, call.arguments["root"],
+                                    guard=lambda: self.store.require_work(study, work_ref, control.epoch),
                                 )
                                 result = {
                                     "ref": catalog.ref,
@@ -1661,6 +1670,7 @@ class Harness:
             "record_evidence",
             "draft_report",
             "delegate_work",
+            "cancel_work",
             "run_analysis",
             "publish_report",
             "record_finding",
@@ -1762,6 +1772,11 @@ class Harness:
                 deliverable=args.get("deliverable", ""),
             )
             return {"work": child.ref}
+        if call.name == "cancel_work":
+            cancellation = self.store.cancel_work(
+                study, work.ref, args["work"], epoch, args["reason"]
+            )
+            return {"ref": cancellation.ref, "authoring": self.store.authoring_state(study, work.ref)}
         if call.name == "request_clarification":
             item = self.store.ask(
                 study, work.ref, epoch, args["text"], args["refs"], step

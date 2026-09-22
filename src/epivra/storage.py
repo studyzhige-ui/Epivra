@@ -502,7 +502,7 @@ class Store:
                 "direction",
                 {
                     "request": request,
-                    "runtime": "continuous-research-v2",
+                    "runtime": "continuous-research-v3",
                     "policy": policy,
                 },
             )
@@ -699,7 +699,7 @@ class Store:
             return result
 
     def require_runtime(self, study: str, direction: str) -> None:
-        if self.get(study, direction).body.get("runtime") != "continuous-research-v2":
+        if self.get(study, direction).body.get("runtime") != "continuous-research-v3":
             raise RuntimeMismatch(
                 "Archived research runtime: read-only audit; start a new study"
             )
@@ -743,6 +743,11 @@ class Store:
                     raise NotAllowed("only a lead may delegate")
                 if parent.body["direction"] != current.direction:
                     raise Conflict("delegating work belongs to a superseded direction")
+                leads = self.matching(study, "work", {
+                    "direction": current.direction, "role": "lead", "stage": "research"
+                })
+                if not leads or owner != leads[0].ref:
+                    raise NotAllowed("only the current research owner may delegate")
             # Specialization is not a prerequisite chain. A helper may start
             # from direct evidence; its authority is inherited from this study.
             if role in {"writer", "synthesizer"}:
@@ -772,12 +777,14 @@ class Store:
                             raise Conflict(
                                 "argument check belongs to another report version"
                             )
-            return self._put(
+            existing = {item.ref for item in self.matching(study, "work", {"direction": current.direction})}
+            candidate = self._put(
                 study,
                 "work",
                 {
                     "direction": current.direction,
                     "role": role,
+                    "stage": "research" if current.approved else "route",
                     "task": task,
                     "inputs": inputs,
                     "owner": owner,
@@ -787,6 +794,78 @@ class Store:
                 },
                 (current.direction, *inputs, *((owner,) if owner else ())),
             )
+            if candidate.ref in existing:
+                return candidate
+            leads = self.matching(study, "work", {
+                "direction": current.direction, "role": "lead", "stage": "research"
+            })
+            if role == "lead" and current.approved:
+                if owner is not None or len(leads) != 1:
+                    raise NotAllowed("a research direction has one lead owner")
+            if role == "writer":
+                if not leads or owner != leads[0].ref:
+                    raise NotAllowed("the research lead must explicitly delegate writing")
+                active = self._active_writers(study, current.direction)
+                if len(active) != 1 or active[0].ref != candidate.ref:
+                    raise NotAllowed("finish or cancel the current writer before delegating another")
+                draft = WritingWorkspace(self).current(study, current.direction)
+                if draft and draft.ref not in inputs:
+                    raise NotAllowed("writing handoff must include the current manuscript")
+            return candidate
+
+    def _active_writers(self, study: str, direction: str) -> builtins.list[Artifact]:
+        completed = {a.body.get("producer") for a in self.list(study, "work_result")}
+        return [a for a in self.matching(study, "work", {
+            "direction": direction, "role": "writer", "stage": "research"
+        }) if a.ref not in completed]
+
+    def writing_author(self, study: str) -> str | None:
+        current = self.control(study)
+        writers = self._active_writers(study, current.direction)
+        if writers:
+            return writers[0].ref
+        leads = self.matching(study, "work", {
+            "direction": current.direction, "role": "lead", "stage": "research"
+        })
+        return leads[0].ref if leads else None
+
+    def authoring_state(self, study: str, work: str) -> dict[str, Any]:
+        current = self.control(study)
+        leads = self.matching(study, "work", {
+            "direction": current.direction, "role": "lead", "stage": "research"
+        })
+        owner = leads[0].ref if leads else None
+        author = self.writing_author(study)
+        published = any(current.direction in p.parents for p in self.list(study, "publication"))
+        return {
+            "owner": owner,
+            "author": author,
+            "delegated_writer": author if author != owner else None,
+            "can_write": bool(current.approved and not current.paused and not current.cancelled
+                              and not published and author == work),
+        }
+
+    def cancel_work(
+        self, study: str, owner: str, child: str, epoch: int, reason: str
+    ) -> Artifact:
+        with self.transaction():
+            actor = self.require_work(study, owner, epoch)
+            target = self.get(study, child)
+            if actor.body["role"] != "lead" or target.kind != "work" or target.body.get("owner") != owner:
+                raise NotAllowed("only the delegating lead may cancel its child")
+            if target.body["direction"] != actor.body["direction"]:
+                raise Conflict("child belongs to a superseded direction")
+            if not isinstance(reason, str) or not reason.strip():
+                raise ValueError("cancellation requires a reason")
+            results = self.matching(study, "work_result", {"producer": child})
+            if results:
+                return results[-1]
+            receipts = self.matching(study, "draft_saved", {"producer": child})
+            refs = [receipts[-1].body["ref"]] if receipts else []
+            return self._put(study, "work_result", {
+                "producer": child, "status": "cancelled", "text": reason,
+                "refs": refs, "cancelled_by": owner,
+            }, (child, owner, *refs))
 
     def require_work(self, study: str, work: str, epoch: int) -> Artifact:
         current = self.control(study)
@@ -800,6 +879,12 @@ class Store:
             raise NotAllowed("study is paused or cancelled")
         if not current.approved and item.body["role"] != "lead":
             raise NotAllowed("strategy approval required")
+        if current.approved and item.body.get("stage") != "research":
+            raise NotAllowed("route planning ended when research was approved")
+        if any(r.body.get("status") == "cancelled" for r in self.matching(
+            study, "work_result", {"producer": work}
+        )):
+            raise NotAllowed("work has been cancelled by its owner")
         return item
 
     def clarifications(
@@ -814,13 +899,14 @@ class Store:
         answered = {
             a.body["question"] for a in self.list(study, "clarification_answer")
         }
+        completed = {a.body.get("producer") for a in self.list(study, "work_result")} if open_only else set()
         return [
             q
             for q in self.list(study, "clarification")
             if q.body["direction"] == direction
             and (work is None or q.body["work"] == work)
             and (owner is None or q.body["owner"] == owner)
-            and (not open_only or q.ref not in answered)
+            and (not open_only or (q.ref not in answered and q.body["work"] not in completed))
         ]
 
     def ask(
@@ -898,6 +984,8 @@ class Store:
                 if old[0].body != body:
                     raise Conflict("cannot replace a submitted clarification answer")
                 return old[0]
+            if self.matching(study, "work_result", {"producer": q.body["work"]}):
+                raise NotAllowed("finished work cannot receive a new clarification answer")
             return self._put(
                 study,
                 "clarification_answer",
@@ -1302,6 +1390,8 @@ class Store:
             item = self.require_work(study, work, epoch)
             if item.body["role"] != "lead":
                 raise NotAllowed("only lead can publish")
+            if self.writing_author(study) != work:
+                raise NotAllowed("the delegated writer must finish or be cancelled before publication")
             direction = self.control(study).direction
             report = self.get(study, report_ref)
             review = self.get(study, review_ref)
@@ -1320,7 +1410,7 @@ class Store:
             if (
                 author.kind != "work"
                 or author.body["role"]
-                not in {"lead", "investigator", "synthesizer", "writer"}
+                not in {"lead", "writer"}
                 or not (author.ref == work or author.body["owner"] == work)
                 or author.body["direction"] != direction
                 or author.ref not in report.parents

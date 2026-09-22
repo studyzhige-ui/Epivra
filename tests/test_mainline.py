@@ -191,6 +191,7 @@ class MainlineTests(unittest.IsolatedAsyncioTestCase):
         )
         report = self.store.list("s", "report")[0]
         self.assertEqual("Finding [1].\n\n---\n\n1. source.txt", report.body["text"])
+        await self.execute(writer, Call("finish_work", {"text": "Manuscript ready", "refs": [report.ref]}))
         reviewer = self.child("reviewer", "Review", (report.ref,))
         await self.execute(reviewer, Call("read_report", {"offset": 0, "limit": 20}))
         self.assertIn("Finding [1]", str(self.store.list("s", "observation")[-1].body))
@@ -283,7 +284,7 @@ class MainlineTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(1, len(self.store.list("s", "report")))
         self.assertEqual(
-            "writer", self.child("writer", "No mandatory synthesis").body["role"]
+            "writer", self.child("writer", "No mandatory synthesis", (self.store.list("s", "report")[-1].ref,)).body["role"]
         )
         c = self.store.create("p", "Plan", {"network": True})
         lead = self.store.work("p", c.ref, "lead", "Plan")
@@ -309,11 +310,14 @@ class MainlineTests(unittest.IsolatedAsyncioTestCase):
         )
         await self.execute(syn, Call("finish_work", {"text": "Answer", "refs": []}))
         synthesis = h._steps("s", "work_result", syn.ref)[0]
-        other_lead = self.store.work("s", self.c.ref, "lead", "Other lead")
-        other_writer = self.store.work(
-            "s", self.c.ref, "writer", "Other writer", (synthesis.ref,), other_lead.ref
+        other_lead = self.lead
+        other_writer = self.child("writer", "Earlier direction writer", (synthesis.ref,))
+        self.c = self.store.command(
+            "s", "new-owner-direction", self.c.ref, "steer", {"request": "Reassess the question"}
         )
-        writer = self.child("writer", "Write", (synthesis.ref, other_writer.ref))
+        self.lead = self.store.work("s", self.c.ref, "lead", "Own reassessment")
+        # Referencing an earlier author's work does not transfer authorship to it.
+        writer = self.child("writer", "Write", (other_writer.ref,))
         await self.execute(
             writer, Call("draft_report", {"text": "Answer", "evidence": []})
         )
@@ -330,6 +334,17 @@ class MainlineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             self.lead.ref, self.store.get("s", report.body["producer"]).body["owner"]
         )
+        self.assertIn(other_writer.ref, report.parents)
+        await self.execute(writer, Call("finish_work", {"text": "Ready", "refs": [report.ref]}))
+        forged = self.store.put(
+            "s", "report", {**report.body, "producer": other_writer.ref}, report.parents
+        )
+        checker = self.child("reviewer", "Review alleged author", (forged.ref,))
+        acceptance = self.store.put(
+            "s", "review", {"accepted": True, "work": checker.ref}, (forged.ref, checker.ref)
+        )
+        with self.assertRaisesRegex(Conflict, "report must come from"):
+            self.store.publish("s", self.lead.ref, self.c.epoch, forged.ref, acceptance.ref)
 
     async def test_old_direction_result_cannot_start_new_writer(self):
         inv = self.child("investigator", "Find")

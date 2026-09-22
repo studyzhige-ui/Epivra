@@ -312,6 +312,8 @@ class RuntimeBoundaries(unittest.IsolatedAsyncioTestCase):
             {"text": "Derived recommendation", "producer": synth_work.ref},
             (synth_work.ref, self.c.direction, old["ref"]),
         )
+        completed = await self.execute(writer, "finish_work", {"text": "Reviewed corrected inputs", "refs": [new["ref"]]})
+        self.assertIn("ref", completed)
         indirect = self.store.work(
             "s", self.c.ref, "writer", "Use synthesis", (synthesis.ref,), self.lead.ref
         )
@@ -351,6 +353,8 @@ class RuntimeBoundaries(unittest.IsolatedAsyncioTestCase):
             writer, "draft_report", {"text": "Tentative answer", "evidence": []}
         )
         report = self.store.get("s", result["ref"])
+        completed = await self.execute(writer, "finish_work", {"text": "Ready for review", "refs": [report.ref]})
+        self.assertIn("ref", completed)
         check = self.store.work(
             "s",
             self.c.ref,

@@ -114,7 +114,7 @@ def occurrences(text, numbered=False, *, historical=False):
     parser.core.ruler.at("inline", inline)
     env = {}
     parser.parse(text, env)
-    if any(re.fullmatch(r"\d+", key) for key in env.get("references", {})):
+    if historical and any(re.fullmatch(r"\d+", key) for key in env.get("references", {})):
         raise ValueError(
             "Numeric reference definitions conflict with generated citations"
         )

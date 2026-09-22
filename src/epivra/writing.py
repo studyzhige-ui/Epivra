@@ -53,14 +53,13 @@ class WritingWorkspace:
 
     def current(self, study, direction=None):
         direction = direction or self.store.control(study).direction
-        # One manuscript per research direction; helpers share, rather than fork,
-        # its head. The Store process lock serializes transactions across processes.
+        # One manuscript per direction, passed between explicit writing turns.
         rows = self.store.matching(study, "report", {"document": direction})
         return rows[-1] if rows else None
 
-    def _allowed(self, study, work, epoch, base=None):
+    def _allowed(self, study, work, epoch):
         actor = self.store.require_work(study, work, epoch)
-        if not self.store.control(study).approved or actor.body["role"] == "reviewer":
+        if not self.store.control(study).approved or actor.body["role"] not in {"lead", "writer"}:
             raise NotAllowed("an approved research author is required")
         if any(
             actor.body["direction"] in p.parents
@@ -69,17 +68,8 @@ class WritingWorkspace:
             raise NotAllowed(
                 "published research is immutable; only a new user direction can reopen it"
             )
-        if base and actor.body["role"] != "lead":
-            report = self.store.get(study, base)
-            while report.kind == "report" and report.body.get("document") == actor.body["direction"]:
-                if report.body.get("producer") == work or report.ref in actor.body["inputs"]:
-                    break
-                previous = report.body.get("previous_report")
-                if not previous:
-                    raise NotAllowed("a helper edits only an assigned manuscript lineage")
-                report = self.store.get(study, previous)
-            else:
-                raise NotAllowed("draft must belong to this research direction")
+        if self.store.writing_author(study) != work:
+            raise NotAllowed("formal writing belongs to the current author; finish or cancel the delegated writer first")
         return actor
 
     def save(
@@ -100,7 +90,7 @@ class WritingWorkspace:
     ):
         key = identity(step, index, "draft_save")
         with self.store.transaction():
-            actor = self._allowed(study, work, epoch, base)
+            actor = self.store.require_work(study, work, epoch)
             direction = actor.body["direction"]
             old_receipts = self.store.matching(
                 study, "draft_saved", {"request_id": key}
@@ -108,11 +98,12 @@ class WritingWorkspace:
             request_digest = identity(text, edits, base, basis, evidence, handoff)
             if old_receipts:
                 previous = old_receipts[-1]
-                if previous.body["request_digest"] != request_digest:
+                if previous.body.get("producer") != work or previous.body["request_digest"] != request_digest:
                     raise Conflict(
                         "draft operation identity reused with different content"
                     )
                 return self._result(previous)
+            self._allowed(study, work, epoch)
             current = self.current(study, direction)
             if (current.ref if current else None) != base:
                 raise Conflict(

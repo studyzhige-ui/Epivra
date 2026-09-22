@@ -244,7 +244,8 @@ class PublicTests(unittest.IsolatedAsyncioTestCase):
                 (c.direction,),
             )
             c = s.command("s", "approve", c.ref, "approve", {"plan": plan.ref})
-            work = s.work("s", c.ref, "investigator", "Find evidence")
+            owner = s.work("s", c.ref, "lead", "Own research", (plan.ref,))
+            work = s.work("s", c.ref, "investigator", "Find evidence", (), owner.ref)
             with patch("epivra.models.create_model", return_value=(Model(), API())):
                 service, clients = online_service(s, "s", {})
             try:
@@ -282,7 +283,7 @@ class PublicTests(unittest.IsolatedAsyncioTestCase):
                     },
                     (work.ref, sources[0].ref),
                 )
-                writer = s.work("s", c.ref, "writer", "Write", (result.ref,))
+                writer = s.work("s", c.ref, "writer", "Write", (result.ref,), owner.ref)
                 self.assertIn(
                     "read_writing_guide", service.harness._request("s", writer)["tools"]
                 )

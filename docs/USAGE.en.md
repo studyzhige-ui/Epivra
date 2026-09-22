@@ -71,6 +71,8 @@ Generating the initial route calls the model. The route describes the question, 
 
 The owner can investigate original sources, record findings and conflicts, prepare a writing basis, and revise the manuscript directly. It may delegate focused investigation, synthesis, or writing tasks when useful; roles are not a mandatory pipeline. External MCP capabilities are used through authorized assistants.
 
+Investigators return evidence and suggestions without editing the manuscript. Delegating a writer hands over the current manuscript exclusively; the owner resumes editing after completion or cancellation. Cancellation preserves saved work and is displayed separately from delivery.
+
 Drafts are saved and revised continuously but are not published reports. An independent reviewer must accept the exact current manuscript before publication. Defects return to revision or further investigation, and changed manuscripts require another review. Reports have no default word limit. Local-material mode disables built-in web channels; selected external MCP services may still access the network.
 
 
@@ -83,6 +85,10 @@ After three consecutive rounds with no tool action, or the same protocol error o
 Normal research has no total call, token, cost, or elapsed-time cap. Explicit provider rejections have a separate recovery guard: one operation can be recovered at most five times within one control epoch. After that guard is reached, pause and resume explicitly before trying the operation again; this protects resources without limiting research depth.
 
 ## 4. Parsing and analysis
+
+Text and CSV/TSV default to UTF-8. Select `gb18030` when creating a study for older Chinese files, or pass `create --text-encoding gb18030` in the JSON CLI. Encoding is fixed per study; original bytes are retained and decoding errors are reported without replacement characters. Automatic PDF fallback converts only pages with visual content but no extracted text, preserving original page numbers.
+
+Set `EPIVRA_CONTACT_EMAIL` in the host process environment to supply a real contact email to PubMed (email) and Crossref (mailto). Without it, public access remains available.
 
 The base installation handles text, CSV/TSV, text-layer PDFs, and XLSX. Spreadsheet formulas are read but not recalculated. For scanned PDFs, image OCR, DOCX/PPTX, and other complex materials:
 

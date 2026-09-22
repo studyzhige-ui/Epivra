@@ -30,7 +30,14 @@ def word_report(report):
         style.font.color.rgb = RGBColor.from_string("1D5545")
         style.element.get_or_add_rPr().rFonts.set(qn("w:eastAsia"), "Microsoft YaHei")
     parser = math_plugin(MarkdownIt("default", {"html": False}))
-    tokens = parser.parse(report["text"])
+    # Only generated references are literal; author numeric links retain their meaning.
+    text, end = report["text"], 0
+    parts: list[str] = []
+    for mark in report.get("citation_marks", []):
+        parts.extend((text[end:mark["start"]], "\\" + text[mark["start"]:mark["end"]]))
+        end = mark["end"]
+    parts.append(text[end:])
+    tokens = parser.parse("".join(parts))
     paragraph = None
     table = None
     row = -1

@@ -5,7 +5,7 @@ from html.parser import HTMLParser
 from urllib.parse import parse_qs, urlsplit
 
 from .adapters import JsonAPI, ProviderFailure, Tavily, rate_limit_delay
-from .domain import identity
+from .domain import encode, identity
 
 CONNECTIONS = {
     "tavily": ("https://api.tavily.com", "TAVILY_API_KEY", "Authorization", "Bearer "),
@@ -236,9 +236,7 @@ class WebProvider:
                 title = item.get("title") or item.get("name") or ""
                 if not isinstance(title, str) or not isinstance(snippet, str):
                     raise ValueError("invalid search text")
-                seen.add(url)
-                results.append(
-                    {
+                result = {
                         "url": url,
                         "title": title,
                         "snippet": snippet,
@@ -247,7 +245,9 @@ class WebProvider:
                         or item.get("datePublished")
                         or item.get("date"),
                     }
-                )
+                encode(result)
+                seen.add(url)
+                results.append(result)
             except (ValueError, TypeError, KeyError):
                 failures.append({"index": index, "error": "invalid_search_result"})
         return {"results": results, "provider": self.resource, "failures": failures}

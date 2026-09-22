@@ -6,6 +6,7 @@ import asyncio
 import base64
 import hashlib
 import shutil
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -249,10 +250,13 @@ class Workspace:
         directory = self._root(study, root)
         return self.store.put(study, "catalog", self._scan(directory))
 
-    async def discover_async(self, study: str, root: str) -> Artifact:
+    async def discover_async(self, study: str, root: str, *, guard: Callable[[], Any] | None = None) -> Artifact:
         directory = self._root(study, root)
         body = await self._io(self._scan, directory)
-        return self.store.put(study, "catalog", body)
+        with self.store.transaction():
+            if guard is not None:
+                guard()
+            return self.store._put(study, "catalog", body, ())
 
     @staticmethod
     async def _io(function, *args):
@@ -409,7 +413,7 @@ class Workspace:
         return raw
 
     async def snapshot_async(
-        self, study: str, catalog_ref: str, relative: str
+        self, study: str, catalog_ref: str, relative: str, *, guard: Callable[[], Any] | None = None
     ) -> Artifact:
         try:
             target = self._load_target(study, catalog_ref, relative)
@@ -421,9 +425,11 @@ class Workspace:
         except OSError:
             raise ValueError("local source unavailable; refresh catalog") from None
         if isinstance(loaded, Artifact):
+            if guard is not None:
+                guard()
             return loaded
         parsed = await self._parse(study, relative, loaded)
-        return self._save(study, relative, loaded, parsed, (catalog_ref,))
+        return self._save(study, relative, loaded, parsed, (catalog_ref,), guard=guard)
 
     def _save(
         self,
@@ -432,8 +438,11 @@ class Workspace:
         raw: bytes,
         parsed: dict,
         parents: tuple[str, ...] = (),
+        *, guard: Callable[[], Any] | None = None,
     ) -> Artifact:
         with self.store.transaction():
+            if guard is not None:
+                guard()
             return self._save_material(study, name, raw, parsed, parents)
 
     def _save_material(self, study, name, raw, parsed, parents):

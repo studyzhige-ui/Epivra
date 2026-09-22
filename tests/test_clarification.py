@@ -173,7 +173,7 @@ class ClarificationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_owner_and_direction_boundaries_cannot_release_question(self):
         _, _, question = await self.ask()
-        other = self.store.work("s", self.c.ref, "lead", "Unrelated coordinator")
+        other = self.store.work("s", self.c.ref, "investigator", "Unrelated helper", (), self.lead.ref)
         for work in (other, self.work):
             with self.subTest(work=work.ref):
                 with self.assertRaises(NotAllowed):
@@ -263,7 +263,7 @@ class ClarificationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_answer_tool_releases_child_and_rejects_foreign_owner(self):
         _, _, question = await self.ask()
-        other = self.store.work("s", self.c.ref, "lead", "Other coordinator")
+        other = self.store.work("s", self.c.ref, "investigator", "Other helper", (), self.lead.ref)
         model = Model(
             Call(
                 "answer_clarification",

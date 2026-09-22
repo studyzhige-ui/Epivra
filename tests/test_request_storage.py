@@ -7,7 +7,7 @@ import unittest
 from research_fixture import save_report
 from test_execution import FakeModel, Fixture
 
-from epivra.domain import Conflict, Reply, UnknownOutcome, identity
+from epivra.domain import Call, Conflict, Reply, UnknownOutcome, identity
 from epivra.harness import Harness
 from epivra.storage import Store
 
@@ -100,7 +100,7 @@ class RequestStorageTests(Fixture, unittest.IsolatedAsyncioTestCase):
 
     def test_invalid_request_references_are_rejected_before_admission(self):
         request = {"q": "evidence"}
-        other = self.store.work("s", self.c.ref, "lead", "Other work")
+        other = self.store.work("s", self.c.ref, "investigator", "Other work", owner=self.work.ref)
         wrong_work = self.store.put("s", "step", {"request": request}, (other.ref,))
         wrong_kind = self.store.put("s", "note", {"request": request}, (self.work.ref,))
         step = self.store.put("s", "step", {"request": request}, (self.work.ref,))
@@ -180,6 +180,12 @@ class CompletedImportTests(Fixture):
             "s", self.c.ref, "writer", "Write", (finding.ref,), self.work.ref
         )
         report = save_report(self.store, writer, "Result", [])
+        completion = Harness(self.store, FakeModel([]))
+        finish = self.store.put("s", "step", {"fixture": "finish"}, (writer.ref,))
+        result = completion._builtin("s", writer, self.c.epoch, finish.ref, 0,
+                                     Call("finish_work", {"text": "Ready for review", "refs": [report.ref]}))
+        self.assertIn("ref", result)
+        self.assertTrue(completion.finished("s", writer.ref))
         reviewer = self.store.work(
             "s", self.c.ref, "reviewer", "Check", (report.ref,), self.work.ref
         )

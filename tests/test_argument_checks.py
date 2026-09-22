@@ -48,6 +48,8 @@ class ArgumentCheckTests(unittest.IsolatedAsyncioTestCase):
             {"text": "Finding with appropriate limits.", "evidence": []},
         )
         self.report = self.store.list("s", "report")[-1]
+        completed = await self.execute(writer, "finish_work", {"text": "Ready for review", "refs": [self.report.ref]})
+        self.assertIn("ref", completed)
 
     async def asyncTearDown(self):
         self.store.close()
@@ -151,9 +153,9 @@ class ArgumentCheckTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(Conflict):
             self.child("reviewer", "Check revised report", (other.ref, finding.ref))
         writer = self.child(
-            "writer", "Inspect this check and its bound source report", (finding.ref,)
+            "writer", "Inspect this check and its bound source report", (finding.ref, self.report.ref)
         )
-        self.assertEqual([finding.ref], list(writer.body["inputs"]))
+        self.assertEqual([finding.ref, self.report.ref], list(writer.body["inputs"]))
         self.assertFalse(self.harness.finished("s", writer.ref))
         self.assertEqual([], self.store.list("s", "review"))
         self.assertEqual([], self.store.list("s", "publication"))

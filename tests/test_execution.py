@@ -199,6 +199,12 @@ class StorageTests(Fixture):
         )
         source = self.store.put("s", "source", {"text": "Evidence"})
         report = save_report(self.store, writer, "Result", [source.ref])
+        completion = Harness(self.store, FakeModel([]))
+        finish = self.store.put("s", "step", {"fixture": "finish"}, (writer.ref,))
+        result = completion._builtin("s", writer, self.c.epoch, finish.ref, 0,
+                                     Call("finish_work", {"text": "Ready for review", "refs": [report.ref]}))
+        self.assertIn("ref", result)
+        self.assertTrue(completion.finished("s", writer.ref))
         review_work = self.store.work(
             "s",
             self.c.ref,

@@ -32,11 +32,8 @@ class Model:
 
 
 class BoundaryTests(unittest.IsolatedAsyncioTestCase):
-    async def test_wait_rejects_non_work_and_other_owners(self):
-        other = self.store.work("s", self.c.ref, "lead", "Other owner")
-        child = self.store.work(
-            "s", self.c.ref, "investigator", "Other child", (), other.ref
-        )
+    async def test_wait_rejects_non_work_and_undelegated_work(self):
+        child = self.work  # A lead is not its own delegated child.
         source = self.store.put("s", "source", {"text": "not work"})
         model = Model(
             tuple(

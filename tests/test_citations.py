@@ -178,9 +178,46 @@ class CitationTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.report("| A | B |\n|---|---|\n| `literal | [[cite:bad]] ` |", [])
 
-    def test_numeric_reference_definitions_cannot_redirect_generated_citations(self):
-        with self.assertRaisesRegex(ValueError, "Numeric reference definitions"):
-            self.report(f"Claim [[cite:{self.a.ref}]]\n\n[1]: https://wrong.example")
+    def test_numeric_links_coexist_with_bound_citations_in_word(self):
+        from io import BytesIO
+
+        from docx import Document
+
+        from epivra.report_export import word_report
+
+        text = f"See [1]. Claim [[cite:{self.a.ref}]].\n\n[1]: https://author.example"
+        report = self.report(text)
+        self.assertEqual(1, len(report["citation_marks"]))
+        output = Document(BytesIO(word_report({"ref": "r", **report})))
+        paragraph = output.paragraphs[0].text
+        self.assertEqual("See 1 (https://author.example). Claim [1].", paragraph)
+        self.assertEqual("See [1].\n\n[1]: https://author.example",
+                         self.report("See [1].\n\n[1]: https://author.example", [])["text"])
+
+    def test_math_container_contracts_preserve_outside_citations(self):
+        import json
+        from io import BytesIO
+
+        from docx import Document
+        from markdown_it import MarkdownIt
+
+        from epivra.markdown_rules import math_plugin
+        from epivra.report_export import word_report
+
+        cases = json.loads((Path(__file__).parent / "fixtures/markdown_contracts.json").read_text(encoding="utf-8"))
+        for case in cases:
+            with self.subTest(text=case["text"]):
+                text = case["text"].replace("@CITE@", f"[[cite:{self.a.ref}]]")
+                report = self.report(text)
+                self.assertEqual(1, len(report["citation_marks"]))
+                tokens = math_plugin(MarkdownIt()).parse(text)
+                self.assertEqual(case["math_blocks"], sum(t.type == "math_block" for t in tokens))
+                self.assertFalse(any("Outside" in t.content for t in tokens if t.type == "math_block"))
+                output = Document(BytesIO(word_report({"ref": "r", **report})))
+                outside = [p for p in output.paragraphs if "Outside" in p.text]
+                self.assertEqual(1, len(outside))
+                self.assertEqual("Outside [1]", outside[0].text)
+                self.assertTrue(all(r.font.name != "Consolas" for r in outside[0].runs))
 
     def test_publication_revalidation_rejects_tampered_rendering(self):
         report = self.report(f"Claim [[cite:{self.a.ref}]]")

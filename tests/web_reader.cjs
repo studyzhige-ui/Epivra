@@ -41,3 +41,23 @@ for (const old of ['formula $x[1]$', '[label [1]](https://example.com)']) {
 assert.equal((md.render('$$x$$ after\n\nnext\n\n$$y$$').match(/<math/g)||[]).length,2);
 assert.match(md.render('$$\n x\n\n  y\n$$'), /<math/);
 assert.ok(!md.render('Price $5 to $10').includes('<math'));
+
+for (const item of JSON.parse(fs.readFileSync('tests/fixtures/markdown_contracts.json', 'utf8'))) {
+  const source = item.text.replace('@CITE@', '[1]');
+  const offset = Array.from(source.slice(0, source.indexOf('[1]'))).length;
+  context.renderReport(md, target, toc, {text: source, citations: [{number:1}],
+    citation_marks: [{start:offset,end:offset+3,number:1}]}, ()=>{}, ()=>{});
+  assert.equal((target.innerHTML.match(/href="#epivra-citation-test-1"/g)||[]).length, 1);
+  assert.equal(md.parse(source, {}).filter(t=>t.type==='math_block').length, item.math_blocks);
+  assert.ok(!md.parse(source, {}).some(t=>t.type==='math_block' && t.content.includes('Outside')));
+}
+const linkedText = '🦉 See [1]. Claim [1].\n\n[1]: https://author.example';
+const linkedOffset = Array.from(linkedText.slice(0, linkedText.indexOf('Claim') + 6)).length;
+const linkedReport = {text:linkedText, citations:[{number:1}],citation_marks:[{start:linkedOffset,end:linkedOffset+3,number:1}]};
+context.renderReport(md,target,toc,linkedReport,()=>{},()=>{});
+assert.equal((target.innerHTML.match(/href="https:\/\/author.example"/g)||[]).length,1);
+assert.equal((target.innerHTML.match(/href="#epivra-citation-test-1"/g)||[]).length,1);
+const exported = md.render(context.markdownReport(linkedReport));
+assert.equal((exported.match(/href="https:\/\/author.example"/g)||[]).length,1);
+assert.match(exported,/Claim \[1\]\./);
+console.log('Shared Markdown contracts: list/quote boundaries and numeric link/citation identity preserved in reader and Markdown export');

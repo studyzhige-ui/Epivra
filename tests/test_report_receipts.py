@@ -103,8 +103,10 @@ class ReportReceiptTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(text), receipt["report_metrics"]["characters"])
         self.assertEqual(1, len(self.store.list("s", "work_result")))
         self.assertEqual(1, len(self.store.list("s", "draft_saved")))
+        completed = await self.execute("finish_work", {"text": "Hand off manuscript", "refs": [receipt["ref"]]})
+        self.assertIn("ref", completed)
         other = self.store.work(
-            "s", self.c.ref, "writer", "Other", (self.finding_ref,), self.lead.ref
+            "s", self.c.ref, "writer", "Other", (self.finding_ref, receipt["ref"]), self.lead.ref
         )
         error = await self.execute(
             "draft_report", {"text": "x", "evidence": [], "report_metrics": {}}, other
@@ -133,12 +135,13 @@ class ReportReceiptTests(unittest.IsolatedAsyncioTestCase):
         saved = self.store.get("s", result.ref)
         self.assertEqual(receipt["report_metrics"], saved.body["report_metrics"])
         harness = Harness(self.store, self.model)
-        receiver = self.store.work(
-            "s", self.c.ref, "lead", "Use the delivered report", (saved.ref,)
-        )
-        request = harness._request("s", receiver)
-        bodies = [x.get("body") for x in request["context"]]
-        self.assertIn(saved.body, bodies)
+        request = harness._request("s", self.lead)
+        delivered = next(x for x in request["delegated_work"] if x["ref"] == self.writer.ref)
+        self.assertTrue(delivered["finished"])
+        self.assertIn(saved.ref, delivered["results"])
+        self.harness = harness
+        read = await self.execute("read_artifact", {"ref": saved.ref}, self.lead)
+        self.assertEqual(saved.body, read["body"])
 
 
 if __name__ == "__main__":

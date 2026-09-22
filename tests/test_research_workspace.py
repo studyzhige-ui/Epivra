@@ -122,7 +122,7 @@ class WorkspaceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(obs.get("failure"), obs)
         return self.store.get("s", obs["result"]["ref"])
 
-    async def test_shared_lineage_and_own_completion_survive_interleaved_writes(self):
+    async def test_writer_handoff_prevents_interleaved_edits(self):
         await self.basis([await self.finding()])
         draft = await self.draft()
         helper = self.store.work("s", self.c.ref, "writer", "Revise", (draft.ref,), self.owner.ref)
@@ -132,21 +132,17 @@ class WorkspaceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(saved["failure"])
         d2 = saved["result"]["ref"]
         owner = await edit(d2, "12 attended", "Twelve attended")
-        self.assertIsNone(owner["failure"])
-        d3 = owner["result"]["ref"]
-        self.assertIsNotNone((await edit(d2, "Seventeen", "17", helper))["failure"])
-        revised = await edit(d3, "Seventeen", "17", helper)
-        self.assertIsNone(revised["failure"])
-        d4 = revised["result"]["ref"]
-        owner = await edit(d4, "Twelve", "12")
-        stranger = self.store.work("s", self.c.ref, "writer", "Unassigned", (), self.owner.ref)
-        self.assertIsNotNone((await edit(owner["result"]["ref"], "17", "18", stranger))["failure"])
-        result = await self.call("finish_work", {"text": "Revision saved", "refs": [d4]}, helper)
+        self.assertIsNotNone(owner["failure"])
+        self.assertEqual(d2, self.writing.current("s").ref)
+        self.assertIsNotNone((await edit(draft.ref, "17 registered", "17", helper))["failure"])
+        result = await self.call("finish_work", {"text": "Revision saved", "refs": [d2]}, helper)
         self.assertIsNone(result["failure"])
-        completed = self.h._steps("s", "work_result", helper.ref)[-1].body
-        self.assertEqual(d4, completed["ref"])
-        self.assertIn("handoff", completed)
-        self.assertIn("report_metrics", completed)
+        completed = self.h._steps("s", "work_result", helper.ref)[-1]
+        self.assertEqual(d2, completed.body["ref"])
+        owner = await edit(d2, "12 attended", "Twelve attended")
+        self.assertIsNone(owner["failure"])
+        self.assertEqual(d2, completed.body["ref"])
+        self.assertNotEqual(d2, self.writing.current("s").ref)
 
     async def test_bad_unicode_receipt_replays_without_repeating_model_call(self):
         from unittest.mock import AsyncMock
@@ -439,6 +435,8 @@ class WorkspaceTests(unittest.IsolatedAsyncioTestCase):
             {"base": report.ref, "edits": [{"old": "Attendance", "new": "Old edit"}]},
         )
         self.assertIsNotNone(stale.get("failure"))
+        current_ref = self.writing.current("s").ref
+        await self.call("finish_work", {"text": "Saved", "refs": [current_ref]}, helper)
         with self.assertRaises(Conflict):
             self.store.publish(
                 "s", self.owner.ref, self.c.epoch, report.ref, review.ref

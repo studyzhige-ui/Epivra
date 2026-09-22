@@ -77,7 +77,10 @@ class ResearchService:
                         return
                 else:
                     inputs = (c.plan,) if c.plan else ()
-                    root = self.store.work(
+                    owners = self.store.matching(study, "work", {
+                        "direction": c.direction, "role": "lead", "stage": "research"
+                    })
+                    root = owners[0] if owners else self.store.work(
                         study,
                         c.ref,
                         "lead",
@@ -90,6 +93,8 @@ class ResearchService:
                         if w.body["owner"] == root.ref
                     ]
                     for child in children:
+                        if self._discard_cancelled_error(study, child.ref):
+                            continue
                         if child.ref in self.repeated_failures:
                             try:
                                 self.harness._check_repeated(study, child.ref, c.epoch)
@@ -208,6 +213,10 @@ class ResearchService:
 
     def status(self, study: str) -> dict[str, Any]:
         c = self.store.control(study)
+        works = self.store.list(study, "work")
+        for work in works:
+            if work.ref in self.work_errors or work.ref in self.repeated_failures:
+                self._discard_cancelled_error(study, work.ref)
         return {
             "control": c.ref,
             "epoch": c.epoch,
@@ -240,17 +249,28 @@ class ResearchService:
             ],
             "work_errors": {
                 w.ref: self.work_errors[w.ref]
-                for w in self.store.list(study, "work")
+                for w in works
                 if w.ref in self.work_errors
             },
         }
 
+    def _discard_cancelled_error(self, study: str, work: str) -> bool:
+        if not any(result.body.get("status") == "cancelled" for result in
+                   self.store.matching(study, "work_result", {"producer": work})):
+            return False
+        # Cancellation ends scheduling responsibility, not the paid-call history.
+        self.work_errors.pop(work, None)
+        self.repeated_failures.discard(work)
+        return True
+
     async def _run_child(self, study: str, work: str) -> None:
         try:
             await self.harness.step(study, work)
-        except Conflict:
-            raise
         except Exception as exc:
+            if self._discard_cancelled_error(study, work):
+                return
+            if isinstance(exc, Conflict):
+                raise
             if isinstance(exc, RepeatedFailure):
                 self.repeated_failures.add(work)
             self.work_errors[work] = (

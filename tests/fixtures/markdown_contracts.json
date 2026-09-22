@@ -1,0 +1,22 @@
+[
+  {
+    "text": "- $$\n  x\n\nOutside @CITE@\n\n  $$",
+    "math_blocks": 0
+  },
+  {
+    "text": "- item\n  - $$\n    x\n\n  Outside @CITE@\n\n    $$",
+    "math_blocks": 0
+  },
+  {
+    "text": "> $$\n> x\n\nOutside @CITE@\n\n> $$",
+    "math_blocks": 0
+  },
+  {
+    "text": "- $$\n  x\n\n  y\n  $$\n\nOutside @CITE@",
+    "math_blocks": 1
+  },
+  {
+    "text": "> $$\n> x\n>\n> y\n> $$\n\nOutside @CITE@",
+    "math_blocks": 1
+  }
+]

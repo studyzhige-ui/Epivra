@@ -11,7 +11,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from epivra.domain import Call, Conflict, Reply
+from epivra.domain import Call, Conflict, NotAllowed, Reply
 from epivra.harness import BUILTINS, Harness, validate
 from epivra.prompts import PROMPT_VERSION, ROLES, ROUTE_PROMPT, TOOLS
 from epivra.research import ResearchLedger
@@ -170,9 +170,9 @@ class FinalPassTests(unittest.IsolatedAsyncioTestCase):
     async def test_unassigned_helper_cannot_rebind_another_authors_draft(self):
         f, b, report = await self.draft()
         _, new = self.updated_basis(f, b)
-        helper = self.store.work("s", self.c.ref, "writer", "Unrelated writing", (self.source.ref,), self.owner.ref)
-        obs = await self.call("patch_draft", {"base": report.ref, "basis": new.ref}, helper)
-        self.assertIsNotNone(obs["failure"])
+        with self.assertRaises(NotAllowed):
+            self.store.work("s", self.c.ref, "writer", "Unrelated writing", (self.source.ref,), self.owner.ref)
+        self.assertEqual(report.ref, self.writing.current("s").ref)
 
     async def test_editor_cannot_write_basis_or_draft(self):
         f, b, report = await self.draft()
@@ -220,7 +220,7 @@ class FinalPassTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_full_editor_and_writer_keep_complete_bound_basis(self):
         f, b, report = await self.draft()
-        for role, refs in (("reviewer", (report.ref,)), ("writer", (b.ref,))):
+        for role, refs in (("reviewer", (report.ref,)), ("writer", (b.ref, report.ref))):
             helper = self.store.work("s", self.c.ref, role, "Complete " + role, refs, self.owner.ref)
             text = json.dumps(self.h._request("s", helper, prepare_wire=False))
             self.assertIn(f.body["statement"], text)

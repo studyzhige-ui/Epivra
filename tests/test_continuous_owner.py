@@ -172,6 +172,15 @@ class OwnerTests(unittest.IsolatedAsyncioTestCase):
             helper = self.store.work(
                 "s", self.control.ref, role, "Use original record", refs, self.owner.ref
             )
+            if role != "writer":
+                tools = self.harness._request("s", helper)["tools"]
+                self.assertNotIn("draft_report", tools)
+                self.assertNotIn("patch_draft", tools)
+                rejected = await self.call("draft_report", {"text": "Not a writer", "evidence": []}, helper)
+                self.assertIsNotNone(rejected.get("failure"))
+                done = await self.call("finish_work", {"text": "Record examined", "refs": [self.source.ref]}, helper)
+                self.assertIsNone(done.get("failure"))
+                continue
             report = await self.save(
                 work=helper, base=previous["ref"] if previous else None
             )
@@ -219,17 +228,16 @@ class OwnerTests(unittest.IsolatedAsyncioTestCase):
                 raise ValueError("injected storage failure")
             return actual(study, kind, *args, **kwargs)
 
-        for work in (
-            self.owner,
-            self.store.work(
+        for role in ("lead", "writer"):
+            work = self.owner if role == "lead" else self.store.work(
                 "s", self.control.ref, "writer", "Direct write", (), self.owner.ref
-            ),
-        ):
+            )
             with patch.object(self.store, "_put", side_effect=fail):
                 failed = await self.call(
                     "draft_report", {"text": "Report", "evidence": []}, work
                 )
             self.assertIsNotNone(failed.get("failure"))
+            self.assertIn("injected storage failure", failed.get("result", {}).get("error", ""))
             self.assertEqual([], self.store.list("s", "report"))
             self.assertEqual([], self.harness._steps("s", "draft_saved", work.ref))
             self.assertFalse(self.harness.finished("s", work.ref))

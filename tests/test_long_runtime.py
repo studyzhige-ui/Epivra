@@ -107,6 +107,10 @@ class LongContextTests(unittest.IsolatedAsyncioTestCase):
         # surface changes; do not assume a particular prompt/schema byte count.
         base = self.harness._request("s", self.lead)
         task_chars = self.harness.context_chars - len(encode(base)) - 9000
+        self.c = self.store.command(
+            "s", "long-task-direction", self.c.ref, "steer",
+            {"request": "Compare flood adaptation with detailed instructions"},
+        )
         self.lead = self.store.work("s", self.c.ref, "lead", "t" * task_chars)
         self.model.calls = (
             Call("save_memory", {"text": "remember " * 850, "refs": []}),
@@ -164,6 +168,10 @@ class LongContextTests(unittest.IsolatedAsyncioTestCase):
     async def test_small_preview_allocation_does_not_block_clarifications(self):
         base = self.harness._request("s", self.lead)
         task_chars = self.harness.context_chars - len(encode(base)) - 1000
+        self.c = self.store.command(
+            "s", "long-task-direction", self.c.ref, "steer",
+            {"request": "Compare flood adaptation with detailed instructions"},
+        )
         self.lead = self.store.work("s", self.c.ref, "lead", "t" * task_chars)
         child = self.store.work(
             "s", self.c.ref, "investigator", "inspect", (), self.lead.ref
@@ -260,13 +268,7 @@ class LongContextTests(unittest.IsolatedAsyncioTestCase):
 
         from epivra.application import ResearchService
 
-        root = self.store.work(
-            "s",
-            self.c.ref,
-            "lead",
-            "依据当前方向自主研究并交付经过核查的报告。",
-            (self.c.plan,),
-        )
+        root = self.lead
         slow = self.store.work("s", self.c.ref, "investigator", "slow", (), root.ref)
         fast = self.store.work("s", self.c.ref, "investigator", "fast", (), root.ref)
         entered, release, advanced = asyncio.Event(), asyncio.Event(), asyncio.Event()

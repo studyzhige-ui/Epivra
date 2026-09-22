@@ -1,5 +1,5 @@
 import { t, localized, language, setLanguage } from "./i18n.js";
-import { addMath, renderReport, standalone } from "./reader.js";
+import { addMath, renderReport, standalone, markdownReport } from "./reader.js";
 /* The browser presents Host facts. It owns no research state machine. */
 "use strict";
 const $ = (id) => document.getElementById(id);
@@ -524,7 +524,7 @@ async function loadProgress() {
     const opened = new Set(Array.from(existing.values()).filter(el => el.open).map(el => el.dataset.ref));
     $("work-list").dataset.signature = signature;
     $("work-list").replaceChildren();
-    const states = {delivered:t("已交付"), blocked:t("需要处理"), clarification:t("等待负责人澄清"), waiting:t("等待依赖成果"), pending:t("已安排，尚未交付")};
+    const states = {cancelled:t("已取消"), delivered:t("已交付"), blocked:t("需要处理"), clarification:t("等待负责人澄清"), waiting:t("等待依赖成果"), pending:t("已安排，尚未交付")};
     if (result.research) {
       const panel = node("section", undefined, "work-card card"), research = result.research;
       panel.append(node("strong", t("研究依据与文稿")));
@@ -963,7 +963,7 @@ $("download-report").onclick = () => act($("download-report"), async () => {
     if (!response.ok) throw new Error((await response.json()).error || t("导出失败。"));
     saveBlob(await response.blob(), name + ".docx");
   } else {
-    const text = format === "html" ? standalone($("report-text"), status.request, saved.ref) : saved.text;
+    const text = format === "html" ? standalone($("report-text"), status.request, saved.ref) : markdownReport(saved);
     saveBlob(new Blob([text], {type:format === "html" ? "text/html;charset=utf-8" : "text/markdown;charset=utf-8"}), name + "." + format);
   }
 });

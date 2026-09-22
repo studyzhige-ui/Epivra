@@ -38,6 +38,7 @@ export function addMath(md) {
         break;
       }
       if (++last >= end) return false;
+      if (state.bMarks[last] + state.tShift[last] < state.eMarks[last] && state.sCount[last] < state.blkIndent) return false;
       text += "\n" + state.getLines(last, last + 1, state.blkIndent, false);
     }
     if (silent) return true;
@@ -132,4 +133,16 @@ export function standalone(target, title, ref) {
   copy.querySelectorAll(".citation").forEach(e => e.replaceWith(document.createTextNode(e.textContent)));
   const escape = s => String(s).replace(/[&<>\"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
   return `<!doctype html><html lang="${document.documentElement.lang}"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="epivra-report" content="${escape(ref)}"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'"><title>${escape(title)}</title><style>body{max-width:880px;margin:40px auto;padding:0 24px;color:#26352e;font:16px/1.8 'Microsoft YaHei',serif}h1,h2,h3{line-height:1.35;break-after:avoid}h2{margin-top:2em}table{border-collapse:collapse;width:100%;font-size:14px}th,td{border:1px solid #dce3da;padding:8px;overflow-wrap:anywhere}th{background:#edf3ec}a{color:#1d5545;overflow-wrap:anywhere}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#f3f5f1;padding:16px}blockquote{border-left:3px solid #91b2a0;margin-left:0;padding-left:20px}math[display=block]{overflow-x:auto;margin:1em 0}.align-right{text-align:right}.align-center{text-align:center}.align-left{text-align:left}@page{size:A4;margin:20mm}@media print{body{margin:0;padding:0;max-width:none}tr{break-inside:avoid}}</style><article>${copy.innerHTML}</article></html>`;
+}
+
+// Escaping bound citations prevents author reference definitions redirecting them.
+export function markdownReport(report) {
+  const chars = Array.from(report.text), parts = [];
+  let end = 0;
+  for (const mark of report.citation_marks || []) {
+    parts.push(chars.slice(end, mark.start).join(""), "\\" + chars.slice(mark.start, mark.end).join(""));
+    end = mark.end;
+  }
+  parts.push(chars.slice(end).join(""));
+  return parts.join("");
 }
