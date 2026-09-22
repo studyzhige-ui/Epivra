@@ -334,6 +334,41 @@ class WebTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(400, reply.status_code)
         self.assertEqual([], self.host.store.list(study, "source"))
 
+    async def test_role_model_settings_roundtrip_and_frozen_study(self):
+        values = {
+            "provider": "deepseek",
+            "role_models": {
+                "writer": {
+                    "provider": "openai",
+                    "model": "writer-fixture",
+                    "context_tokens": 32000,
+                    "max_tokens": 4000,
+                }
+            },
+        }
+        saved = await self.http.post("/api/settings", json=values)
+        self.assertEqual(200, saved.status_code, saved.text)
+        defaults = (await self.http.get("/api/settings")).json()["defaults"]
+        self.assertEqual(values, defaults)
+        created = await self.call("create", request="Role models", **defaults)
+        self.assertEqual(200, created.status_code, created.text)
+        study = created.json()["study"]
+        direction = self.host.store.control(study).direction
+        policy = self.host.store.get(study, direction).body["policy"]
+        self.assertEqual("writer-fixture", policy["role_models"]["writer"]["model"])
+        self.assertIn("model_profile", policy["role_models"]["writer"])
+        cleared = {"provider": "deepseek", "role_models": {}}
+        self.assertEqual(
+            200, (await self.http.post("/api/settings", json=cleared)).status_code
+        )
+        self.assertEqual(policy, self.host.store.get(study, direction).body["policy"])
+        self.assertEqual(cleared, cli_settings.load(self.root))
+        invalid = {**values, "role_models": {"writer": {"key": "secret"}}}
+        self.assertEqual(
+            400, (await self.http.post("/api/settings", json=invalid)).status_code
+        )
+        self.assertEqual(cleared, cli_settings.load(self.root))
+
     async def test_credentials_never_return_and_settings_share_cli_file(self):
         sentinel = "fixture-do-not-return-secret"
         reply = await self.http.post(

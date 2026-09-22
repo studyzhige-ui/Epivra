@@ -68,6 +68,8 @@ class MCPTests(unittest.IsolatedAsyncioTestCase):
             return await connection.invoke({}, args, receive=receive)
 
         class Model:
+            context_tokens = 49024
+            max_tokens = 1024
             identity = "cancel-fixture"
 
             async def complete(self, request):
@@ -161,6 +163,8 @@ class MCPTests(unittest.IsolatedAsyncioTestCase):
                     name = alias("test", "tool:lookup")
 
                     class Model:
+                        context_tokens = 49024
+                        max_tokens = 1024
                         identity = "schema-fixture"
                         value = good
 
@@ -272,6 +276,8 @@ class MCPTests(unittest.IsolatedAsyncioTestCase):
             name = alias("test", "tool:lookup")
 
             class Model:
+                context_tokens = 49024
+                max_tokens = 1024
                 identity = "fixture"
 
                 async def complete(self, request):

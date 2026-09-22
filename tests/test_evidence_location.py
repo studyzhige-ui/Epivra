@@ -33,6 +33,8 @@ class EvidenceLocationTests(unittest.IsolatedAsyncioTestCase):
 
     async def execute(self, call, work=None):
         class Model:
+            context_tokens = 49024
+            max_tokens = 1024
             identity = "evidence-location-fixture"
 
             async def complete(self, request):
@@ -51,7 +53,7 @@ class EvidenceLocationTests(unittest.IsolatedAsyncioTestCase):
         }
 
     async def test_paging_and_selection_preserve_exact_original_without_copying(self):
-        raw = "标题😀\n\n包含“原文引号”与\n换行。\n\n" + "其他资料。" * 5000
+        raw = "标题😀\n\n包含“原文引号”与\n换行。\n\n" + "其他资料。" * 15000
         source = self.store.put("s", "source", {"text": raw})
         page = await self.execute(
             Call("read_source", {"ref": source.ref, "limit": 28000})

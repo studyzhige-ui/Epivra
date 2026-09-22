@@ -16,7 +16,7 @@ from typing import Any
 
 import httpx
 
-from .domain import INLINE_TOOL_RESULT_CHARS, ContextCapacity, encode, identity
+from .domain import ContextCapacity, encode, identity
 
 
 def _wire_json(value):
@@ -501,22 +501,10 @@ class ChatCompletions:
                         if index not in observations:
                             raise ValueError("cannot continue unpaired tool call")
                         observation = observations[index]
-                        result = encode(observation["result"])
-                        if len(result) > INLINE_TOOL_RESULT_CHARS:
-                            result = encode(
-                                {
-                                    "observation_ref": observation["_ref"],
-                                    "body_omitted": True,
-                                    "instruction": "Use read_artifact_range",
-                                }
-                            )
-                        else:
-                            result = encode(
-                                {
-                                    "observation_ref": observation["_ref"],
-                                    "result": observation["result"],
-                                }
-                            )
+                        result = encode({
+                            "observation_ref": observation["_ref"],
+                            "result": observation["result"],
+                        })
                         outputs.append(
                             {
                                 "role": "tool",
@@ -529,7 +517,6 @@ class ChatCompletions:
                         for o in previous["observations"]
                         if "_ref" in o
                         and "index" in o
-                        and len(encode(o["result"])) <= INLINE_TOOL_RESULT_CHARS
                     }
                     prior_fields = {}
                     seen_handles = set()

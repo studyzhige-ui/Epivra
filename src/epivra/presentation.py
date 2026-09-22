@@ -105,6 +105,7 @@ def progress(store, study, errors=None):
         "finding",
         "research_conflict",
         "writing_basis",
+        "question_assessment",
         "draft_saved",
     ):
         for item in store.list(study, kind):
@@ -179,6 +180,7 @@ def work_detail(store, study, ref):
         "finding",
         "research_conflict",
         "writing_basis",
+        "question_assessment",
         "draft_saved",
         "work_result",
     ):
@@ -197,6 +199,7 @@ def work_detail(store, study, ref):
                 body.get("text")
                 or body.get("statement")
                 or body.get("explanation")
+                or body.get("reason")
                 or body.get("question")
                 or body.get("rationale")
                 or body.get("claim")
@@ -215,6 +218,9 @@ def work_detail(store, study, ref):
                     "kind": kind_label,
                     "text": text,
                     "quote": body.get("quote"),
+                    "answer_target": body.get("answer_target"),
+                    "checks": body.get("checks", []),
+                    "remaining": body.get("remaining", []),
                     "status": body.get("status", body.get("disposition")),
                     "support": body.get("support", body.get("evidence", [])),
                     "conditions": body.get("conditions", []),

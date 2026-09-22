@@ -1,6 +1,7 @@
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import httpx
@@ -28,7 +29,7 @@ class WebIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 with (
                     patch(
                         "epivra.models.create_model",
-                        return_value=(object(), client),
+                        return_value=(SimpleNamespace(context_tokens=49024, max_tokens=1024), client),
                     ),
                     patch(
                         "epivra.web_providers.connect",
@@ -38,7 +39,7 @@ class WebIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     service, _ = online_service(
                         store,
                         "s",
-                        {"BRAVE_API_KEY": "fixture", "BOCHA_API_KEY": "fixture"},
+                        {"BRAVE_API_KEY": "fixture", "BOCHA_API_KEY": "fixture", "DEEPSEEK_API_KEY": "fixture"},
                     )
                 try:
                     for name, data in [
@@ -90,6 +91,8 @@ class WebIntegrationTests(unittest.IsolatedAsyncioTestCase):
         )
 
         class Model:
+            context_tokens = 49024
+            max_tokens = 1024
             identity = "fixture"
 
             async def complete(self, request):
@@ -123,7 +126,7 @@ class WebIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     ),
                 ):
                     service, _ = online_service(
-                        store, "s", {"TAVILY_API_KEY": "fixture"}
+                        store, "s", {"TAVILY_API_KEY": "fixture", "DEEPSEEK_API_KEY": "fixture"}
                     )
                 try:
                     for _ in range(5):

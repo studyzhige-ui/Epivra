@@ -78,6 +78,7 @@ ALLOWED = {
     "mcp_tools": {"domain", "harness", "workspace", "mcp_client"},
     "mcp_server": {"host", "locale"},
     "cli": {
+        "report_export",
         "locale",
         "host",
         "terminal",

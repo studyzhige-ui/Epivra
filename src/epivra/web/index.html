@@ -389,6 +389,11 @@
         <p id="model-capacity-note" class="muted" hidden>
           此型号尚无完整容量预设，请按官方参数填写；列表可见不代表已验证研究工具能力。
         </p>
+        <details id="role-model-settings">
+          <summary>子 Agent 模型</summary>
+          <p class="muted">默认跟随主模型；只有手动设置的角色使用独立模型。设置仅影响新建研究。</p>
+          <div id="role-model-fields"></div>
+        </details>
         <h3>搜索与网页读取</h3>
         <div class="form-row">
           <label>默认搜索<select id="search-provider"></select></label

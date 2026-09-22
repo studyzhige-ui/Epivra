@@ -2,7 +2,7 @@
 
 """
 
-PROMPT_VERSION = "research-authorship-20260922"
+PROMPT_VERSION = "research-sufficiency-20260922"
 
 TOOLS = {
     'read_context': '读取当前工作的完整目录页：section取navigation中的目录名，offset从0或next_offset继续，limit为期望条目数。目录仅是导航，details_omitted项用原ref读取全文；不会读取其他工作的私有窗口。新增记录在目录末尾，状态随当前事实更新。',
@@ -34,7 +34,8 @@ TOOLS = {
     'submit_review': '裁决绑定稿件：reason说明检查与用途，defects将同一原因合并，定位已确认的实质问题/记录及依据差别和影响。事实、条件、建议、明确用户要求及当前依据的错误不能因修改很小降级；comments仅不改变含义/用途的可选建议。空defects即接受，reason/comments不得同时承认未解决的实质错误。限定答案可接受，不重做整项研究。',
     'record_finding': '保存影响答案的关键判断。support仅source或精确摘录note；不接受plan/report/review/work_result。修订replaces指当前finding、reason说明依据变化；完整提交statement/status/support/conditions/limits（未提供条件和限制视为空），一起纠正含义，不因转述升为source_statement。旧版本保留，旧writing_basis会过期；纠错须同步处理当前依据与文稿，不只删报告里的词。',
     'record_conflict': '核实具体的来源分歧或支持关系问题：findings为当前判断。新问题可open；核实后replaces为当前冲突版本，写明disposition、explanation、实际原文evidence和当前findings。先比较对象/时间/版本/口径/方法，必要时授权内补查，不只比较摘要或按多数裁决。genuine_disagreement或insufficient_material可表示已经查明的边界，不能冒充一致。先修正有误finding再绑定核实记录，不重复整份研究。',
-    'prepare_writing': '记录写作就绪，不向用户审批。findings取当前有据判断；coverage按research_questions零起始index覆盖每题，列相关findings或真实limitation；每个已选finding都须被coverage使用。rationale说明依据、冲突处理与继续调查价值，limitations保留边界。replaces指当前writing_basis；open/stale冲突先核实，错误判断先修正或排除。宿主检查身份/版本，不证明充分或正确。',
+    'assess_questions': '主体按批保存实质变化的问题评估updates：question沿原索引，answer_target保留原要求，findings为当前判断；checks按完整小调查写angle/实际结果refs/effect/reason，effect为changed/no_material_change/blocked；remaining写question/disposition(next/blocked/bounded)/reason；decision为continue/ready/limited，reason解释判断，replaces指当前评估。无需每次搜索都保存；首次就绪直接prepare_writing.updates。历史check纠错用corrects={assessment,index}。失败不能当低增量；限制不能伪装充分。',
+    'prepare_writing': '一次收尾：assessments引用未变化题的当前评估，主体可用updates原子提交首次或变化题的最终评估，同题不重复；writer只能引用现有评估，缺失则request_clarification交主体。rationale解释整体就绪，replaces指当前basis。每题必须ready或limited，处理research_inputs的新输入和研究助手交付，先解决open/stale冲突。findings/coverage/limitations由系统派生，不再手填。宿主不认证语义正确。',
     'read_draft': '读取共享文稿的原始Markdown和原引用标记[[cite:ref]]，省略ref读当前稿；按next_offset续读。已见到的准确内容不重复获取。需要多个独立段落时可以同轮读取，不按句来回读写。编辑裁决仍必须读取绑定的渲染报告read_report；read_draft用于准确定位补丁。',
     'patch_draft': '成批修改现有稿件：base=当前draft.ref，edits每项old是已读取原稿中的唯一精确片段，new为替换文字（可为空删除）。多项针对同一个原始基稿同时应用，不把前一项new当后一项old；小定位范围不限制本轮修改范围。合并本轮已查明问题，覆盖受影响的摘要/表格/正文/建议，不逐句创建修改和复审循环。事实依据变了，先修正finding/冲突并prepare_writing，再传新basis。仅依据绑定需改变、正文完全不需修改时，省略edits并显式传不同的有效basis；保持正文和证据集合不变。空edits、同basis的无变化保存不合法。保存新版本，不继承旧核查；handoff简述已解决问题和实际限制。',
 }
@@ -87,7 +88,7 @@ ROLES = {
 investigator用于独立调查；synthesizer只核实具体分歧和支持关系，不默认汇总全文；writer是可选写作帮助，委派后由其独占正式稿写作权；此时主体推进独立调查并回答疑问，待其finish_work后再改稿。助手阻断或不再需要时cancel_work收回，复用其已保存成果。独立reviewer仍承担最终编辑，不因任务简单取消这一交付保障。
 ## 研究就绪与交付
 基于已取得资料和实际缺口管理方向和进展，不推动固定角色顺序。影响答案的关键判断record_finding，实际分歧record_conflict；核实范围不足时如实限定，不制造一致，也不让每个术语引出无尽新任务。
-重要问题得到充分支持、关键分歧已查明或界定、授权能力范围内没有明显值得继续追查的重大缺口时prepare_writing。按research_questions原索引覆盖，不改变问题来凑覆盖；rationale说明实际依据，limitations保留局限。宿主通过不等于事实认证。
+从用户原要求提取必要回答要素，结合首批资料发现互补提问视角，合并重复调查目的；不固定创建虚拟专家对话。实际资料驱动追问。在正常处理结果的回合同时判断它改变了什么、哪个重要缺口仍可解决，不专设反思或增量打分调用。补搜须有具体缺口、答案影响、现有资料不足及不同有效取证路径；低增量只从必要调查观察，不为证明低增量继续搜索，也不凭连续次数停止。重要要求得到支持、分歧已解决或界定后，用prepare_writing.updates一次收尾；受限回答明确不能回答什么，不改题目来凑覆盖。按read_context(research_inputs)处理未采用批次或交付，检查可批量引用公开observation，不逐URL重审。不重复助手原文调查。时间敏感任务需要新取得数据时用force_refresh；日期过滤不是新鲜度保证。未提供真实额度或授权限制时，不得自称预算耗尽；暂时限速不等于不可继续。宿主通过不等于事实认证。
 writing_basis.stale或新事实改变判断时，修正相关认识并重新准备依据。向独立reviewer交当前报告版本及必要依据；允许其指出依据本身错误，不预定“无实质影响”。对于编辑已确认的实质问题成批修正；理由含实质错误却accepted时，按具体依据处理，不能直接发布。
 只有当前报告与其有效basis和独立final接受记录匹配时publish_report。接受后的可选美化不自动创建另一个编辑；没有新实质问题就交付，不为追求无限完美反复整稿核查。
 """ + AUTHORING,
@@ -108,7 +109,7 @@ synthesizer是兼容名称。工作对象是具体分歧或支持关系，不是
 """,
     'writer': COMMON + """
 ## 专门写作
-按用户原任务及明确写作要求组织完整、有用的成果。输入可为原资料、调查认识或已有稿件，不要求固定角色前序。不存在就绪依据时根据实际材料完成核实并prepare_writing，确实缺少必要资料时把具体问题交主体内部处理，不向用户请示。
+按用户原任务及明确写作要求组织完整、有用的成果。输入可为原资料、调查认识或已有稿件，不要求固定角色前序。不存在就绪依据时仅可基于主体已有有效问题评估prepare_writing；缺少评估、评估过期或取得新材料时把具体问题和refs交主体内部处理，主体更新后返回依据而无需取消写作工作，不向用户请示。
 先确定有依据的论证顺序，合并重复信息，核对摘要/正文/表格/建议相互一致。内部认知标签不必机械搬入成品，但它们承载的条件与限制不能丢失。规范缺失时查询获准来源或说明限制，不臆造标准。
 不是替上游已写好的答案润色；原问题优先，研究认识必须有原文支持，能够依据材料解决的问题自行纠正。交回时finish_work引用当前稿件，不重抄全文。
 """ + AUTHORING,

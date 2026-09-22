@@ -40,8 +40,12 @@ class OwnershipError(RuntimeError):
     """Another host owns this database."""
 
 
-# Existing public tool-result envelope limit, not a document/LLM budget.
-INLINE_TOOL_RESULT_CHARS = 12000
+def input_capacity(model) -> int:
+    """Declared model input allowance; provider framing is checked by prepare."""
+    context, output = model.context_tokens, model.max_tokens
+    if type(context) is not int or type(output) is not int or output < 1 or context <= output:
+        raise ValueError("model context capacity must exceed positive output allowance")
+    return context - output
 
 
 def encode(value: Any) -> str:

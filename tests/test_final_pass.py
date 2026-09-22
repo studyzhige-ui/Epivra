@@ -11,6 +11,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from research_fixture import basis_arguments
+
 from epivra.domain import Call, Conflict, NotAllowed, Reply
 from epivra.harness import BUILTINS, Harness, validate
 from epivra.prompts import PROMPT_VERSION, ROLES, ROUTE_PROMPT, TOOLS
@@ -20,6 +22,8 @@ from epivra.writing import WritingWorkspace
 
 
 class Echo:
+    context_tokens = 49024
+    max_tokens = 1024
     identity = "final-contracts-offline"
     call = None
 
@@ -56,7 +60,7 @@ class FinalPassTests(unittest.IsolatedAsyncioTestCase):
         return self.ledger.record_finding("s", self.owner.ref, self.c.epoch, statement=statement, status="source_statement", support=[self.source.ref], **extra)
 
     def basis(self, findings, replaces=None):
-        return self.ledger.prepare_writing("s", self.owner.ref, self.c.epoch, findings=[f.ref for f in findings], coverage=[{"question": 0, "findings": [f.ref for f in findings]}], rationale="The record supports a sample-only answer.", replaces=replaces)
+        return self.ledger.prepare_writing("s", self.owner.ref, self.c.epoch, **basis_arguments(self.ledger.store, {'findings': [f.ref for f in findings], 'coverage': [{"question": 0, "findings": [f.ref for f in findings]}], 'rationale': "The record supports a sample-only answer.", 'replaces': replaces}))
 
     async def draft(self):
         f = self.finding()
@@ -243,7 +247,7 @@ class FinalPassTests(unittest.IsolatedAsyncioTestCase):
     async def test_same_prompt_for_all_provider_identities(self):
         systems = []
         for provider in ("deepseek", "openai", "anthropic", "google"):
-            model = type("Offline", (), {"identity": provider})()
+            model = type("Offline", (), {"identity": provider, "context_tokens": 49024, "max_tokens": 1024})()
             h = Harness(self.store, model)
             systems.append(h._request("s", self.owner, prepare_wire=False)["system"])
         self.assertEqual([ROLES["lead"]] * 4, systems)

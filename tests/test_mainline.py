@@ -42,6 +42,8 @@ class MainlineTests(unittest.IsolatedAsyncioTestCase):
             prepare_basis(self.store, work)
 
         class Model:
+            context_tokens = 49024
+            max_tokens = 1024
             identity = "boundary"
 
             async def complete(self, request):
@@ -249,6 +251,8 @@ class MainlineTests(unittest.IsolatedAsyncioTestCase):
         )
 
         class Model:
+            context_tokens = 49024
+            max_tokens = 1024
             identity = "never-call"
 
             async def complete(self, request):
@@ -290,6 +294,8 @@ class MainlineTests(unittest.IsolatedAsyncioTestCase):
         lead = self.store.work("p", c.ref, "lead", "Plan")
 
         class Model:
+            context_tokens = 49024
+            max_tokens = 1024
             identity = "plan"
 
         async def paid(args):

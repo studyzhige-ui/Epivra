@@ -14,6 +14,8 @@ from epivra.workspace import Workspace
 class WebAcquisitionRecoveryTests(unittest.IsolatedAsyncioTestCase):
     async def test_real_retry_snapshot_survives_crash_before_observation(self):
         class Model:
+            context_tokens = 49024
+            max_tokens = 1024
             identity = "web-acquisition-recovery"
             calls = 0
 

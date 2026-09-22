@@ -11,6 +11,7 @@ from prompt_toolkit.patch_stdout import patch_stdout
 from . import cli_settings, host
 from .locale import LANGUAGES, configure, set_language, tr
 from .model_catalog import OFFICIAL_PROVIDERS
+from .report_export import markdown_report
 from .terminal import Terminal
 from .web_providers import CONNECTIONS, READERS, SEARCH
 
@@ -312,7 +313,7 @@ class Workbench:
                         roots = [p for p in roots if str(p) != selected]
                     continue
                 if action == "done":
-                    if files or roots:
+                    if files or roots or defaults.get("mcp_servers"):
                         break
                     self.ui.show(tr("请至少选择一份资料或一个文件夹。"))
                     continue
@@ -559,7 +560,7 @@ class Workbench:
                     path = await self.ui.path(save=True)
                     if path:
                         with path.open("x", encoding="utf-8") as file:
-                            file.write(report["text"])
+                            file.write(markdown_report(report))
                         self.ui.show(tr("已保存：") + str(path))
             elif action == "files":
                 files = [f for a in status.get("analyses", []) for f in a["files"]]

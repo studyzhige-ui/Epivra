@@ -12,7 +12,7 @@ from typing import Any
 from urllib.parse import quote
 
 from .adapters import JsonAPI, ProviderFailure, encode_state, rate_limit_delay
-from .domain import INLINE_TOOL_RESULT_CHARS, ContextCapacity, encode, identity
+from .domain import ContextCapacity, encode, identity
 
 
 def _state(context):
@@ -25,12 +25,6 @@ def _state(context):
 
 def _result(observation):
     result = observation["result"]
-    if len(encode(result)) > INLINE_TOOL_RESULT_CHARS:
-        return {
-            "observation_ref": observation["_ref"],
-            "body_omitted": True,
-            "instruction": "Use read_artifact_range",
-        }
     return {"observation_ref": observation["_ref"], "result": result}
 
 

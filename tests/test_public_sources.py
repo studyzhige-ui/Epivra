@@ -203,6 +203,8 @@ class PublicTests(unittest.IsolatedAsyncioTestCase):
         self,
     ):
         class Model:
+            context_tokens = 49024
+            max_tokens = 1024
             identity = "fixture"
 
             async def complete(self, req):
@@ -247,7 +249,7 @@ class PublicTests(unittest.IsolatedAsyncioTestCase):
             owner = s.work("s", c.ref, "lead", "Own research", (plan.ref,))
             work = s.work("s", c.ref, "investigator", "Find evidence", (), owner.ref)
             with patch("epivra.models.create_model", return_value=(Model(), API())):
-                service, clients = online_service(s, "s", {})
+                service, clients = online_service(s, "s", {"DEEPSEEK_API_KEY": "fixture"})
             try:
                 req = service.harness._request("s", work)
                 self.assertTrue(set(TOOLS) <= req["tools"].keys())

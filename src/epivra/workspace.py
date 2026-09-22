@@ -115,6 +115,8 @@ class Workspace:
             raise ValueError("invalid analysis log")
         parents = (job.ref, *job.body["inputs"].values())
         status = result["status"]
+        producer = next(self.store.get(study, ref) for ref in job.parents if self.store.get(study, ref).kind == "work")
+        direction = producer.body["direction"]
 
         def parsed(text):
             return {
@@ -142,13 +144,13 @@ class Workspace:
                         text = raw.decode("utf-8")
                     except UnicodeError:
                         pass
-                source = self._save_material(study, name, raw, parsed(text), parents)
+                source = self._save_material(study, name, raw, parsed(text), parents, direction=direction)
                 files.append({"ref": source.ref, "name": name, "bytes": len(raw)})
             text = f"Analysis purpose: {job.body['purpose']}\nExecution status: {status}\nExit code: {result.get('exit_code')}\n\n{log}"
             log_source = self.store._put(
                 study,
                 "source",
-                {**parsed(text), "origin": "analysis:" + job.ref},
+                {**parsed(text), "origin": "analysis:" + job.ref, "direction": direction},
                 parents,
             )
             return self.store._put(
@@ -223,7 +225,7 @@ class Workspace:
                 source = self.store._put(
                     study,
                     "source",
-                    {**item, "acquisition": dict(acquisition)},
+                    {**item, "acquisition": dict(acquisition), "direction": producer.body["direction"]},
                     (work, step),
                 )
                 sources.append(self.web_source_info(source))
@@ -338,7 +340,7 @@ class Workspace:
         try:
             loaded = self._load(study, catalog_ref, relative)
             if isinstance(loaded, Artifact):
-                return loaded
+                return self._introduce(study, loaded)
             return self._save(
                 study,
                 relative,
@@ -425,9 +427,10 @@ class Workspace:
         except OSError:
             raise ValueError("local source unavailable; refresh catalog") from None
         if isinstance(loaded, Artifact):
-            if guard is not None:
-                guard()
-            return loaded
+            with self.store.transaction():
+                if guard is not None:
+                    guard()
+                return self._introduce(study, loaded)
         parsed = await self._parse(study, relative, loaded)
         return self._save(study, relative, loaded, parsed, (catalog_ref,), guard=guard)
 
@@ -443,9 +446,19 @@ class Workspace:
         with self.store.transaction():
             if guard is not None:
                 guard()
-            return self._save_material(study, name, raw, parsed, parents)
+            return self._introduce(study, self._save_material(study, name, raw, parsed, parents))
 
-    def _save_material(self, study, name, raw, parsed, parents):
+    def _introduce(self, study, source):
+        """Direction-local adoption, including deduplicated host uploads."""
+        direction = self.store.control(study).direction
+        self.store._put(study, "observation", {
+            "direction": direction, "tool": "introduce_source",
+            "research_receipt": {"input": False, "sources": [source.ref],
+                                 "outcome": "ok", "material": "saved_not_read"},
+        }, (direction, source.ref))
+        return source
+
+    def _save_material(self, study, name, raw, parsed, parents, *, direction=None):
         digest = hashlib.sha256(raw).hexdigest()
         original = self.store._put(
             study,
@@ -462,6 +475,7 @@ class Workspace:
             "source",
             {
                 **parsed,
+                "direction": direction or self.store.control(study).direction,
                 "origin": name,
                 "format": Path(name).suffix.lower(),
                 "sha256": digest,
@@ -479,7 +493,7 @@ class Workspace:
             study, "source", {"sha256": digest, "origin": name}, limit=1
         ):
             if prior.body.get("sha256") == digest and prior.body.get("origin") == name:
-                return prior
+                return self._introduce(study, prior)
         return self._save(study, name, raw, parse(name, raw, self._options(study)))
 
     def mcp_snapshot(self, study, server, raw, acquisition):
@@ -549,7 +563,7 @@ class Workspace:
             study, "source", {"sha256": digest, "origin": name}, limit=1
         ):
             if prior.body.get("sha256") == digest and prior.body.get("origin") == name:
-                return prior
+                return self._introduce(study, prior)
         parsed = await self._parse(study, name, raw)
         if self.store.control(study).ref != expected:
             raise ValueError(

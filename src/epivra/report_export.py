@@ -11,6 +11,17 @@ from markdown_it import MarkdownIt
 from .markdown_rules import math_plugin
 
 
+def markdown_report(report):
+    # Only generated references are literal; author numeric links retain their meaning.
+    text, end = report["text"], 0
+    parts: list[str] = []
+    for mark in report.get("citation_marks", []):
+        parts.extend((text[end:mark["start"]], "\\" + text[mark["start"]:mark["end"]]))
+        end = mark["end"]
+    parts.append(text[end:])
+    return "".join(parts)
+
+
 def word_report(report):
     document = Document()
     document.core_properties.identifier = report["ref"]
@@ -30,14 +41,7 @@ def word_report(report):
         style.font.color.rgb = RGBColor.from_string("1D5545")
         style.element.get_or_add_rPr().rFonts.set(qn("w:eastAsia"), "Microsoft YaHei")
     parser = math_plugin(MarkdownIt("default", {"html": False}))
-    # Only generated references are literal; author numeric links retain their meaning.
-    text, end = report["text"], 0
-    parts: list[str] = []
-    for mark in report.get("citation_marks", []):
-        parts.extend((text[end:mark["start"]], "\\" + text[mark["start"]:mark["end"]]))
-        end = mark["end"]
-    parts.append(text[end:])
-    tokens = parser.parse("".join(parts))
+    tokens = parser.parse(markdown_report(report))
     paragraph = None
     table = None
     row = -1

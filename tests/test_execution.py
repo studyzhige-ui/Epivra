@@ -280,6 +280,8 @@ class StorageTests(Fixture):
 
 
 class FakeModel:
+    context_tokens = 49024
+    max_tokens = 1024
     identity = "offline-fixture-v1"
 
     def __init__(self, replies):
@@ -421,6 +423,8 @@ class HarnessTests(Fixture, unittest.IsolatedAsyncioTestCase):
         started, release = asyncio.Event(), asyncio.Event()
 
         class SlowModel:
+            context_tokens = 49024
+            max_tokens = 1024
             identity = "slow"
             calls = 0
 

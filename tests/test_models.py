@@ -101,13 +101,28 @@ def raw_call(protocol):
 
 class OfficialModelTests(unittest.IsolatedAsyncioTestCase):
     async def test_gemini_http400_bad_key_can_resume_after_credential_repair(self):
-        async with httpx.AsyncClient(transport=httpx.MockTransport(
-            lambda request: httpx.Response(400, json={"error": {
-                "code": 400, "message": "secret-echo", "details": [{
-                    "@type": "type.googleapis.com/google.rpc.ErrorInfo",
-                    "reason": "API_KEY_INVALID"}]}})
-        )) as client:
-            model, _ = create_model({"provider": "gemini"}, {"GEMINI_API_KEY": "fixture"}, client=client)
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(
+                lambda request: httpx.Response(
+                    400,
+                    json={
+                        "error": {
+                            "code": 400,
+                            "message": "secret-echo",
+                            "details": [
+                                {
+                                    "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+                                    "reason": "API_KEY_INVALID",
+                                }
+                            ],
+                        }
+                    },
+                )
+            )
+        ) as client:
+            model, _ = create_model(
+                {"provider": "gemini"}, {"GEMINI_API_KEY": "fixture"}, client=client
+            )
             raw = await model.complete({"wire": model.prepare(CONTEXT, None)})
             self.assertEqual({"http_status": 400, "error_kind": "authentication"}, raw)
             self.assertTrue(model.retry_on_resume(raw))
@@ -302,6 +317,81 @@ class OfficialModelTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(model.retry_on_resume(raw))
             self.assertEqual(4, rate_limit_delay({"http_status": 429}, 1))
             await api.close()
+
+    def test_role_overrides_are_independently_frozen_and_validated(self):
+        settings = {
+            "provider": "deepseek",
+            "role_models": {
+                "writer": {
+                    "provider": "openai",
+                    "model": "custom-writer",
+                    "context_tokens": 32000,
+                    "max_tokens": 4000,
+                }
+            },
+        }
+        frozen = freeze_model_settings(settings)
+        self.assertEqual("custom-writer", frozen["role_models"]["writer"]["model"])
+        self.assertFalse(frozen["role_models"]["writer"]["stream_model"])
+        self.assertNotIn("reviewer", frozen["role_models"])
+        self.assertEqual(frozen, freeze_model_settings(frozen))
+        for overrides in (
+            None,
+            [],
+            {"lead": {}},
+            {"writer": {}},
+            {"writer": {"provider": "openai", "model": "custom"}},
+            {
+                "writer": {
+                    "provider": "deepseek",
+                    "model": "deepseek-flash",
+                    "key": "must-not-persist",
+                }
+            },
+        ):
+            with self.subTest(overrides=overrides), self.assertRaises(ValueError):
+                freeze_model_settings({"role_models": overrides})
+
+    async def test_service_composes_role_clients_and_inheritance(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store(Path(directory) / "research.db")
+            try:
+                store.create(
+                    "s",
+                    "Research",
+                    freeze_model_settings(
+                        {
+                            "provider": "deepseek",
+                            "role_models": {
+                                "writer": {
+                                    "provider": "openai",
+                                    "model": "fixture-writer",
+                                    "context_tokens": 32000,
+                                    "max_tokens": 4000,
+                                }
+                            },
+                        }
+                    ),
+                )
+                with self.assertRaisesRegex(ValueError, "OPENAI_API_KEY"):
+                    online_service(store, "s", {"DEEPSEEK_API_KEY": "fixture"})
+                service, clients = online_service(
+                    store,
+                    "s",
+                    {"DEEPSEEK_API_KEY": "fixture", "OPENAI_API_KEY": "fixture"},
+                )
+                try:
+                    self.assertEqual(
+                        "fixture-writer", service.harness.role_models["writer"].model
+                    )
+                    self.assertEqual(2, len(clients))
+                    self.assertNotIn("investigator", service.harness.role_models)
+                finally:
+                    await service.close()
+                    for client in clients:
+                        await client.close()
+            finally:
+                store.close()
 
     async def test_offline_study_needs_only_selected_model_key(self):
         with tempfile.TemporaryDirectory() as directory:

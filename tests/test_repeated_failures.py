@@ -19,6 +19,8 @@ class RepeatedTests(unittest.IsolatedAsyncioTestCase):
         test = self
 
         class Model:
+            context_tokens = 49024
+            max_tokens = 1024
             identity = "failure-test"
 
             async def complete(self, request):

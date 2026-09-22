@@ -492,5 +492,18 @@
   "成立条件：{0}": "Condition: {0}",
   "资料限制：{0}": "Evidence limitation: {0}",
   "PDF / 打印": "PDF / Print",
-  "文本编码": "Text encoding"
+  "文本编码": "Text encoding",
+  "待继续": "Further investigation needed",
+  "可以写作": "Ready for writing",
+  "有明确限制": "Limited answer",
+  "尚未评估": "Not yet assessed",
+  "调查状态由研究主体评估，不代表资料完整性认证。": "Research status reflects the owner’s assessment, not a completeness certificate.",
+  "有 {0} 批新输入待评估。": "{0} new inputs await assessment.",
+  "子 Agent 模型": "Subagent models",
+  "默认跟随主模型；只有手动设置的角色使用独立模型。设置仅影响新建研究。": "Subagents follow the main model unless explicitly configured. Settings apply to new studies only.",
+  "使用独立模型": "Use a separate model",
+  "区域": "Region",
+  "模型": "Model",
+  "同一厂商的所有角色共享 API Key。": "All roles using the same provider share its API key.",
+  "同一厂商填写了不同的 API Key，请统一后保存。": "Different API keys were entered for the same provider. Use one key before saving."
 }

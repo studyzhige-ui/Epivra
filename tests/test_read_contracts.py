@@ -49,6 +49,8 @@ class MetricsTests(unittest.TestCase):
 
 
 class Scripted:
+    context_tokens = 49024
+    max_tokens = 1024
     identity = "read-contract-test"
     call = None
 

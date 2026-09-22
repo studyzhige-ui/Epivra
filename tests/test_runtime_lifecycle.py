@@ -92,6 +92,8 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
                 entered, release = asyncio.Event(), asyncio.Event()
 
                 class Model:
+                    context_tokens = 49024
+                    max_tokens = 1024
                     identity = "fixture"
                     resource = "provider"
 
@@ -126,6 +128,8 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
                 work = store.work("s", c.ref, "lead", "Plan")
 
                 class Model:
+                    context_tokens = 49024
+                    max_tokens = 1024
                     identity = "fixture"
 
                     async def complete(self, request):

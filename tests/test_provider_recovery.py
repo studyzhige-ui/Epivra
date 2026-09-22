@@ -27,6 +27,8 @@ def Tool(*args, **kwargs):
 class RecoveryTests(unittest.IsolatedAsyncioTestCase):
     async def test_search_quota_repair_reuses_paid_model_response(self):
         class Model:
+            context_tokens = 49024
+            max_tokens = 1024
             identity = "quota-fixture"
             calls = 0
 
@@ -67,6 +69,8 @@ class RecoveryTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_balance_rejection_requires_new_user_control_before_retry(self):
         class Model:
+            context_tokens = 49024
+            max_tokens = 1024
             identity = "balance-fixture"
             calls = 0
             funded = False
@@ -102,6 +106,8 @@ class RecoveryTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_failed_balance_repair_does_not_loop(self):
         class Model:
+            context_tokens = 49024
+            max_tokens = 1024
             identity = "balance-fixture"
             calls = 0
             retry_on_resume = staticmethod(DeepSeek.retry_on_resume)
@@ -143,6 +149,8 @@ class RecoveryTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_successful_retry_replays_after_crash_before_observation(self):
         class Model:
+            context_tokens = 49024
+            max_tokens = 1024
             identity = "retry-fixture"
             calls = 0
 
@@ -182,6 +190,8 @@ class RecoveryTests(unittest.IsolatedAsyncioTestCase):
         entered = asyncio.Event()
 
         class Model:
+            context_tokens = 49024
+            max_tokens = 1024
             identity = "retry-fixture"
             calls = 0
 
@@ -217,6 +227,8 @@ class RecoveryTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_unknown_retry_attempt_is_never_reissued(self):
         class Model:
+            context_tokens = 49024
+            max_tokens = 1024
             identity = "retry-fixture"
             calls = 0
 
@@ -242,6 +254,8 @@ class RecoveryTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_tool_retry_does_not_repeat_model_or_successful_tool(self):
         class Model:
+            context_tokens = 49024
+            max_tokens = 1024
             identity = "tool-retry-fixture"
             calls = 0
 

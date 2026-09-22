@@ -3,6 +3,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from research_fixture import basis_arguments
+
 from epivra.domain import Conflict, NotAllowed
 from epivra.research import ResearchLedger
 from epivra.storage import Store
@@ -22,7 +24,7 @@ class WorkspaceIntegrityTests(unittest.TestCase):
         self.source = self.store.put("s", "source", {"text": "12 attended", "origin": "record"})
         self.ledger = ResearchLedger(self.store)
         self.finding = self.ledger.record_finding("s", self.owner.ref, self.c.epoch, statement="12 attended", status="source_statement", support=[self.source.ref])
-        self.basis = self.ledger.prepare_writing("s", self.owner.ref, self.c.epoch, findings=[self.finding.ref], coverage=[{"question": 0, "findings": [self.finding.ref]}], rationale="The supplied record covers the requested count")
+        self.basis = self.ledger.prepare_writing("s", self.owner.ref, self.c.epoch, **basis_arguments(self.ledger.store, {'findings': [self.finding.ref], 'coverage': [{"question": 0, "findings": [self.finding.ref]}], 'rationale': "The supplied record covers the requested count"}))
         self.writing = WritingWorkspace(self.store)
 
     def test_publication_fences_late_evidence_mutations(self):
@@ -33,7 +35,7 @@ class WorkspaceIntegrityTests(unittest.TestCase):
         operations = [
             lambda: self.ledger.record_finding("s", self.owner.ref, self.c.epoch, statement="changed", status="inference", support=[self.source.ref]),
             lambda: self.ledger.record_conflict("s", self.owner.ref, self.c.epoch, question="late question", findings=[self.finding.ref]),
-            lambda: self.ledger.prepare_writing("s", self.owner.ref, self.c.epoch, findings=[], coverage=[{"question": 0, "findings": [], "limitation": "late"}], rationale="late", replaces=self.basis.ref),
+            lambda: self.ledger.prepare_writing("s", self.owner.ref, self.c.epoch, **basis_arguments(self.ledger.store, {'findings': [], 'coverage': [{"question": 0, "findings": [], "limitation": "late"}], 'rationale': "late", 'replaces': self.basis.ref})),
         ]
         for operation in operations:
             with self.assertRaisesRegex(NotAllowed, "published"):

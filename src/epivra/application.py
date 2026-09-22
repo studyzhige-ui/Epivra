@@ -295,7 +295,7 @@ def online_service(
 ) -> tuple[ResearchService, list]:
     """Compose explicit providers without giving adapters access to Agent control."""
     from .harness import STRING, Tool, object_schema
-    from .models import create_model
+    from .models import create_model, model_settings
     from .web_providers import connect
     from .workspace import Workspace
 
@@ -309,10 +309,19 @@ def online_service(
     readers = policy.get(
         "reader_providers", ["tavily"] if policy.get("network") else []
     )
+    # Check every model and credential before allocating any clients.
+    for settings in (policy, *policy.get("role_models", {}).values()):
+        provider, *_ = model_settings(settings)
+        if not keys.get(provider.credential_env, "").strip():
+            raise ValueError(f"{provider.credential_env} required")
     providers = {
         name: connect(name, keys) for name in dict.fromkeys([*searches, *readers])
     }
     model, model_api = create_model(policy, keys)
+    role_models, role_apis = {}, []
+    for role, settings in policy.get("role_models", {}).items():
+        role_models[role], api = create_model(settings, keys)
+        role_apis.append(api)
 
     def select(args, names):
         name = args.get("provider", names[0] if names else None)
@@ -323,9 +332,8 @@ def online_service(
     def schema(field, names):
         value = object_schema({field: STRING})
         value["properties"]["provider"] = {"type": "string", "enum": names}
-        if field == "url":
-            value["properties"]["force_refresh"] = {"type": "boolean"}
-        elif "tavily" in names:
+        value["properties"]["force_refresh"] = {"type": "boolean"}
+        if field == "query" and "tavily" in names:
             value["properties"].update(
                 {
                     "include_domains": {"type": "array", "items": STRING},
@@ -342,26 +350,7 @@ def online_service(
     async def extract(args):
         return await select(args, readers).extract(args)
 
-    def reuse(args):
-        if args.get("force_refresh"):
-            return None
-        for source in reversed(store.list(study, "source")):
-            if (
-                args["url"]
-                in (source.body.get("origin"), source.body.get("requested_url"))
-                and source.body.get("text", "").strip()
-            ):
-                return {
-                    "reused": {
-                        "sources": [workspace.web_source_info(source)],
-                        "failures": [],
-                    }
-                }
-        return None
-
     def observe(raw, acquisition, names, reading=False):
-        if "reused" in raw:
-            return raw["reused"]
         provider = providers[raw["provider"]]
         try:
             decoded = (
@@ -393,7 +382,7 @@ def online_service(
                 "Only tavily supports include_domains/exclude_domains and YYYY-MM-DD start_date/end_date "
                 "(publication or update date); other providers reject these fields. "
                 if not reading
-                else "Read a public URL into a citable source; saved text is reused unless force_refresh. "
+                else "Read a public URL into a citable source; identical successful reads reuse this direction's snapshot unless force_refresh; refresh when newly acquired data is required. "
             )
             + "Choose provider only when needed; default: "
             + names[0],
@@ -419,7 +408,8 @@ def online_service(
                 and raw.get("http_status") in {401, 432, 433}
                 else None
             ),
-            reuse=reuse if reading else None,
+            research_fields=tuple(schema(field, names)["properties"]),
+            cache_research=True,
         )
     public_clients = []
     if policy.get("network") and policy.get("public_sources"):
@@ -483,6 +473,7 @@ def online_service(
                 observe=lambda raw, acq, n=name: public_observe(raw, acq, name=n),
                 resource="public:" + name,
                 parallel_safe=True,
+                research_fields=tuple(parameters["properties"]),
                 cooldown=lambda raw: rate_limit_delay(raw, 0) or spacing(raw),
             )
     mcp_connections = []
@@ -491,9 +482,10 @@ def online_service(
 
         mcp_tools, mcp_connections = connect_tools(store, study, policy)
         tools.update(mcp_tools)
-    harness = Harness(store, model, tools, scheduler=scheduler)
+    harness = Harness(store, model, tools, scheduler=scheduler, role_models=role_models)
     return ResearchService(store, harness), [
         model_api,
+        *role_apis,
         *mcp_connections,
         *public_clients,
         *(p.api for p in providers.values()),

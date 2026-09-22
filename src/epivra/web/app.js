@@ -529,6 +529,17 @@ async function loadProgress() {
       const panel = node("section", undefined, "work-card card"), research = result.research;
       panel.append(node("strong", t("研究依据与文稿")));
       panel.append(node("p", t("当前记录：{0} 项研究判断，{1} 项分歧核实。", research.findings.length, research.conflicts.length), "muted"));
+      if (research.pending_inputs?.length) panel.append(node("p", t("有 {0} 批新输入待评估。", research.pending_inputs.length), "muted"));
+      for (const question of research.questions || []) {
+        const entry = node("details", "", "research-question");
+        const state = {continue: t("待继续"), ready: t("可以写作"), limited: t("有明确限制")}[question.decision] || t("尚未评估");
+        entry.append(node("summary", `${question.question} — ${state}`));
+        if (question.answer_target) entry.append(node("p", question.answer_target));
+        if (question.reason) entry.append(node("p", question.reason));
+        for (const gap of question.remaining || []) entry.append(node("p", `${gap.question}: ${gap.reason}`));
+        panel.append(entry);
+      }
+      panel.append(node("p", t("调查状态由研究主体评估，不代表资料完整性认证。"), "muted"));
       const basisText = !research.basis ? t("仍在形成写作依据")
         : research.basis.stale ? t("依据已变化，需要重新评估写作准备")
         : t("研究主体已记录写作准备判断；这不是自动正确性认证");
@@ -563,6 +574,9 @@ async function loadProgress() {
           for (const entry of detail.entries) {
             const section = node("section");
             markdown(section, entry.text);
+            if (entry.answer_target) section.append(node("p", entry.answer_target));
+            for (const check of entry.checks || []) section.append(node("p", `${check.angle}: ${check.reason}`));
+            for (const gap of entry.remaining || []) section.append(node("p", `${gap.question}: ${gap.reason}`));
             if (entry.quote) section.append(node("blockquote", entry.quote));
             for (const condition of entry.conditions || []) section.append(node("p", t("成立条件：{0}", condition), "muted"));
             for (const limit of entry.limits || []) section.append(node("p", t("资料限制：{0}", limit), "muted"));
@@ -1130,6 +1144,149 @@ function connectionFields() {
       ? t("API Key · 已配置")
       : t("API Key · 尚未配置");
 }
+const subagentRoles = {investigator: "调查", synthesizer: "冲突核实", writer: "写作", reviewer: "编辑核查"};
+let roleModelEditors = [];
+function renderRoleModels(saved) {
+  $("role-model-fields").replaceChildren();
+  roleModelEditors = Object.entries(subagentRoles).map(([role, title]) => {
+    const box = node("fieldset"), legend = node("legend", t(title));
+    const enabled = node("input");
+    enabled.type = "checkbox";
+    enabled.checked = !!saved[role];
+    const toggle = node("label", undefined, "checkbox");
+    toggle.append(enabled, document.createTextNode(t("使用独立模型")));
+    const fields = node("div");
+    const controls = {};
+    function field(name, label, type = "input") {
+      const wrapper = node("label", t(label)), input = node(type);
+      input.id = `role-${role}-${name}`;
+      wrapper.append(input);
+      fields.append(wrapper);
+      input.addEventListener("invalid", () => { $("role-model-settings").open = true; });
+      controls[name] = input;
+      return input;
+    }
+    const provider = field("provider", "厂商", "select");
+    for (const p of config.providers) {
+      const option = node("option", labels[p.id] || p.id);
+      option.value = p.id;
+      provider.append(option);
+    }
+    const region = field("region", "区域", "select");
+    const model = field("model", "模型");
+    const list = node("datalist");
+    list.id = `role-${role}-models`;
+    model.setAttribute("list", list.id);
+    fields.append(list);
+    const fetchButton = node("button", t("获取模型列表"), "secondary");
+    fetchButton.type = "button";
+    fields.append(fetchButton);
+    const capacity = node("div", undefined, "form-row");
+    const context = field("context_tokens", "上下文容量 tokens");
+    const output = field("max_tokens", "输出额度 tokens");
+    for (const input of [context, output]) {
+      input.type = "number";
+      input.min = "1";
+      capacity.append(input.parentElement);
+    }
+    fields.append(capacity);
+    const key = field("key", "API Key · 已配置，留空保留");
+    key.type = "password";
+    key.autocomplete = "new-password";
+    const status = node("p", "", "muted");
+    fields.append(node("p", t("同一厂商的所有角色共享 API Key。"), "muted"), status);
+    let candidates = [], serial = 0;
+    const spec = () => config.providers.find(p => p.id === provider.value);
+    function updateCapacity() {
+      const custom = model.value.trim() !== spec().model;
+      capacity.hidden = !custom;
+      context.required = output.required = enabled.checked && custom;
+      model.required = enabled.checked;
+    }
+    function resetProvider() {
+      serial++;
+      candidates = [];
+      list.replaceChildren();
+      fetchButton.disabled = false;
+      region.replaceChildren();
+      for (const value of spec().regions) {
+        const option = node("option", value);
+        option.value = value;
+        region.append(option);
+      }
+      region.value = spec().region;
+      model.value = spec().model;
+      context.value = output.value = key.value = "";
+      key.parentElement.firstChild.textContent = t(spec().configured
+        ? "API Key · 已配置，留空保留" : "API Key · 尚未配置");
+      status.textContent = "";
+      updateCapacity();
+    }
+    provider.value = saved[role]?.provider || $("provider").value;
+    resetProvider();
+    for (const name of ["region", "model", "context_tokens", "max_tokens"])
+      if (saved[role]?.[name] != null) controls[name].value = saved[role][name];
+    function toggleFields() {
+      fields.hidden = !enabled.checked;
+      for (const input of Object.values(controls)) input.disabled = !enabled.checked;
+      updateCapacity();
+    }
+    toggleFields();
+    enabled.onchange = toggleFields;
+    provider.onchange = resetProvider;
+    function invalidate() {
+      serial++;
+      candidates = [];
+      list.replaceChildren();
+      fetchButton.disabled = false;
+      status.textContent = "";
+    }
+    region.onchange = key.oninput = invalidate;
+    model.oninput = () => {
+      const found = candidates.find(m => m.id === model.value.trim());
+      context.value = found?.context_tokens || "";
+      output.value = found?.max_tokens || "";
+      updateCapacity();
+    };
+    fetchButton.onclick = async () => {
+      const current = ++serial;
+      fetchButton.disabled = true;
+      status.textContent = t("正在获取模型列表…");
+      try {
+        const result = await api("/api/models", {provider: provider.value,
+          region: region.value, key: key.value.trim()});
+        if (current !== serial || !box.isConnected) return;
+        candidates = result.models;
+        list.replaceChildren(...candidates.map(m => {
+          const option = node("option"); option.value = m.id; return option;
+        }));
+        status.textContent = t("{0} {1} 个模型。{2}", result.source === "account"
+          ? t("接口返回") : t("本地预设"), candidates.length, result.message);
+      } catch (error) {
+        if (current === serial) status.textContent = error.message;
+      } finally {
+        if (current === serial) fetchButton.disabled = false;
+      }
+    };
+    box.append(legend, toggle, fields);
+    $("role-model-fields").append(box);
+    return {role, enabled, controls, spec};
+  });
+}
+function selectedRoleModels() {
+  const result = {};
+  for (const {role, enabled, controls, spec} of roleModelEditors) {
+    if (!enabled.checked) continue;
+    const value = {provider: controls.provider.value, model: controls.model.value.trim(),
+      region: controls.region.value};
+    if (value.model !== spec().model) {
+      value.context_tokens = Number(controls.context_tokens.value);
+      value.max_tokens = Number(controls.max_tokens.value);
+    }
+    result[role] = value;
+  }
+  return result;
+}
 async function openSettings() {
   if (mutating) return;
   await loadConfig();
@@ -1145,6 +1302,8 @@ async function openSettings() {
   $("context-tokens").value = d.context_tokens || "";
   $("max-tokens").value = d.max_tokens || "";
   capacityFields();
+  $("role-model-settings").open = false;
+  renderRoleModels(d.role_models || {});
   options(
     "search-provider",
     config.search,
@@ -1259,6 +1418,7 @@ $("settings-form").onsubmit = (e) => {
         ...config.defaults,
         provider: p.id,
         model: $("model").value.trim(),
+        role_models: selectedRoleModels(),
         region: $("region").value,
         search_provider: $("search-provider").value,
         reader_provider: $("reader-provider").value,
@@ -1281,8 +1441,11 @@ $("settings-form").onsubmit = (e) => {
       if ($("docling-models").value.trim())
         d.docling_models = $("docling-models").value.trim();
       let override = false;
+      const credentials = new Map();
       for (const [name, value] of [
         [p.credential, $("model-key").value.trim()],
+        ...roleModelEditors.filter(e => e.enabled.checked).map(e =>
+          [e.spec().credential, e.controls.key.value.trim()]),
         [
           config.connections.find(
             (c) => c.id === $("connection-provider").value,
@@ -1290,13 +1453,19 @@ $("settings-form").onsubmit = (e) => {
           $("connection-key").value.trim(),
         ],
       ]) {
-        if (name && value)
+        if (!name || !value) continue;
+        if (credentials.has(name) && credentials.get(name) !== value)
+          throw new Error(t("同一厂商填写了不同的 API Key，请统一后保存。"));
+        credentials.set(name, value);
+      }
+      for (const [name, value] of credentials) {
           override =
             (await api("/api/key", { name, value })).environment_override ||
             override;
       }
       // Credentials and defaults have distinct persistence; partial saves are explicit.
       $("model-key").value = $("connection-key").value = "";
+      for (const editor of roleModelEditors) editor.controls.key.value = "";
       try {
         await api("/api/settings", d);
       } catch (e) {

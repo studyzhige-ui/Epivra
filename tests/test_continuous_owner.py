@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from research_fixture import prepare_basis
+from research_fixture import basis_arguments, prepare_basis
 
 from epivra.application import ResearchService
 from epivra.domain import Call, Conflict, NotAllowed, Reply, RuntimeMismatch
@@ -26,6 +26,8 @@ BRIEF = {
 
 
 class Scripted:
+    context_tokens = 49024
+    max_tokens = 1024
     identity = "continuous-owner-offline"
     call = None
 
@@ -69,7 +71,7 @@ class OwnerTests(unittest.IsolatedAsyncioTestCase):
 
     async def call(self, name, args, work=None):
         work = work or self.owner
-        if name == "draft_report":
+        if name == "draft_report" and work.body["role"] in {"lead", "writer"}:
             prepare_basis(self.store, work)
         self.model.call = Call(name, args)
         await self.harness.step("s", work.ref)
@@ -378,6 +380,8 @@ class ContinuousServiceTest(unittest.IsolatedAsyncioTestCase):
                 seen_owner = set()
 
                 class Model:
+                    context_tokens = 49024
+                    max_tokens = 1024
                     identity = "owner-service-fixture"
 
                     async def complete(self, request):
@@ -436,13 +440,13 @@ class ContinuousServiceTest(unittest.IsolatedAsyncioTestCase):
                                 finding = store.list("s", "finding")[0]
                                 call = Call(
                                     "prepare_writing",
-                                    {
+                                    basis_arguments(store, {
                                         "findings": [finding.ref],
                                         "coverage": [
                                             {"question": 0, "findings": [finding.ref]}
                                         ],
                                         "rationale": "The original record covers the requested counts.",
-                                    },
+                                    }),
                                 )
                             elif not draft:
                                 call = Call(

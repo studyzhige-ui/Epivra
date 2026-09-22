@@ -26,6 +26,7 @@ from .web_providers import CONNECTIONS, READERS, SEARCH
 DEFAULT_FIELDS = {
     "provider",
     "model",
+    "role_models",
     "region",
     "context_tokens",
     "max_tokens",

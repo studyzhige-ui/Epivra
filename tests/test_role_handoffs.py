@@ -1,17 +1,20 @@
 from __future__ import annotations
 
+import asyncio
 import tempfile
 import unittest
 from pathlib import Path
 
 from research_fixture import prepare_basis
 
-from epivra.domain import Call, Reply
+from epivra.domain import Call, NotAllowed, Reply
 from epivra.harness import Harness
 from epivra.storage import Store
 
 
 class ScriptedModel:
+    context_tokens = 49024
+    max_tokens = 1024
     identity = "role-handoff-fixture"
 
     def __init__(self):
@@ -60,6 +63,53 @@ class RoleHandoffTests(unittest.IsolatedAsyncioTestCase):
         self.model.call = Call(name, args)
         await self.harness.step("s", work.ref)
         return self.model.requests[-1]
+
+    async def test_concurrent_roles_use_their_own_model_and_recovery_binding(self):
+        class RoleModel:
+            context_tokens = 49024
+            max_tokens = 1024
+            def __init__(self, name, tokens):
+                self.identity = self.model = self.quota_resource = name
+                self.max_tokens = tokens
+                self.requests = []
+
+            def prepare(self, context, previous):
+                assert context["provider"] == self.identity
+                return {"payload": {}, "estimated_input_tokens": 7}
+
+            async def complete(self, request):
+                self.requests.append(request)
+                await asyncio.sleep(0)
+                return {"binding": self.identity}
+
+            def decode(self, raw):
+                assert raw["binding"] == self.identity
+                return Reply(
+                    "", (Call("read_artifact", {"ref": self_source}),)
+                ).to_json()
+
+        self_source = self.source.ref
+        main, writer = RoleModel("main", 100), RoleModel("writer", 200)
+        harness = Harness(self.store, main, role_models={"writer": writer})
+        result = await self.finding("Original evidence", "Prepare evidence")
+        works = [
+            self.child("writer", "Write", (result.ref,)),
+            self.child("investigator", "Investigate"),
+            self.lead,
+        ]
+        await asyncio.gather(*(harness.step("s", w.ref) for w in works))
+        self.assertEqual(["writer"], [r["role"] for r in writer.requests])
+        self.assertEqual({"investigator", "lead"}, {r["role"] for r in main.requests})
+        admissions = [
+            a for a in self.store.admissions() if a["resource"] in {"main", "writer"}
+        ]
+        self.assertEqual({107, 207}, {a["tokens"] for a in admissions})
+        self.assertIs(main, harness.model)
+        restored = Harness(self.store, main, role_models={"writer": writer})
+        await restored.step("s", works[0].ref)
+        self.assertEqual(2, len(writer.requests))
+        with self.assertRaises(NotAllowed):
+            await Harness(self.store, main).step("s", works[0].ref)
 
     async def finding(self, text, task):
         producer = self.child("investigator", task)

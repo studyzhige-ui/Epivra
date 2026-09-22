@@ -15,6 +15,8 @@ from epivra.storage import Store
 
 
 class ScriptedModel:
+    context_tokens = 49024
+    max_tokens = 1024
     identity = "report-receipt-test"
 
     async def complete(self, request):

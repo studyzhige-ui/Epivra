@@ -56,7 +56,7 @@ def page(items: list, offset: int, limit: int, capacity: int) -> dict:
     return result
 
 
-def fit_read_result(build: Callable[[int], dict], count: int, capacity: int) -> dict:
+def fit_read_result(build: Callable[[int], dict], count: int, capacity: int, *, fits=None) -> dict:
     """Fit a lossless page to the actual serialized tool-result contract.
 
     The caller rebuilds offsets, cursors and excerpt metadata for each prefix.
@@ -66,25 +66,28 @@ def fit_read_result(build: Callable[[int], dict], count: int, capacity: int) -> 
     """
     if count < 0 or capacity < 1:
         raise ValueError("invalid read-result capacity")
+    def accepts(result):
+        return len(encode(result)) <= capacity and (fits is None or fits(result))
+
     result = build(count)
-    if len(encode(result)) <= capacity:
+    if accepts(result):
         return result
     minimum = 1 if count else 0
     result = build(minimum)
-    if len(encode(result)) > capacity:
+    if not accepts(result):
         raise ContextCapacity("read metadata and one unit exceed tool-result capacity")
     low, high = minimum, count - 1
     while low < high:
         middle = (low + high + 1) // 2
         trial = build(middle)
-        if len(encode(trial)) <= capacity:
+        if accepts(trial):
             low, result = middle, trial
         else:
             high = middle - 1
     return result
 
 
-def fit_provider(request: dict, prepare) -> dict:
+def fit_provider(request: dict, prepare, *, priority_refs=()) -> dict:
     """Drop optional projections, never task contracts, before a fresh window.
 
     Preparation is local and does not send a request. Test the smallest request
@@ -100,22 +103,36 @@ def fit_provider(request: dict, prepare) -> dict:
     except ContextCapacity:
         pass
     minimal = deepcopy(request)
-    # Preserve actual research inputs before optional navigation directories.
-    additions = [("context", item) for item in reversed(minimal["context"])]
+    # Latest state can grow after a page was read. Preserve its retrieval handle
+    # in the minimum window, then try the pending body before older context.
+    pending = [item for item in minimal["context"] if item["ref"] in priority_refs]
+    additions = [("pending", item) for item in pending if "body" in item]
+    additions.extend(("context", item) for item in reversed(minimal["context"])
+                     if item["ref"] not in priority_refs)
     for key, nav in minimal.get("navigation", {}).items():
         parent = minimal["review_progress"] if key.startswith("review_") else minimal
         field = key.removeprefix("review_") if key.startswith("review_") else key
         additions.extend((key, item) for item in parent[field])
         parent[field] = []
         nav["next_offset"] = nav["offset"] if nav["total"] else None
-    minimal["omitted_count"] += sum("body" in x for x in minimal["context"])
-    minimal["context"] = []
+    minimal["omitted_count"] += sum("body" in item for key, item in additions
+                                    if key in {"context", "pending"})
+    minimal["context"] = [
+        {"ref": item["ref"], "kind": item["kind"], "body_omitted": True,
+         "characters": len(encode(item["body"]))} if "body" in item else item
+        for item in pending
+    ]
     prepare(minimal, None)  # Essential capacity failures are actionable, never hidden.
 
     def restore(count):
         candidate = deepcopy(minimal)
         for key, item in additions[:count]:
-            if key == "context":
+            if key == "pending":
+                index = next(i for i, old in enumerate(candidate["context"])
+                             if old["ref"] == item["ref"])
+                candidate["context"][index] = item
+                candidate["omitted_count"] -= 1
+            elif key == "context":
                 candidate[key].insert(0, item)
                 candidate["omitted_count"] -= "body" in item
             else:
@@ -175,6 +192,7 @@ def assemble(
     capacity: int,
     *,
     direct_refs=None,
+    priority_refs=(),
 ) -> dict[str, Any]:
     request = {
         **base,
@@ -201,7 +219,7 @@ def assemble(
     )
     ordered = sorted(
         candidates,
-        key=lambda a: (a.ref in direct, a.kind == "clarification_answer", a.seq),
+        key=lambda a: (a.ref in priority_refs, a.ref in direct, a.kind == "clarification_answer", a.seq),
         reverse=True,
     )
     selected: list[dict[str, Any]] = []

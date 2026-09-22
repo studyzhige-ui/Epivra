@@ -209,3 +209,14 @@ Usage is grouped by provider, model and function (for example, Tavily search ver
 
 
 The Web workbench keeps the research plan available and offers expandable public findings, a report outline, expanded reading, citation excerpts and saved source text. Export supports Markdown, Word, standalone HTML and PDF/Print (Save as PDF in the browser). Word preserves original formula notation. Export does not rerun research.
+
+
+## When research is ready for writing
+
+The owner assesses each original question against its required answer, evidence, meaningful remaining gaps and stopping reasons. Expand progress to see further investigation, readiness or a limited answer. These are model judgments, not completeness certificates. Reflection uses normal research turns; there is no mandatory search-round or source-count target.
+
+New retrieval results, sources or research handoffs must be considered before an existing writing basis can authorize delivery. Repeated reads do not repeatedly reopen research. Identical successful web requests reuse the current direction's snapshot; the researcher can explicitly refresh when newly acquired data is needed. Publication still requires independent editorial review.
+
+After this research-contract upgrade, earlier studies remain readable and exportable; start a new study for execution. Finish existing work and restart an already running service to load the updated code.
+
+Context is managed against the selected model window for each role, reserving its configured output allowance. Reads fit the remaining capacity of the complete request instead of fixed 48,000-character context or 12,000-character result ceilings. Explicit smaller read limits are honored. Window checks retain the adapters’ local estimates and reported usage calibration; they neither fill every request nor guarantee exact use of every advertised token.

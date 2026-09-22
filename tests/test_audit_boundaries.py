@@ -181,6 +181,8 @@ class NetworkBoundaries(unittest.IsolatedAsyncioTestCase):
 
 
 class Model:
+    context_tokens = 49024
+    max_tokens = 1024
     identity = "audit-fixture"
     calls = ()
 
@@ -257,7 +259,7 @@ class RuntimeBoundaries(unittest.IsolatedAsyncioTestCase):
             result = await self.execute(
                 reviewer, "read_report", {"offset": offset, "limit": 100000}
             )
-            self.assertLess(len(encode(result)), 12000)
+            self.assertLess(len(encode(result)), Model.context_tokens - Model.max_tokens)
             seen.extend(x["text"] for x in result["units"])
             following = result["next_offset"]
             self.assertTrue(following is None or following > offset)
@@ -392,7 +394,7 @@ class RuntimeBoundaries(unittest.IsolatedAsyncioTestCase):
             "finish_work",
             {"text": "Premise changed", "refs": [], "supersedes": [old["ref"]]},
         )
-        with self.assertRaisesRegex(ValueError, "premise changed after review"):
+        with self.assertRaisesRegex(ValueError, "assess new research inputs before writing/publishing"):
             self.store.publish(
                 "s", self.lead.ref, self.c.epoch, report.ref, accepted["ref"]
             )

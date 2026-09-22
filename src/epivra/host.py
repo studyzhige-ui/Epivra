@@ -224,7 +224,13 @@ class Host:
                 "provider": request.get("provider", "deepseek"),
                 **{
                     name: request[name]
-                    for name in ("model", "region", "context_tokens", "max_tokens")
+                    for name in (
+                        "model",
+                        "region",
+                        "context_tokens",
+                        "max_tokens",
+                        "role_models",
+                    )
                     if request.get(name) is not None
                 },
             }

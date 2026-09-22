@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from .citations import render, validate
 from .context import fit_read_result
-from .domain import INLINE_TOOL_RESULT_CHARS, Conflict, NotAllowed, identity
+from .domain import Conflict, NotAllowed, identity
 from .research import ResearchLedger
 from .review import report_metrics
 
@@ -206,7 +206,7 @@ class WritingWorkspace:
         }
 
     def read(
-        self, study, work, epoch, *, ref=None, offset=0, limit=None, capacity=12000
+        self, study, work, epoch, *, capacity, ref=None, offset=0, limit=None, fits=None
     ):
         actor = self.store.require_work(study, work, epoch)
         current = self.current(study, actor.body["direction"])
@@ -246,7 +246,7 @@ class WritingWorkspace:
                 "next_offset": end if end < len(text) else None,
             }
 
-        return fit_read_result(page, size, min(capacity, INLINE_TOOL_RESULT_CHARS))
+        return fit_read_result(page, size, capacity, fits=fits)
 
     def require_publishable(self, study, report):
         if "document" not in report.body:

@@ -317,6 +317,38 @@ class Store:
             args.append(limit)
         return [self._artifact(row) for row in self.db.execute(sql, args)]
 
+    def research_input_index(self, study, direction):
+        """Project arrival identities without loading every source/result body."""
+        import json
+
+        found = {row["ref"]: "source" for row in self.db.execute(
+            "SELECT ref FROM artifacts WHERE study=? AND kind='source' AND json_extract(body,'$.direction')=?",
+            (study, direction))}
+        for row in self.db.execute(
+            "SELECT ref,json_extract(body,'$.research_receipt') AS receipt FROM artifacts "
+            "WHERE study=? AND kind='observation' AND json_extract(body,'$.direction')=? "
+            "AND json_extract(body,'$.research_receipt') IS NOT NULL ORDER BY seq", (study, direction)):
+            receipt = json.loads(row["receipt"])
+            if receipt.get("input"):
+                found[receipt.get("reused_from") or row["ref"]] = "observation"
+            found.update((ref, "source") for ref in receipt.get("sources", []))
+        for row in self.db.execute(
+            "SELECT r.ref FROM artifacts r JOIN artifacts w ON w.ref=json_extract(r.body,'$.producer') "
+            "AND w.study=r.study WHERE r.study=? AND r.kind='work_result' AND w.kind='work' "
+            "AND json_extract(w.body,'$.direction')=? "
+            "AND json_extract(w.body,'$.role') IN ('investigator','synthesizer')", (study, direction)):
+            found[row["ref"]] = "work_result"
+        return found
+
+    def reusable_research_result(self, study, direction, request_key):
+        row = self.db.execute(
+            "SELECT * FROM artifacts WHERE study=? AND kind='observation' "
+            "AND json_extract(body,'$.direction')=? "
+            "AND json_extract(body,'$.research_receipt.request_key')=? "
+            "AND json_extract(body,'$.research_receipt.outcome') IN ('ok','empty') "
+            "ORDER BY seq DESC LIMIT 1", (study, direction, request_key)).fetchone()
+        return self._artifact(row) if row else None
+
     def catalog_index(self, study):
         rows = self.db.execute(
             "SELECT ref,json_extract(body,'$.root') AS root,"
@@ -502,7 +534,7 @@ class Store:
                 "direction",
                 {
                     "request": request,
-                    "runtime": "continuous-research-v3",
+                    "runtime": "continuous-research-v4",
                     "policy": policy,
                 },
             )
@@ -699,7 +731,7 @@ class Store:
             return result
 
     def require_runtime(self, study: str, direction: str) -> None:
-        if self.get(study, direction).body.get("runtime") != "continuous-research-v3":
+        if self.get(study, direction).body.get("runtime") != "continuous-research-v4":
             raise RuntimeMismatch(
                 "Archived research runtime: read-only audit; start a new study"
             )
@@ -1323,7 +1355,7 @@ class Store:
     ) -> Artifact:
         with self.transaction():
             self.require_work(study, work, epoch)
-            return self._put(study, "observation", body, (work, *parents))
+            return self._put(study, "observation", {**body, "direction": self.get(study, work).body["direction"]}, (work, *parents))
 
     def require_report_delivery(self, study, work, report_ref):
         """Prove input delivery from settled model requests, never model assertions."""

@@ -13,6 +13,8 @@ from epivra.workspace import Workspace
 
 
 class Model:
+    context_tokens = 49024
+    max_tokens = 1024
     identity = "local-fence-fixture"
 
     def __init__(self, call):

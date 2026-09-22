@@ -16,9 +16,9 @@ from .calculation import calculate
 from .citations import render as render_citations
 from .context import assemble, fit_provider, fit_read_result, page, source_ranges
 from .domain import (
-    INLINE_TOOL_RESULT_CHARS,
     Artifact,
     Call,
+    ContextCapacity,
     NotAllowed,
     RecoveryExhausted,
     RepeatedFailure,
@@ -26,6 +26,7 @@ from .domain import (
     bounded_json,
     encode,
     identity,
+    input_capacity,
 )
 from .prompts import PROMPT_VERSION, ROLES, ROUTE_PROMPT, TOOLS, WRITING_GUIDES
 from .research import DISPOSITIONS, RESEARCH_KINDS, STATUSES, ResearchLedger
@@ -35,9 +36,13 @@ from .storage import Store
 from .workspace import Workspace
 from .writing import WritingWorkspace
 
+READ_TOOLS = frozenset({"read_source", "read_artifact", "read_artifact_range", "read_draft", "read_report"})
+
 
 class Model(Protocol):
     identity: str
+    context_tokens: int
+    max_tokens: int
 
     async def complete(self, request: dict[str, Any]) -> dict[str, Any]: ...
 
@@ -64,6 +69,9 @@ class Tool:
     resource_map: dict[str, str] | None = None
     reuse: Callable[[dict[str, Any]], dict | None] | None = None
 
+    research_fields: tuple[str, ...] = ()
+    cache_research: bool = False
+
     @property
     def binding(self) -> str:
         return identity(
@@ -72,6 +80,8 @@ class Tool:
             self.permission,
             self.schema,
             self.parallel_safe,
+            self.research_fields,
+            self.cache_research,
             self.resource,
             *([self.resource_map] if self.resource_map is not None else []),
         )
@@ -354,6 +364,24 @@ BUILTINS = {
 }
 
 
+ASSESSMENT = object_schema({
+    "question": {"type": "integer", "minimum": 0}, "answer_target": STRING,
+    "findings": REFERENCES,
+    "checks": {"type": "array", "items": {
+        **object_schema({"angle": STRING, "refs": {**REFERENCES, "minItems": 1},
+                         "effect": {**STRING, "enum": ["changed", "no_material_change", "blocked"]},
+                         "reason": STRING, "corrects": object_schema({"assessment": STRING, "index": {"type": "integer", "minimum": 0}})}),
+        "required": ["angle", "refs", "effect", "reason"]}},
+    "remaining": {"type": "array", "items": object_schema({"question": STRING,
+        "disposition": {**STRING, "enum": ["next", "blocked", "bounded"]}, "reason": STRING})},
+    "decision": {**STRING, "enum": ["continue", "ready", "limited"]},
+    "reason": STRING, "replaces": STRING,
+})
+ASSESSMENT["required"].remove("replaces")
+ASSESSMENT["properties"]["replaces"]["description"] = "Current question_assessment ref for this question, never a writing_basis or finding ref; omit for the first assessment."
+ASSESSMENT["properties"]["decision"]["description"] = "ready requires supported findings and only bounded remaining paths; limited requires explicit limitations and no feasible next; otherwise continue."
+UPDATES = {"type": "array", "items": ASSESSMENT}
+
 # A shared workbench, not new workflow stages. Identity checks belong to the
 # host; evidence interpretation and readiness belong to the research Agent.
 BUILTINS.update(
@@ -391,34 +419,12 @@ BUILTINS.update(
                 "required": ["question", "findings"],
             },
         ),
-        "prepare_writing": (
-            "research",
-            {
-                **object_schema(
-                    {
-                        "findings": REFERENCES,
-                        "coverage": {
-                            "type": "array",
-                            "minItems": 1,
-                            "items": {
-                                **object_schema(
-                                    {
-                                        "question": {"type": "integer", "minimum": 0},
-                                        "findings": REFERENCES,
-                                        "limitation": {"type": "string"},
-                                    }
-                                ),
-                                "required": ["question", "findings"],
-                            },
-                        },
-                        "rationale": STRING,
-                        "limitations": STRINGS,
-                        "replaces": STRING,
-                    }
-                ),
-                "required": ["findings", "coverage", "rationale"],
-            },
-        ),
+        "assess_questions": ("lead", object_schema({"updates": {**UPDATES, "minItems": 1}})),
+        "prepare_writing": ("research", {
+            **object_schema({"assessments": REFERENCES, "updates": UPDATES,
+                             "rationale": STRING, "replaces": STRING}),
+            "required": ["rationale"],
+        }),
         "read_draft": (
             "research",
             {
@@ -475,6 +481,7 @@ BUILTINS["find_artifacts"][1]["properties"]["kind"]["enum"].extend(
 BUILTINS["read_context"][1]["properties"]["section"]["enum"].extend(
     [
         "research_questions",
+        "research_inputs",
         "research_findings",
         "research_conflicts",
     ]
@@ -569,11 +576,12 @@ class Harness:
         store: Store,
         model: Model,
         tools: dict[str, Tool] | None = None,
-        context_chars: int = 48000,
         scheduler: Scheduler | None = None,
         sandbox=None,
+        role_models: dict[str, Model] | None = None,
     ):
         self.store, self.model = store, model
+        self.role_models = dict(role_models or {})
         self.scheduler = scheduler or Scheduler(history=store.admissions())
         self.tools = tools or {}
         self.workspace = Workspace(store)
@@ -582,10 +590,12 @@ class Harness:
         self.analysis = AnalysisRuntime(store, self.scheduler, sandbox)
         if set(self.tools) & set(BUILTINS):
             raise ValueError("external tools may not replace runtime tools")
-        if context_chars < 4000:
-            raise ValueError("context capacity too small")
-        self.context_chars = context_chars
+        for selected in (model, *self.role_models.values()):
+            input_capacity(selected)
         self._locks: dict[str, asyncio.Lock] = {}
+
+    def _model_for(self, work: Artifact) -> Model:
+        return self.role_models.get(work.body["role"], self.model)
 
     def _schema(self, role: str, policy: dict[str, Any]) -> dict[str, dict[str, Any]]:
         # "lead" is the persisted name of the continuous research owner, not a
@@ -617,6 +627,12 @@ class Harness:
         else:
             result.pop("draft_report", None)
             result.pop("patch_draft", None)
+        if role not in {"lead", "writer"}:
+            result.pop("prepare_writing", None)
+        elif role == "writer":
+            original = BUILTINS["prepare_writing"][1]
+            result["prepare_writing"] = {"description": TOOLS["prepare_writing"], "parameters": {
+                **original, "properties": {k: v for k, v in original["properties"].items() if k != "updates"}}}
         if role == "reviewer" and policy.get("_review_mode") == "check":
             result.pop("submit_review")
             result["finish_work"] = {
@@ -692,6 +708,7 @@ class Harness:
         memory_override=None,
         pins_override=None,
         prepare_wire=True,
+        essential_only=False,
         section=None,
         offset=0,
         limit=20,
@@ -702,6 +719,7 @@ class Harness:
             memory_override=memory_override,
             pins_override=pins_override,
             prepare_wire=prepare_wire,
+            essential_only=essential_only,
             section=section,
             offset=offset,
             limit=limit,
@@ -748,7 +766,7 @@ class Harness:
             pending.extend(memory[-1].body.get("refs", []))
         replacements = {
             item.body["replaces"]: item.ref
-            for kind in ("finding", "research_conflict", "writing_basis")
+            for kind in RESEARCH_KINDS
             for item in self.store.list(study, kind)
             if item.body.get("replaces")
             and item.body.get("direction") == work.body["direction"]
@@ -763,16 +781,18 @@ class Harness:
             if ref in replacements:
                 pending.append(replacements[ref])
             if item.kind not in {
-                "work_result", "finding", "research_conflict", "writing_basis", "note", "report"
+                "work_result", "finding", "research_conflict", "writing_basis", "question_assessment", "note", "report"
             }:
                 continue
-            for key in ("refs", "support", "sources", "findings", "evidence"):
+            for key in ("refs", "support", "sources", "findings", "evidence", "assessments"):
                 values = item.body.get(key, [])
                 if isinstance(values, list):
                     pending.extend(
                         value for value in values
                         if isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value)
                     )
+            if item.kind == "question_assessment":
+                pending.extend(ref for check in item.body["checks"] for ref in check["refs"])
             if item.kind == "report" and item.body.get("basis"):
                 pending.append(item.body["basis"])
         return visited
@@ -785,10 +805,13 @@ class Harness:
         memory_override=None,
         pins_override=None,
         prepare_wire=True,
+        essential_only=False,
         section=None,
         offset=0,
         limit=20,
     ) -> dict[str, Any]:
+        model = self._model_for(work)
+        capacity = input_capacity(model)
         direction = self.store.get(study, work.body["direction"])
         control = self.store.control(study)
         plan = self.store.get(study, control.plan) if control.plan else None
@@ -797,7 +820,7 @@ class Harness:
         focused = work.body["role"] in {"investigator", "synthesizer"}
         related = self._focused_research_refs(study, work) if focused else set()
         mandatory = {
-            "provider": self.model.identity,
+            "provider": model.identity,
             "system": (
                 ROUTE_PROMPT
                 if work.body["role"] == "lead" and not control.approved
@@ -889,7 +912,7 @@ class Harness:
             basis_item = self.store.get(study, basis_ref)
             candidates.append(basis_item)
             candidates.extend(
-                self.store.get(study, ref) for ref in basis_item.body["findings"]
+                self.store.get(study, ref) for ref in [*basis_item.body["findings"], *basis_item.body.get("assessments", [])]
             )
 
         if work.body["role"] == "reviewer":
@@ -901,7 +924,7 @@ class Harness:
             candidates.extend(
                 item for ref in related
                 if (item := self.store.get(study, ref)).kind
-                in {"finding", "research_conflict", "note", "work_result"}
+                in {"finding", "research_conflict", "question_assessment", "note", "work_result"}
             )
         candidates.extend(
             self.store.get(study, ref)
@@ -915,6 +938,7 @@ class Harness:
                 "finding",
                 "research_conflict",
                 "writing_basis",
+                "question_assessment",
             }
             and not (
                 work.body["role"] == "reviewer"
@@ -952,6 +976,7 @@ class Harness:
         }
         directories.update(
             research_questions=knowledge["questions"],
+            research_inputs=knowledge["pending_inputs"],
             research_findings=knowledge["findings"],
             research_conflicts=knowledge["conflicts"],
         )
@@ -963,7 +988,7 @@ class Harness:
         if section is not None:
             if section not in directories:
                 raise ValueError("context section unavailable to this work")
-            return page(directories[section], offset, limit, self.context_chars // 3)
+            return page(directories[section], offset, limit, capacity // 3)
         memories = self._steps(study, "memory", work.ref, limit=1)
         active_memory = (
             memory_override
@@ -988,10 +1013,26 @@ class Harness:
             else:
                 mandatory[key] = []
         # Reserve the complete task and memory before allocating any growing directory.
-        essential = assemble(mandatory, [], active_memory, self.context_chars)
+        steps = self._steps(study, "step", work.ref, limit=1)
+        pending = [
+            a for a in (self.store.related(study, "observation", steps[-1].ref) if steps else [])
+            if a.body.get("step") == steps[-1].ref
+            and a.body.get("tool") in READ_TOOLS
+            and "error" not in a.body.get("result", {})
+        ]
+        candidates.extend(pending)
+        candidates = list({a.ref: a for a in candidates}.values())
+        priority_refs = {a.ref for a in pending}
+        essential = assemble(mandatory, pending, active_memory, capacity, priority_refs=priority_refs)
+        essential["omitted_count"] += len(candidates) - len(pending)
+        if essential_only:
+            prepare = getattr(model, "prepare", None)
+            if prepare:
+                essential = fit_provider(essential, prepare, priority_refs=priority_refs)
+            return essential
         allocation = min(
-            self.context_chars // 32,
-            max(0, self.context_chars - len(encode(essential)) - 256)
+            capacity // 32,
+            max(0, capacity - len(encode(essential)) - 256)
             // len(directories),
         )
         for key, items in directories.items():
@@ -1035,12 +1076,13 @@ class Harness:
             mandatory,
             candidates,
             active_memory,
-            self.context_chars,
+            capacity,
             direct_refs=[item["ref"] for item in directories["inputs"]],
+            priority_refs=priority_refs,
         )
-        prepare = getattr(self.model, "prepare", None)
+        prepare = getattr(model, "prepare", None)
         if prepare:
-            request = fit_provider(request, prepare)
+            request = fit_provider(request, prepare, priority_refs=priority_refs)
         if prepare and prepare_wire:
             previous = None
             steps = self._steps(study, "step", work.ref, limit=1)
@@ -1085,6 +1127,7 @@ class Harness:
         request_step=None,
         invoke_received=None,
     ):
+        model = self._model_for(self.store.get(study, work))
         retry = self._attempt(study, operation)
         attempt = retry.body["attempt"] if retry else 0
         key = retry.body["next"] if retry else operation
@@ -1101,7 +1144,7 @@ class Harness:
                 queued_at = self.scheduler.clock()
                 tokens = (
                     request.get("wire", {}).get("estimated_input_tokens", 0)
-                    + getattr(self.model, "max_tokens", 0)
+                    + getattr(model, "max_tokens", 0)
                     if request_step is not None
                     else 0
                 )
@@ -1122,7 +1165,7 @@ class Harness:
                             "at": admitted,
                             "resource": resource,
                             "tokens": tokens,
-                            "model": getattr(self.model, "model", None)
+                            "model": getattr(model, "model", None)
                             if request_step
                             else None,
                         },
@@ -1260,6 +1303,7 @@ class Harness:
         async with lock:
             control = self.store.control(study)
             work = self.store.require_work(study, work_ref, control.epoch)
+            model = self._model_for(work)
             if self.finished(study, work_ref):
                 return "finished"
             steps = self._steps(study, "step", work_ref, limit=1)
@@ -1280,7 +1324,7 @@ class Harness:
                 self._check_repeated(study, work_ref, control.epoch)
                 if (
                     steps
-                    and steps[0].body["request"]["provider"] != self.model.identity
+                    and steps[0].body["request"]["provider"] != model.identity
                 ):
                     raise NotAllowed("work is bound to its original model")
                 step = self.store.put(
@@ -1295,7 +1339,7 @@ class Harness:
                     (work_ref,),
                 )
             operation = identity("model", work_ref, step.ref)
-            if step.body["request"]["provider"] != self.model.identity:
+            if step.body["request"]["provider"] != model.identity:
                 raise NotAllowed("pending work requires its original model binding")
             if step.body["request"]["tool_versions"] != {
                 name: tool.binding for name, tool in self.tools.items()
@@ -1322,20 +1366,20 @@ class Harness:
                 step.ref,
                 operation,
                 step.body["request"],
-                lambda: self.model.complete(step.body["request"]),
-                getattr(self.model, "retry_delay", None),
-                getattr(self.model, "retry_on_resume", None),
+                lambda: model.complete(step.body["request"]),
+                getattr(model, "retry_delay", None),
+                getattr(model, "retry_on_resume", None),
                 getattr(
-                    self.model,
+                    model,
                     "quota_resource",
-                    getattr(self.model, "resource", "model"),
+                    getattr(model, "resource", "model"),
                 ),
                 request_step=step.ref,
             )
             # Always save the external result; only then check the admission fence.
             self.store.require_work(study, work_ref, control.epoch)
             try:
-                decode = getattr(self.model, "decode", None)
+                decode = getattr(model, "decode", None)
                 reply = Reply.from_json(decode(raw) if decode else raw)
                 if not reply.complete:
                     raise ValueError(
@@ -1485,7 +1529,7 @@ class Harness:
                         }
                         try:
                             result = (
-                                observe(envelope["value"], acquisition)
+                                envelope["value"] if envelope.get("research_reuse") else observe(envelope["value"], acquisition)
                                 if observe
                                 else envelope
                             )
@@ -1501,6 +1545,8 @@ class Harness:
                         "index": index,
                         "tool": call.name,
                         "result": result,
+                        "research_receipt": self._research_receipt(study, work, call, result,
+                            envelope.get("research_reuse") if call.name not in BUILTINS and not invalid else None),
                         "failure": identity("tool", call.name, call.arguments, result)
                         if (invalid or call.name in BUILTINS) and "error" in result
                         else None,
@@ -1548,8 +1594,60 @@ class Harness:
                 (step,),
             )
 
+    def _research_request(self, call):
+        tool = self.tools[call.name]
+        args = {key: call.arguments[key] for key in tool.research_fields if key in call.arguments and key != "force_refresh"}
+        if tool.resource_map:
+            args["provider"] = call.arguments.get("provider", tool.resource)
+        return args
+
+    def _research_receipt(self, study, work, call, result, reused=None):
+        tool = self.tools.get(call.name)
+        local = call.name in {"read_source", "snapshot_local", "run_analysis"}
+        if not local and tool is None:
+            return {}
+        sources = []
+        candidates = [result.get("ref"), result.get("source"), result.get("log")]
+        candidates.extend(x.get("ref") for x in result.get("sources", []) if isinstance(x, dict))
+        candidates.extend(x.get("ref") for x in result.get("files", []) if isinstance(x, dict))
+        for ref in candidates:
+            if isinstance(ref, str):
+                try:
+                    item = self.store.get(study, ref)
+                except ValueError:
+                    continue
+                if item.kind == "source":
+                    sources.append(ref)
+                elif item.kind == "analysis_result":
+                    sources.extend([item.body["log"], *(x["ref"] for x in item.body["files"])])
+        failures = bool(result.get("failures") or result.get("error") or (call.name == "run_analysis" and result.get("status") != "succeeded"))
+        entries = result.get("results", result.get("records", result.get("ids", sources)))
+        if call.name == "run_analysis" and failures:
+            entries = result.get("files", [])
+        outcome = "partial" if failures and entries else "blocked" if failures else "ok" if entries else "empty"
+        if tool and not tool.research_fields and not failures:
+            outcome = "unclassified"
+        request = self._research_request(call) if tool else {k: call.arguments[k] for k in ("ref", "catalog", "path", "offset", "limit") if k in call.arguments}
+        receipt = {"input": call.name == "run_analysis" or bool(tool and ("query" in tool.research_fields or not tool.research_fields or not sources)) or failures, "outcome": outcome,
+                   "material": "text_range" if call.name == "read_source" else "data" if result.get("content_type") == "structured_data" else "metadata",
+                   "sources": list(dict.fromkeys(sources)), "request": request,
+                   "refreshed": call.arguments.get("force_refresh") is True,
+                   "binding": tool.binding if tool else "local-v4"}
+        if tool:
+            receipt["request_key"] = identity(tool.binding, request)
+        if reused:
+            receipt["reused_from"] = reused
+        return receipt
+
     async def _external(self, study, work, epoch, step, index, call):
         tool = self.tools[call.name]
+        if tool.cache_research and not call.arguments.get("force_refresh") and self.store.operation_status(study, identity("tool", step, index)) is None:
+            direction = self.store.get(study, work).body["direction"]
+            key = identity(tool.binding, self._research_request(call))
+            old = self.store.reusable_research_result(study, direction, key)
+            if old:
+                receipt = old.body["research_receipt"]
+                return {"value": old.body["result"], "research_reuse": receipt.get("reused_from") or old.ref}
         if (
             tool.reuse
             and self.store.operation_status(study, identity("tool", step, index))
@@ -1659,10 +1757,38 @@ class Harness:
             study, "step_done", {"step": step, "failure": failure}, (work, step)
         )
 
+    def _read_fits(self, study, work, step, index, call):
+        base = self._request(study, work, essential_only=True, prepare_wire=False)
+        model = self._model_for(work)
+        capacity = input_capacity(model)
+        prepare = getattr(model, "prepare", None)
+
+        def fits(result):
+            body = {
+                "step": step, "index": index, "tool": call.name,
+                "result": result, "research_receipt": self._research_receipt(study, work, call, result), "failure": None,
+                "direction": work.body["direction"],
+            }
+            candidate = {**base, "context": [*base["context"], {
+                "ref": identity("read-preview", body), "kind": "observation", "body": body,
+            }]}
+            if len(encode(candidate)) > capacity:
+                return False
+            try:
+                if prepare:
+                    prepare(candidate, None)
+            except ContextCapacity:
+                return False
+            return True
+
+        return fits
+
     def _builtin(
         self, study: str, work: Artifact, epoch: int, step: str, index: int, call: Call
     ) -> Any:
         self.store.require_work(study, work.ref, epoch)
+        capacity = input_capacity(self._model_for(work))
+        fits = self._read_fits(study, work, step, index, call) if call.name in READ_TOOLS else None
         direction = work.body["direction"]
         if not self.store.control(study).approved and call.name in {
             "read_source",
@@ -1675,6 +1801,7 @@ class Harness:
             "publish_report",
             "record_finding",
             "record_conflict",
+            "assess_questions",
             "prepare_writing",
             "read_draft",
             "patch_draft",
@@ -1684,7 +1811,7 @@ class Harness:
         if call.name in {"read_source", "read_artifact_range", "read_report"}:
             args = {
                 "offset": 0,
-                "limit": 20 if call.name == "read_report" else self.context_chars // 3,
+                "limit": 20 if call.name == "read_report" else capacity,
                 **args,
             }
         parents = (work.ref, direction, step)
@@ -1696,6 +1823,10 @@ class Harness:
                 offset=args["offset"],
                 limit=args["limit"],
             )
+        if call.name == "assess_questions":
+            items = self.research.assess_questions(study, work.ref, epoch,
+                _operation=identity(step, index, call.name), **args)
+            return {"assessments": [a.ref for a in items]}
         if call.name in {"record_finding", "record_conflict", "prepare_writing"}:
             method = getattr(self.research, call.name)
             item = method(
@@ -1707,6 +1838,7 @@ class Harness:
             )
             return {
                 "ref": item.ref,
+                "assessments": item.body.get("assessments", []),
                 "kind": item.kind,
                 "status": item.body.get("status", item.body.get("disposition")),
                 "semantic_verification": "Agent judgment, not host certification",
@@ -1715,7 +1847,7 @@ class Harness:
             }
         if call.name == "read_draft":
             return self.writing.read(
-                study, work.ref, epoch, capacity=self.context_chars // 3, **args
+                study, work.ref, epoch, capacity=capacity, fits=fits, **args
             )
         if call.name in {"draft_report", "patch_draft"}:
             return self.writing.save(
@@ -1729,8 +1861,6 @@ class Harness:
             )
         if call.name == "pin_evidence":
             refs = list(dict.fromkeys(args["refs"]))
-            if len(encode(refs)) > self.context_chars // 4:
-                raise ValueError("pinned evidence exceeds context allocation")
             if any(self.store.get(study, ref).kind != "source" for ref in refs):
                 raise ValueError("evidence anchors must name source snapshots")
             self._request(study, work, pins_override=refs, prepare_wire=False)
@@ -1835,10 +1965,6 @@ class Harness:
             )
             return {"ref": item.ref}
         if call.name == "save_memory":
-            if len(encode(args)) > self.context_chars // 4:
-                raise ValueError(
-                    "memory too large; preserve critical facts and references"
-                )
             prospective = Artifact(
                 identity("memory-preview", args),
                 study,
@@ -1872,7 +1998,7 @@ class Harness:
             if offset < 0 or limit < 1:
                 raise ValueError("invalid artifact range")
             offset = min(offset, len(body))
-            limit = min(limit, self.context_chars // 3)
+            limit = min(limit, capacity)
             relations = self._relations(study, artifact)
 
             def artifact_page(count):
@@ -1892,7 +2018,8 @@ class Harness:
             return fit_read_result(
                 artifact_page,
                 min(limit, len(body) - offset),
-                min(INLINE_TOOL_RESULT_CHARS, self.context_chars // 3),
+                capacity,
+                fits=fits,
             )
         if call.name == "read_catalog":
             return self.workspace.catalog_page(
@@ -1948,7 +2075,7 @@ class Harness:
             if offset < 0 or limit < 1:
                 raise ValueError("invalid source range")
             offset = min(offset, len(text))
-            limit = min(limit, self.context_chars // 3)
+            limit = min(limit, capacity)
 
             def source_page(count):
                 end = offset + count
@@ -1987,7 +2114,8 @@ class Harness:
             return fit_read_result(
                 source_page,
                 min(limit, len(text) - offset),
-                min(INLINE_TOOL_RESULT_CHARS, self.context_chars // 3),
+                capacity,
+                fits=fits,
             )
         if call.name == "read_artifact":
             artifact = self.store.get(study, args["ref"])
@@ -2000,9 +2128,8 @@ class Harness:
                 "body": artifact.body,
                 "parents": self._relations(study, artifact),
             }
-            if len(encode(result)) > min(
-                INLINE_TOOL_RESULT_CHARS, self.context_chars // 2
-            ):
+            assert fits is not None
+            if not fits(result):
                 return self._builtin(
                     study,
                     work,
@@ -2105,18 +2232,12 @@ class Harness:
             if offset < 0 or limit < 1:
                 raise ValueError("invalid report page")
             offset = min(offset, len(parts))
-            shown: list[dict] = []
-            for part in parts[offset : offset + min(limit, 20)]:
-                if shown and len(encode([*shown, part])) > min(
-                    self.context_chars // 4, 6000
-                ):
-                    break
-                shown.append(part)
-            evidence = page(report.body["evidence"], 0, 20, self.context_chars // 32)[
+            shown = parts[offset : offset + limit]
+            evidence = page(report.body["evidence"], 0, 20, capacity // 32)[
                 "items"
             ]
             inputs = page(
-                self._relations(study, report), 0, 20, self.context_chars // 32
+                self._relations(study, report), 0, 20, capacity // 32
             )["items"]
             metrics = report_metrics(report.body)
 
@@ -2144,7 +2265,8 @@ class Harness:
             return fit_read_result(
                 report_page,
                 len(shown),
-                min(INLINE_TOOL_RESULT_CHARS, self.context_chars // 3),
+                capacity,
+                fits=fits,
             )
         elif call.name == "submit_review":
             if work.body.get("review_mode", "final") == "check":

@@ -8,6 +8,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from research_fixture import basis_arguments
+
 from epivra.application import ResearchService
 from epivra.domain import Call, Conflict, NotAllowed, Reply
 from epivra.harness import BUILTINS, Harness, validate
@@ -17,6 +19,8 @@ from epivra.writing import WritingWorkspace, apply_edits
 
 
 class Echo:
+    context_tokens = 49024
+    max_tokens = 1024
     identity = "workspace-contract-fixture"
     call = None
 
@@ -63,6 +67,8 @@ class WorkspaceTests(unittest.IsolatedAsyncioTestCase):
 
     async def call(self, name, args, work=None):
         work = work or self.owner
+        if name == "prepare_writing" and "coverage" in args:
+            args = basis_arguments(self.store, args)
         self.model.call = Call(name, args)
         await self.h.step("s", work.ref)
         result = self.h._steps("s", "observation", work.ref)[-1].body
@@ -571,6 +577,8 @@ class WholeServiceTest(unittest.IsolatedAsyncioTestCase):
                 )
 
                 class Model:
+                    context_tokens = 49024
+                    max_tokens = 1024
                     identity = "whole-workspace-fixture"
 
                     async def complete(self, request):
@@ -631,7 +639,7 @@ class WholeServiceTest(unittest.IsolatedAsyncioTestCase):
                             elif not request["writing_basis"]:
                                 call = Call(
                                     "prepare_writing",
-                                    {
+                                    basis_arguments(store, {
                                         "findings": [findings[0].ref],
                                         "coverage": [
                                             {
@@ -640,7 +648,7 @@ class WholeServiceTest(unittest.IsolatedAsyncioTestCase):
                                             }
                                         ],
                                         "rationale": "Registry covers both events; no extrapolation.",
-                                    },
+                                    }),
                                 )
                             elif not draft:
                                 call = Call(

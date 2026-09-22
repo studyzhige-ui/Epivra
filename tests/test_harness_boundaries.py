@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from epivra.domain import Call, Conflict, Reply, UnknownOutcome
+from epivra.domain import Call, Conflict, Reply, UnknownOutcome, encode
 from epivra.harness import STRING, Harness, object_schema
 from epivra.harness import Tool as BaseTool
 from epivra.scheduling import Scheduler
@@ -20,6 +20,8 @@ def Tool(*args, **kwargs):
 
 
 class Model:
+    context_tokens = 49024
+    max_tokens = 1024
     identity = "fixture"
 
     def __init__(self, calls=()):
@@ -487,7 +489,9 @@ class BoundaryTests(unittest.IsolatedAsyncioTestCase):
         )
         source = self.store.put("s", "source", {"text": "Rare contradictory evidence"})
         model = Model((Call("pin_evidence", {"refs": [source.ref]}),))
-        harness = Harness(self.store, model, context_chars=16000)
+        harness = Harness(self.store, model)
+        essential = harness._request("s", self.work, essential_only=True)
+        model.context_tokens = len(encode(essential)) + model.max_tokens + 2048
         await harness.step("s", self.work.ref)
         for i in range(1000):
             self.store.put(
@@ -501,7 +505,7 @@ class BoundaryTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreater(before["omitted_count"], 0)
         self.store.close()
         self.store = Store(self.path)
-        after = Harness(self.store, model, context_chars=16000)._request("s", self.work)
+        after = Harness(self.store, model)._request("s", self.work)
         self.assertEqual(before, after)
         self.assertEqual(
             "Rare contradictory evidence", self.store.get("s", source.ref).body["text"]

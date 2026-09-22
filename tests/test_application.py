@@ -5,6 +5,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from research_fixture import basis_arguments
+
 from epivra.application import ResearchService
 from epivra.domain import Call, Reply
 from epivra.harness import Harness
@@ -24,6 +26,8 @@ class WorkflowTests(unittest.IsolatedAsyncioTestCase):
         interrupted = False
 
         class Model:
+            context_tokens = 49024
+            max_tokens = 1024
             identity = "cooperative-scheduling"
 
             async def complete(inner, request):
@@ -107,6 +111,8 @@ class WorkflowTests(unittest.IsolatedAsyncioTestCase):
         source_ref = None
 
         class LocalModel:
+            context_tokens = 49024
+            max_tokens = 1024
             identity = "offline-mainline"
 
             async def complete(inner, request):
@@ -194,12 +200,16 @@ class WorkflowTests(unittest.IsolatedAsyncioTestCase):
                                 "writer" if direct else "synthesizer",
                                 [child_results["investigator"]["work_result"]],
                             )
-                        calls = [
-                            Call(
-                                "delegate_work",
-                                {"role": next_role, "task": task, "refs": refs},
-                            )
-                        ]
+                        if next_role == "writer" and not request.get("writing_basis"):
+                            findings = store.list("s", "finding")
+                            if not findings:
+                                calls = [Call("record_finding", {"statement": "The sample measured 17; no population extrapolation", "status": "observation", "support": [source_ref]})]
+                            else:
+                                args = basis_arguments(store, {"coverage": [{"question": 0, "findings": [findings[-1].ref]}], "rationale": "Sample-only answer from original and helper delivery"})
+                                args["updates"][0]["checks"] = [{"angle": "Adopt helper's sample scope", "refs": [r.ref], "effect": "changed", "reason": "The fixture result supplies the scoped count"} for r in store.list("s", "work_result") if store.get("s", r.body["producer"]).body["role"] in {"investigator", "synthesizer"}]
+                                calls = [Call("prepare_writing", args)]
+                        else:
+                            calls = [Call("delegate_work", {"role": next_role, "task": task, "refs": refs})]
                         # Pending work becomes visible on next model step; wait then.
                 elif role == "investigator":
                     if "discover_local" not in results:
@@ -291,13 +301,13 @@ class WorkflowTests(unittest.IsolatedAsyncioTestCase):
                     calls = [
                         Call(
                             "prepare_writing",
-                            {
+                            basis_arguments(store, {
                                 "findings": [finding.ref],
                                 "coverage": [
                                     {"question": 0, "findings": [finding.ref]}
                                 ],
                                 "rationale": "The provided sample answers this fixture's question, retaining its limited sample scope.",
-                            },
+                            }),
                         )
                     ]
                 elif role == "writer":
@@ -375,6 +385,8 @@ class WorkflowTests(unittest.IsolatedAsyncioTestCase):
         entered, release = asyncio.Event(), asyncio.Event()
 
         class Model:
+            context_tokens = 49024
+            max_tokens = 1024
             identity = "offline-steer"
             seen = []
 
@@ -412,6 +424,8 @@ class WorkflowTests(unittest.IsolatedAsyncioTestCase):
         work = store.work("s", c.ref, "investigator", "inspect")
 
         class Model:
+            context_tokens = 49024
+            max_tokens = 1024
             identity = "offline-range"
 
             async def complete(inner, request):
@@ -429,7 +443,9 @@ class WorkflowTests(unittest.IsolatedAsyncioTestCase):
                     ),
                 ).to_json()
 
-        harness = Harness(store, Model(), context_chars=24000)
+        model = Model()
+        model.context_tokens = 25024
+        harness = Harness(store, model)
         # Leave room for the complete tool schema; returned source page remains
         # checked at its original requested 100-character bound.
         await harness.step("s", work.ref)
@@ -456,6 +472,8 @@ class CollaborationTests(unittest.IsolatedAsyncioTestCase):
                 root_calls = 0
 
                 class Model:
+                    context_tokens = 49024
+                    max_tokens = 1024
                     identity = "offline-collaboration"
 
                     async def complete(inner, request):
@@ -540,6 +558,8 @@ class CollaborationTests(unittest.IsolatedAsyncioTestCase):
                 store.create("s", "Plan", {})
 
                 class Model:
+                    context_tokens = 49024
+                    max_tokens = 1024
                     identity = "conflict-fixture"
 
                     async def complete(inner, request):

@@ -221,6 +221,8 @@ class MaterialAsyncTests(unittest.IsolatedAsyncioTestCase):
                 catalog = Workspace(store).discover("s", str(root))
 
                 class Model:
+                    context_tokens = 49024
+                    max_tokens = 1024
                     identity = "fixture"
 
                     async def complete(self, request):

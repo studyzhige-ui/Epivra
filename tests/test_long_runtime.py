@@ -8,6 +8,8 @@ from epivra.storage import Store
 
 
 class Model:
+    context_tokens = 49024
+    max_tokens = 1024
     identity = "long-runtime-fixture"
     calls = ()
 
@@ -67,7 +69,7 @@ class LongContextTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([child.ref for child in children], seen)
         request = self.harness._request("s", self.lead)
         self.assertEqual(150, request["navigation"]["delegated_work"]["total"])
-        self.assertLessEqual(len(encode(request)), 48000)
+        self.assertLessEqual(len(encode(request)), self.model.context_tokens - self.model.max_tokens)
         self.assertEqual(self.brief, request["research_scope"]["brief"])
         self.assertEqual(self.c.direction, request["direction_ref"])
         self.store.close()
@@ -106,7 +108,7 @@ class LongContextTests(unittest.IsolatedAsyncioTestCase):
         # Keep this a near-capacity navigation test when the advertised capability
         # surface changes; do not assume a particular prompt/schema byte count.
         base = self.harness._request("s", self.lead)
-        task_chars = self.harness.context_chars - len(encode(base)) - 9000
+        task_chars = (self.harness.model.context_tokens - self.harness.model.max_tokens) - len(encode(base)) - 9000
         self.c = self.store.command(
             "s", "long-task-direction", self.c.ref, "steer",
             {"request": "Compare flood adaptation with detailed instructions"},
@@ -130,7 +132,7 @@ class LongContextTests(unittest.IsolatedAsyncioTestCase):
         after = self.harness._request("s", self.lead)
         self.assertEqual(before["memory"], after["memory"])
         self.assertEqual(before["task"], after["task"])
-        self.assertLessEqual(len(encode(after)), 48000)
+        self.assertLessEqual(len(encode(after)), self.model.context_tokens - self.model.max_tokens)
 
     async def test_old_frozen_request_can_replay_after_readonly_tool_added(self):
         original = self.harness._request("s", self.lead)
@@ -167,7 +169,7 @@ class LongContextTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_small_preview_allocation_does_not_block_clarifications(self):
         base = self.harness._request("s", self.lead)
-        task_chars = self.harness.context_chars - len(encode(base)) - 1000
+        task_chars = (self.harness.model.context_tokens - self.harness.model.max_tokens) - len(encode(base)) - 1000
         self.c = self.store.command(
             "s", "long-task-direction", self.c.ref, "steer",
             {"request": "Compare flood adaptation with detailed instructions"},
@@ -189,7 +191,7 @@ class LongContextTests(unittest.IsolatedAsyncioTestCase):
             "s", self.lead.ref, self.c.epoch, question.ref, "Use original scope", []
         )
         request = self.harness._request("s", self.lead)
-        self.assertLessEqual(len(encode(request)), 48000)
+        self.assertLessEqual(len(encode(request)), self.model.context_tokens - self.model.max_tokens)
         page = self.harness._request("s", self.lead, section="clarifications")
         self.assertEqual(question.ref, page["items"][0]["question"])
 

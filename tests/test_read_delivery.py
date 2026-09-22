@@ -11,7 +11,7 @@ from research_fixture import prepare_basis
 
 from epivra.adapters import DeepSeek
 from epivra.context import fit_read_result
-from epivra.domain import INLINE_TOOL_RESULT_CHARS, Call, ContextCapacity, encode
+from epivra.domain import Call, ContextCapacity, encode
 from epivra.harness import BUILTINS, Harness
 from epivra.native_models import _result as native_result
 from epivra.review import public_inputs
@@ -140,7 +140,7 @@ class DeliveryTests(unittest.IsolatedAsyncioTestCase):
             if v.get("observation_ref") == observation.ref and "result" in v
         ]
         self.assertEqual([observation.body["result"]], delivered)
-        self.assertLessEqual(len(encode(delivered[0])), INLINE_TOOL_RESULT_CHARS)
+        self.assertLessEqual(len(encode(delivered[0])), self.model.context_tokens - self.model.max_tokens)
         self.assertEqual(
             delivered[0],
             native_result({**observation.body, "_ref": observation.ref})["result"],
@@ -175,6 +175,7 @@ class DeliveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(text, "".join(collected))
 
     async def test_artifact_reader_never_returns_another_pointer_for_its_own_page(self):
+        self.model.context_tokens = 60000
         body = {
             "text": '\\"\n资料😀' * 4000,
             "conditions": ["retain", "counterevidence"],
@@ -225,6 +226,20 @@ class DeliveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("", eof.body["result"]["text"])
         self.assertIsNone(eof.body["result"]["next_offset"])
 
+    async def test_large_draft_page_reaches_model_and_honors_explicit_limit(self):
+        await self.call(self.inv, "finish_work", {"text": "Investigation complete", "refs": []})
+        writer = self.child("writer", "Write")
+        text = "Original author text.\n" * 3000
+        saved = await self.call(writer, "draft_report", {"text": text, "evidence": []})
+        self.assertIsNone(saved.body["failure"])
+        page = await self.call(writer, "read_draft", {})
+        self.assertEqual(text, page.body["result"]["text"])
+        self.assertGreater(len(page.body["result"]["text"]), 12000)
+        self.assert_public_delivery(writer, page)
+        small = await self.call(writer, "read_draft", {"offset": 2, "limit": 7})
+        self.assertEqual(text[2:9], small.body["result"]["text"])
+        self.assertEqual(9, small.body["result"]["next_offset"])
+
     async def test_role_permissions_and_removed_optional_actions(self):
         for name in ("search_sources", "read_manuscript", "revise_report"):
             self.assertNotIn(name, BUILTINS)
@@ -263,6 +278,7 @@ class DeliveryTests(unittest.IsolatedAsyncioTestCase):
         self.assert_public_delivery(self.inv, obs)
 
     async def test_report_page_does_not_imply_acceptance_before_actual_delivery(self):
+        self.model.context_tokens = 100000
         text = "事实与限制" * 12000
         report = self.store.put(
             "s", "report", {"text": text, "evidence": []}, (self.control.direction,)

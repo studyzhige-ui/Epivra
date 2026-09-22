@@ -118,11 +118,39 @@ def create_model(policy, keys, *, client=None):
     return adapter, api
 
 
+SUBAGENT_ROLES = ("investigator", "synthesizer", "writer", "reviewer")
+ROLE_MODEL_FIELDS = {
+    "provider",
+    "model",
+    "region",
+    "context_tokens",
+    "max_tokens",
+    "stream_model",
+    "reasoning_effort",
+    "model_profile",
+}
+
+
 def freeze_model_settings(policy):
+    overrides = policy.get("role_models", {})
+    if not isinstance(overrides, dict) or overrides.keys() - set(SUBAGENT_ROLES):
+        raise ValueError("invalid subagent roles")
+    frozen_roles = {}
+    for role, settings in overrides.items():
+        if (
+            not isinstance(settings, dict)
+            or not settings
+            or settings.keys() - ROLE_MODEL_FIELDS
+            or not settings.get("provider")
+            or not settings.get("model")
+        ):
+            raise ValueError("role model requires explicit provider and model settings")
+        frozen_roles[role] = freeze_model_settings(settings)
     provider, model, context, output, _ = model_settings(policy)
     preset = provider.default_model
     return {
         **policy,
+        **({"role_models": frozen_roles} if "role_models" in policy else {}),
         "provider": provider.id,
         "model": model,
         "context_tokens": context,

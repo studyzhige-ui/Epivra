@@ -264,9 +264,9 @@ class NativeModelTests(unittest.IsolatedAsyncioTestCase):
             prepared = model.prepare(context(), previous)
             payload_text = json.dumps(prepared["payload"])
             self.assertIn("large-result", payload_text)
-            self.assertIn("body_omitted", payload_text)
+            self.assertNotIn("body_omitted", payload_text)
             self.assertIn("opaque-signature", payload_text)
-            self.assertNotIn("x" * 15000, payload_text)
+            self.assertIn("x" * 15000, payload_text)
 
     def test_paired_tool_exchange_rebuilds_as_complete_public_state_on_pressure(self):
         model = Anthropic(

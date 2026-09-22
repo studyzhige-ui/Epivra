@@ -129,7 +129,7 @@ class TimingInvokeTests(unittest.IsolatedAsyncioTestCase):
         self.clock = Clock()
         self.harness = Harness(
             self.store,
-            type("NoModel", (), {"identity": "offline"})(),
+            type("NoModel", (), {"identity": "offline", "context_tokens": 49024, "max_tokens": 1024})(),
             scheduler=Scheduler(clock=self.clock),
         )
 

@@ -34,6 +34,8 @@ class AuthoringRuntimeTests(unittest.IsolatedAsyncioTestCase):
         calls = []
         source = self.source.ref
         class Model:
+            context_tokens = 49024
+            max_tokens = 1024
             identity = "late-writer-fixture"
             owner_call = None
             async def complete(self, request):
@@ -76,6 +78,8 @@ class AuthoringRuntimeTests(unittest.IsolatedAsyncioTestCase):
         cancelled, release = asyncio.Event(), asyncio.Event()
         store = self.store
         class Model:
+            context_tokens = 49024
+            max_tokens = 1024
             identity = "blocked-writer-cancellation"
             async def complete(inner, request):
                 if request["role"] == "writer":
@@ -110,6 +114,8 @@ class AuthoringRuntimeTests(unittest.IsolatedAsyncioTestCase):
         writer = self.store.work("s", self.c.ref, "writer", "Write", (), self.owner.ref)
         started, release = asyncio.Event(), asyncio.Event()
         class Model:
+            context_tokens = 49024
+            max_tokens = 1024
             identity = "late-provider-failure"
             async def complete(inner, request):
                 started.set()
@@ -135,6 +141,8 @@ class AuthoringRuntimeTests(unittest.IsolatedAsyncioTestCase):
         writer = self.store.work("s", self.c.ref, "writer", "Write", (), self.owner.ref)
         started, release = asyncio.Event(), asyncio.Event()
         class Model:
+            context_tokens = 49024
+            max_tokens = 1024
             identity = "completed-work-failure"
             async def complete(inner, request):
                 started.set()
@@ -155,6 +163,8 @@ class AuthoringRuntimeTests(unittest.IsolatedAsyncioTestCase):
         source, store = self.source.ref, self.store
         trace = []
         class Model:
+            context_tokens = 49024
+            max_tokens = 1024
             identity = "sequential-publication-fixture"
             async def complete(self, request):
                 role = request["role"]

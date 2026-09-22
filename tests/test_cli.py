@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
+from markdown_it import MarkdownIt
 from prompt_toolkit.application import create_app_session
 from prompt_toolkit.input import create_pipe_input
 from prompt_toolkit.output import DummyOutput
@@ -40,6 +41,46 @@ class UI:
 
 
 class CLITests(unittest.IsolatedAsyncioTestCase):
+    async def test_markdown_export_preserves_author_links_and_generated_citations(self):
+        text = "See [1]. Claim [1].\n\n[1]: https://author.example\n"
+        start = text.index("[1]", text.index("Claim"))
+        report = {"ref": "fixture", "text": text, "citation_marks": [
+            {"start": start, "end": start + 3, "number": 1},
+        ]}
+        path = self.root / "report.md"
+
+        async def sender(root, request):
+            if request["action"] == "status":
+                return {"published": True, "source_count": 1, "request": "fixture"}
+            return report
+
+        ui = UI(choices=["report", None], confirms=[True], paths=[path])
+        await Workbench(self.root, ui, sender).study("s")
+        html = MarkdownIt().render(path.read_text(encoding="utf-8"))
+        self.assertEqual(1, html.count('href="https://author.example"'))
+        self.assertIn("Claim [1].", html)
+
+    async def test_mcp_only_local_scope_reaches_host_without_file_permission(self):
+        calls = []
+
+        async def sender(root, request):
+            calls.append(request)
+            if request["action"] == "create":
+                return {"study": "fixture"}
+            return {"control": "current", "paused": True, "request": "fixture"}
+
+        ui = UI(choices=["local", "done", None], texts=["Use authorized MCP"], confirms=[True])
+        with (
+            patch("epivra.cli.cli_settings.load", return_value={"mcp_servers": ["documents"]}),
+            patch("epivra.cli.cli_settings.configured", return_value={"DEEPSEEK_API_KEY"}),
+        ):
+            await Workbench(self.root, ui, sender).new()
+        created = next(call for call in calls if call["action"] == "create")
+        self.assertEqual(["documents"], created["mcp_servers"])
+        self.assertEqual([], created["local_roots"])
+        self.assertFalse(created["web"])
+        self.assertFalse(any(call["action"] == "import_file" for call in calls))
+
     async def asyncSetUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)

@@ -131,3 +131,30 @@ def summarize(records):
                 group["totals"][field] = (group["totals"][field] or 0) + value
                 group["reported_calls"][field] += 1
     return list(groups.values())
+
+
+def research_effort(artifacts):
+    """Observable overhead, not a semantic waste score or estimated provider bill."""
+    counts = {"assessment_calls": 0, "preparation_calls": 0, "atomic_finalizations": 0,
+              "research_cache_hits": 0, "acquisition_batches": 0, "explicit_refreshes": 0,
+              "draft_versions": 0, "editor_results": 0, "assessment_versions": 0}
+    artifacts = list(artifacts)
+    assessment_operations = {a.body.get("operation") for a in artifacts if a.kind == "question_assessment" and a.body.get("operation")}
+    for item in artifacts:
+        kind, body = item.kind, item.body
+        if kind == "report":
+            counts["draft_versions"] += 1
+        elif kind == "review":
+            counts["editor_results"] += 1
+        elif kind == "question_assessment":
+            counts["assessment_versions"] += 1
+        elif kind == "observation":
+            counts["assessment_calls"] += body.get("tool") == "assess_questions"
+            counts["preparation_calls"] += body.get("tool") == "prepare_writing"
+            receipt = body.get("research_receipt", {})
+            counts["research_cache_hits"] += bool(receipt.get("reused_from"))
+            counts["acquisition_batches"] += bool(receipt.get("input") and not receipt.get("reused_from"))
+            counts["explicit_refreshes"] += receipt.get("refreshed") is True
+        elif kind == "writing_basis":
+            counts["atomic_finalizations"] += body.get("operation") in assessment_operations
+    return counts
