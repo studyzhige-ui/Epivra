@@ -8,6 +8,7 @@ from contextlib import asynccontextmanager
 from urllib.parse import urlsplit
 
 from .domain import identity
+from .local_security import protect_if_present
 
 
 def servers(root):
@@ -101,7 +102,7 @@ def secret(root, name):
         return os.environ[name]
     path = root / ".env"
     for line in (
-        path.read_text(encoding="utf-8") if path.exists() else ""
+        path.read_text(encoding="utf-8") if protect_if_present(path) else ""
     ).splitlines():
         if not line.lstrip().startswith("#") and "=" in line:
             key, value = line.split("=", 1)

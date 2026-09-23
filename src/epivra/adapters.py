@@ -17,6 +17,7 @@ from typing import Any
 import httpx
 
 from .domain import ContextCapacity, encode, identity
+from .local_security import protect_if_present
 
 
 def _wire_json(value):
@@ -155,7 +156,7 @@ def credentials(path: Path) -> dict[str, str]:
     }
     result = {}
     for line in (
-        path.read_text(encoding="utf-8") if path.exists() else ""
+        path.read_text(encoding="utf-8") if protect_if_present(path) else ""
     ).splitlines():
         if "=" in line and not line.lstrip().startswith("#"):
             key, value = line.split("=", 1)
@@ -202,6 +203,10 @@ class JsonAPI:
         if not isinstance(key, str) or not key.strip():
             raise ValueError("credential required")
         self._key = key
+
+    @property
+    def authorization_identity(self) -> str:
+        return identity("authorization-v1", self.origin, self.auth_header, self._key)
 
     def _headers(self):
         return {

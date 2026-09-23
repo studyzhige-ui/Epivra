@@ -74,7 +74,7 @@ ALLOWED = {
         "models",
         "web_providers",
     },
-    "mcp_client": {"domain"},
+    "mcp_client": {"domain", "local_security"},
     "mcp_tools": {"domain", "harness", "workspace", "mcp_client"},
     "mcp_server": {"host", "locale"},
     "cli": {
@@ -88,7 +88,7 @@ ALLOWED = {
         "webui",
     },
     "terminal": {"locale"},
-    "cli_settings": {"adapters", "model_catalog", "web_providers"},
+    "cli_settings": {"adapters", "local_security", "model_catalog", "web_providers"},
     "host": {
         "local_security",
         "presentation",
@@ -115,7 +115,7 @@ ALLOWED = {
     "web_providers": {"adapters", "domain"},
     "public_sources": {"adapters"},
     "scheduling": set(),
-    "adapters": {"domain"},
+    "adapters": {"domain", "local_security"},
     "__init__": set(),
     "domain": set(),
     "prompts": set(),

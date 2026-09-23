@@ -71,6 +71,7 @@ class Tool:
 
     research_fields: tuple[str, ...] = ()
     cache_research: bool = False
+    research_authorization: Callable[[dict[str, Any]], str] | None = None
 
     @property
     def binding(self) -> str:
@@ -85,6 +86,11 @@ class Tool:
             self.resource,
             *([self.resource_map] if self.resource_map is not None else []),
         )
+
+    def research_key(self, request: dict[str, Any]) -> str:
+        if self.research_authorization is None:
+            return identity(self.binding, request)
+        return identity(self.binding, self.research_authorization(request), request)
 
 
 def object_schema(properties: dict[str, Any]) -> dict[str, Any]:
@@ -1126,6 +1132,7 @@ class Harness:
         resource="external",
         request_step=None,
         invoke_received=None,
+        research_key=None,
     ):
         model = self._model_for(self.store.get(study, work))
         retry = self._attempt(study, operation)
@@ -1168,6 +1175,7 @@ class Harness:
                             "model": getattr(model, "model", None)
                             if request_step
                             else None,
+                            **({"research_key": research_key} if research_key else {}),
                         },
                     )
                     if raw is None:
@@ -1546,7 +1554,8 @@ class Harness:
                         "tool": call.name,
                         "result": result,
                         "research_receipt": self._research_receipt(study, work, call, result,
-                            envelope.get("research_reuse") if call.name not in BUILTINS and not invalid else None),
+                            envelope.get("research_reuse") if call.name not in BUILTINS and not invalid else None,
+                            envelope.get("research_key") if call.name not in BUILTINS and not invalid else None),
                         "failure": identity("tool", call.name, call.arguments, result)
                         if (invalid or call.name in BUILTINS) and "error" in result
                         else None,
@@ -1601,7 +1610,7 @@ class Harness:
             args["provider"] = call.arguments.get("provider", tool.resource)
         return args
 
-    def _research_receipt(self, study, work, call, result, reused=None):
+    def _research_receipt(self, study, work, call, result, reused=None, request_key=None):
         tool = self.tools.get(call.name)
         local = call.name in {"read_source", "snapshot_local", "run_analysis"}
         if not local and tool is None:
@@ -1634,20 +1643,20 @@ class Harness:
                    "refreshed": call.arguments.get("force_refresh") is True,
                    "binding": tool.binding if tool else "local-v4"}
         if tool:
-            receipt["request_key"] = identity(tool.binding, request)
+            receipt["request_key"] = request_key or tool.research_key(request)
         if reused:
             receipt["reused_from"] = reused
         return receipt
 
     async def _external(self, study, work, epoch, step, index, call):
         tool = self.tools[call.name]
+        request_key = tool.research_key(self._research_request(call))
         if tool.cache_research and not call.arguments.get("force_refresh") and self.store.operation_status(study, identity("tool", step, index)) is None:
             direction = self.store.get(study, work).body["direction"]
-            key = identity(tool.binding, self._research_request(call))
-            old = self.store.reusable_research_result(study, direction, key)
+            old = self.store.reusable_research_result(study, direction, request_key)
             if old:
                 receipt = old.body["research_receipt"]
-                return {"value": old.body["result"], "research_reuse": receipt.get("reused_from") or old.ref}
+                return {"value": old.body["result"], "research_reuse": receipt.get("reused_from") or old.ref, "research_key": request_key}
         if (
             tool.reuse
             and self.store.operation_status(study, identity("tool", step, index))
@@ -1688,7 +1697,17 @@ class Harness:
             else None,
             resource,
             invoke_received=received if tool.invoke_received else None,
+            research_key=request_key if tool.cache_research else None,
         )
+        if tool.cache_research:
+            operation = identity("tool", step, index)
+            retry = self._attempt(study, operation)
+            admitted = self.store.operation_admission(
+                study, retry.body["next"] if retry else operation
+            )
+            raw["research_key"] = admitted.get("research_key") or identity(
+                "legacy-research-operation", operation
+            )
         delay = tool.cooldown(raw["value"]) if tool.cooldown else None
         if delay is not None:
             previous = [

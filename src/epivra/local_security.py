@@ -126,6 +126,14 @@ def protect(path: Path):
         kernel.LocalFree(descriptor)
 
 
+def protect_if_present(path: Path) -> bool:
+    try:
+        protect(path)
+    except FileNotFoundError:
+        return False
+    return True
+
+
 def private_directory(path: Path):
     path.mkdir(mode=0o700, parents=True, exist_ok=True)
     protect(path)

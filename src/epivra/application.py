@@ -410,6 +410,9 @@ def online_service(
             ),
             research_fields=tuple(schema(field, names)["properties"]),
             cache_research=True,
+            research_authorization=lambda request: providers[
+                request["provider"]
+            ].api.authorization_identity,
         )
     public_clients = []
     if policy.get("network") and policy.get("public_sources"):

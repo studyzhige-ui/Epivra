@@ -13,6 +13,36 @@ from epivra.web_providers import connect
 
 
 class WebIntegrationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_web_research_reuse_identity_changes_with_authorization(self):
+        with tempfile.TemporaryDirectory() as folder:
+            store = Store(Path(folder) / "state.db")
+            store.create(
+                "s",
+                "Research",
+                {
+                    "network": True,
+                    "search_providers": ["tavily"],
+                    "reader_providers": [],
+                },
+            )
+            keys = {"DEEPSEEK_API_KEY": "model-fixture", "TAVILY_API_KEY": "account-a"}
+            first, clients = online_service(store, "s", keys)
+            try:
+                tool = first.harness.tools["web_search"]
+                request = {"query": "same", "provider": "tavily"}
+                before = tool.research_key(request)
+                search_api = next(c for c in clients if c.credential_env == "TAVILY_API_KEY")
+                search_api.replace_key("account-b")
+                self.assertNotEqual(before, tool.research_key(request))
+            finally:
+                await first.close()
+            second, _ = online_service(store, "s", keys)
+            try:
+                self.assertEqual(before, second.harness.tools["web_search"].research_key(request))
+            finally:
+                await second.close()
+                store.close()
+
     async def test_malformed_nested_payload_reaches_alternative_observation(self):
         with tempfile.TemporaryDirectory() as folder:
             store = Store(Path(folder) / "state.db")

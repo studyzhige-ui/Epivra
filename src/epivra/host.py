@@ -15,7 +15,7 @@ from .adapters import credentials
 from .analysis import settings as analysis_settings
 from .analysis_runtime import AnalysisRuntime
 from .application import online_service
-from .local_security import private_directory, protect
+from .local_security import private_directory, protect, protect_if_present
 from .locale import LANGUAGES, configure, tr
 from .model_catalog import OFFICIAL_PROVIDERS
 from .models import freeze_model_settings
@@ -38,6 +38,7 @@ class Host:
         self.root = root.resolve()
         self.state = self.root / ".epivra"
         private_directory(self.state)
+        protect_if_present(self.root / ".env")
         self.store = Store(self.state / "research.db")
         try:
             limits_path = self.root / "provider-limits.json"

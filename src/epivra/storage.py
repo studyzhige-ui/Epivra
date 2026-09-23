@@ -1300,6 +1300,17 @@ class Store:
             raise ValueError("unknown operation")
         return row[0]
 
+    def operation_admission(self, study: str, operation_id: str) -> dict:
+        import json
+
+        row = self.db.execute(
+            "SELECT admission FROM operations WHERE study=? AND id=?",
+            (study, operation_id),
+        ).fetchone()
+        if row is None:
+            raise ValueError("unknown operation")
+        return json.loads(row[0]) if row[0] is not None else {}
+
     def result(self, study: str, operation_id: str) -> Any:
         import json
 

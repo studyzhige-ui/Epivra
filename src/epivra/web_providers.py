@@ -43,6 +43,10 @@ class TavilyKeyPool(JsonAPI):
             raise ValueError("credential required")
         self._keys, self._disabled, self._cursor = keys, set(), 0
 
+    @property
+    def authorization_identity(self):
+        return identity("authorization-pool-v1", self.origin, self.auth_header, self._keys)
+
     async def request(self, method, path, **kwargs):
         available = [i for i in range(len(self._keys)) if i not in self._disabled]
         if not available:

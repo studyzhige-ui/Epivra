@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
+from unittest.mock import patch
 
 from epivra.domain import Call, Conflict, NotAllowed, Reply
 from epivra.harness import Harness, Tool, object_schema
@@ -174,6 +175,47 @@ class SufficiencyTests(unittest.IsolatedAsyncioTestCase):
         self.h.tools["web_search"] = replace(self.h.tools["web_search"], identity="v2")
         await self.call("web_search", {"query": "a"})
         self.assertEqual(3, self.calls)
+
+    async def test_authorization_change_invalidates_research_reuse(self):
+        authorization = ["account-a"]
+        self.h.tools["web_search"] = replace(
+            self.h.tools["web_search"],
+            research_authorization=lambda request: authorization[0],
+        )
+        first = await self.call("web_search", {"query": "same"})
+        second = await self.call("web_search", {"query": "same"})
+        self.assertEqual(first.ref, second.body["research_receipt"]["reused_from"])
+        authorization[0] = "account-b"
+        third = await self.call("web_search", {"query": "same"})
+        self.assertNotIn("reused_from", third.body["research_receipt"])
+        self.assertEqual(2, self.calls)
+        self.assertNotIn("account-b", third.body["research_receipt"]["request_key"])
+
+    async def test_settled_call_replayed_after_key_change_keeps_original_reuse_key(self):
+        authorization = ["account-a"]
+        self.h.tools["web_search"] = replace(
+            self.h.tools["web_search"],
+            research_authorization=lambda request: authorization[0],
+        )
+        self.model.call = Call("web_search", {"query": "same"})
+        with patch.object(self.store, "observation", side_effect=RuntimeError("crash")):
+            with self.assertRaisesRegex(RuntimeError, "crash"):
+                await self.h.step("s", self.owner.ref)
+        self.assertEqual(1, self.calls)
+        path = self.store.path
+        tool = self.h.tools["web_search"]
+        self.store.close()
+        self.store = Store(path)
+        self.h = Harness(self.store, self.model, {"web_search": tool})
+        authorization[0] = "account-b"
+        await self.h.step("s", self.owner.ref)
+        replayed = self.h._steps("s", "observation", self.owner.ref)[-1]
+        self.assertNotEqual(
+            self.h.tools["web_search"].research_key({"query": "same"}),
+            replayed.body["research_receipt"]["request_key"],
+        )
+        await self.call("web_search", {"query": "same"})
+        self.assertEqual(2, self.calls)
 
     async def test_failed_search_cannot_prove_low_gain_or_be_cached(self):
         self.result = {"error": "provider_failed"}

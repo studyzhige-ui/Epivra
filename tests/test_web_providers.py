@@ -7,6 +7,19 @@ from epivra.web_providers import CONNECTIONS, SEARCH, connect
 
 
 class WebProtocolTests(unittest.IsolatedAsyncioTestCase):
+    async def test_authorization_identity_tracks_key_rotation_without_exposing_key(self):
+        async with httpx.AsyncClient() as client:
+            provider = connect("tavily", {"TAVILY_API_KEY": "fixture-a"}, client)
+            first = provider.api.authorization_identity
+            provider.api.replace_key("fixture-b")
+            second = provider.api.authorization_identity
+            self.assertNotEqual(first, second)
+            self.assertNotIn("fixture-b", second)
+            self.assertEqual(
+                second,
+                connect("tavily", {"TAVILY_API_KEY": "fixture-b"}, client).api.authorization_identity,
+            )
+
     async def test_partial_batch_retains_valid_duplicate_after_invalid_item(self):
         async with httpx.AsyncClient() as client:
             provider = connect("exa", {"EXA_API_KEY": "fixture"}, client)

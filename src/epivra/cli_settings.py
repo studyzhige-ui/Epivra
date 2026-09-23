@@ -6,6 +6,7 @@ import tempfile
 from pathlib import Path
 
 from .adapters import credentials
+from .local_security import protect, protect_if_present
 from .model_catalog import OFFICIAL_PROVIDERS
 from .web_providers import CONNECTIONS
 
@@ -17,9 +18,14 @@ def load(root):
 
 def write(path, text):
     path.parent.mkdir(parents=True, exist_ok=True)
-    fd, name = tempfile.mkstemp(dir=path.parent, prefix=".settings-", suffix=".tmp")
+    protect_if_present(path)
+    staging = path.parent / ".epivra" if path.name == ".env" else path.parent
+    staging.mkdir(mode=0o700, parents=True, exist_ok=True)
+    protect(staging)
+    fd, name = tempfile.mkstemp(dir=staging, prefix=".settings-", suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as file:
+            protect(Path(name))
             file.write(text)
         os.replace(name, path)
     finally:
@@ -44,7 +50,7 @@ def save_key(root, name, value):
     if name not in allowed or not value or any(c in value for c in "\r\n\x00\"'"):
         raise ValueError("invalid credential")
     path = root / ".env"
-    lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+    lines = path.read_text(encoding="utf-8").splitlines() if protect_if_present(path) else []
     lines = [line for line in lines if line.split("=", 1)[0].strip() != name]
     write(path, "\n".join([*lines, f"{name}={value}"]) + "\n")
     return name in os.environ
