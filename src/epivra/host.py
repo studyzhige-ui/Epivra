@@ -7,7 +7,6 @@ import asyncio
 import base64
 import json
 import secrets
-import sys
 import uuid
 from pathlib import Path
 
@@ -15,10 +14,12 @@ from .adapters import credentials
 from .analysis import settings as analysis_settings
 from .analysis_runtime import AnalysisRuntime
 from .application import online_service
+from .components import documents
 from .local_security import private_directory, protect, protect_if_present
 from .locale import LANGUAGES, configure, tr
 from .model_catalog import OFFICIAL_PROVIDERS
 from .models import freeze_model_settings
+from .platform_paths import kill_child, python_executable
 from .presentation import (
     progress,
     published_report,
@@ -273,10 +274,13 @@ class Host:
                 )
             else:
                 policy.update(search_providers=[], reader_providers=[])
+            component = documents(self.root)
             policy["parsing"] = {
                 "parser": request.get("parser", "auto"),
                 "encoding": request.get("text_encoding", "utf-8-sig"),
+                "packages_path": str(component / "packages") if component else None,
                 "artifacts_path": request.get("docling_models")
+                or (str(component / "models") if component else None)
                 or (
                     "models/docling"
                     if (self.root / "models/docling").is_dir()
@@ -543,7 +547,7 @@ class Host:
             if temporary.exists() or temporary.is_symlink():
                 protect(temporary)
             temporary.write_text(
-                json.dumps({"port": port, "token": self.token}), encoding="utf-8"
+                json.dumps({"port": port, "token": self.token, "runtime": python_executable()}), encoding="utf-8"
             )
             protect(temporary)
             temporary.replace(pointer)
@@ -610,7 +614,7 @@ async def send(root: Path, request: dict):
             pass
 
 
-async def start(root: Path):
+async def start(root: Path, *, wait=5, cancel=None):
     import os
     import subprocess
     import threading
@@ -618,7 +622,12 @@ async def start(root: Path):
     async def available():
         try:
             reply = await asyncio.wait_for(send(root, {"action": "list"}), 1)
-            return "studies" in reply
+            if "studies" in reply:
+                pointer = json.loads((root / ".epivra/host.json").read_text(encoding="utf-8"))
+                if pointer.get("runtime") and Path(pointer["runtime"]).resolve() != Path(python_executable()).resolve():
+                    raise RuntimeError("Quit the running Epivra host before starting this installation.")
+                return True
+            return False
         except (OSError, ValueError, KeyError, TimeoutError):
             return False
 
@@ -629,7 +638,7 @@ async def start(root: Path):
     with (state / "host.log").open("ab") as log:
         process = subprocess.Popen(
             [
-                sys.executable,
+                python_executable(),
                 "-m",
                 "epivra.host",
                 "--root",
@@ -645,13 +654,25 @@ async def start(root: Path):
         )
     # Reap our child while this client lives, without tying host lifetime to it.
     threading.Thread(target=process.wait, daemon=True).start()
-    for _ in range(100):
-        if await available():
-            return {"ready": True, "started_pid": process.pid}
-        if process.poll() is not None:
-            raise RuntimeError("host exited before becoming ready")
-        await asyncio.sleep(0.05)
-    return {"ready": False, "starting_pid": process.pid}
+    deadline = None if wait is None else asyncio.get_running_loop().time() + wait
+    try:
+        while True:
+            if cancel is not None and cancel.is_set():
+                raise asyncio.CancelledError()
+            if await available():
+                return {"ready": True, "started_pid": process.pid}
+            if process.poll() is not None:
+                raise RuntimeError("host exited before becoming ready")
+            if deadline is not None and asyncio.get_running_loop().time() >= deadline:
+                return {"ready": False, "starting_pid": process.pid}
+            await asyncio.sleep(0.05)
+    except BaseException:
+        # Desktop cancellation retains the Popen handle, so only our own child
+        # is reaped. A CLI start intentionally allows its detached Host to live.
+        if cancel is not None and process.poll() is None:
+            await asyncio.to_thread(kill_child, process)
+            await asyncio.to_thread(process.wait)
+        raise
 
 
 def main():

@@ -16,10 +16,12 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from . import cli_settings, host
+from .components import Components
 from .locale import LANGUAGES, configure, current_language, set_language, tr
 from .model_catalog import OFFICIAL_PROVIDERS
 from .model_discovery import DiscoveryError, discover
 from .models import freeze_model_settings
+from .platform_paths import python_executable
 from .report_export import word_report
 from .web_providers import CONNECTIONS, READERS, SEARCH
 
@@ -82,6 +84,8 @@ class App:
         self.sender = sender or host.send
         self.settings_lock = threading.Lock()
         self.picker_lock = threading.Lock()
+        self.components = Components(self.root)
+        self.desktop = None
 
     def call(self, data):
         action = data.get("action")
@@ -213,7 +217,7 @@ class App:
             # Tk owns the main thread of this short-lived process, not an HTTP worker.
             result = subprocess.run(
                 [
-                    sys.executable,
+                    python_executable(),
                     "-X",
                     "utf8",
                     "-c",
@@ -382,6 +386,9 @@ class Handler(BaseHTTPRequestHandler):
                     {**self.server.app.settings(), "max_upload": self.server.max_upload}
                 )
                 return
+            if not post and path == "/api/components":
+                self.reply(self.server.app.components.status())
+                return
             if post and path == "/api/upload":
                 self.upload()
                 return
@@ -393,6 +400,8 @@ class Handler(BaseHTTPRequestHandler):
                 "/api/pick",
                 "/api/file",
                 "/api/report-export",
+                "/api/components",
+                "/api/desktop/quit",
             }:
                 raise WebError(tr("未找到此入口。"), 404)
             if self.headers.get_content_type() != "application/json":
@@ -403,6 +412,22 @@ class Handler(BaseHTTPRequestHandler):
             if not isinstance(data, dict):
                 raise WebError(tr("请求应为对象。"))
             app = self.server.app
+            if path == "/api/components":
+                if set(data) != {"component"}:
+                    raise WebError(tr("参数或配置无效，请检查后重试。"))
+                try:
+                    self.reply(app.components.start(data["component"]))
+                except ValueError as exc:
+                    raise WebError(str(exc), 409) from None
+                return
+            if path == "/api/desktop/quit":
+                if data or app.desktop is None:
+                    raise WebError(tr("未找到此入口。"), 404)
+                try:
+                    self.reply(app.desktop.request_shutdown())
+                except ValueError as exc:
+                    raise WebError(str(exc), 409) from None
+                return
             if path == "/api/report-export":
                 if set(data) != {"study", "expected"} or not data["expected"]:
                     raise WebError(tr("导出需要当前报告版本。"))

@@ -7,6 +7,26 @@
 
 Epivra 是本地自主研究工作台，将问题与获授权的资料转化为附带来源引用的研究报告。它整合公开网络研究、本地文档、可选的数据分析和外部 MCP 工具。Web、终端与 MCP 接口共享同一个本地研究工作区。
 
+## 下载并打开
+
+**桌面预览版 0.3.0**：无需安装 Python、Git、Node.js 或数据库。
+
+| 你的电脑 | 下载 |
+|---|---|
+| Windows 10/11，x64 | [下载 Windows ZIP](https://github.com/studyzhige-ui/Epivra/releases/download/v0.3.0/Epivra-0.3.0-windows-x64.zip) |
+| macOS 14 或以上，Apple Silicon（M 系列芯片） | [下载 macOS DMG](https://github.com/studyzhige-ui/Epivra/releases/download/v0.3.0/Epivra-0.3.0-macos-arm64.dmg) |
+
+1. **Windows**：完整解压 ZIP，双击其中的 **Epivra.exe**。不要在压缩包内直接运行。
+   **macOS**：打开 DMG，将 **Epivra** 拖入“应用程序”，再打开它。
+2. 浏览器会自动打开。首次进入“连接与设置”，选择供应商，填入自己的 API Key，选择模型并保存。
+3. 输入研究问题、选择资料范围、生成路线，确认后开始研究。
+
+以后只需再次打开 Epivra。重复打开会复用已有工作台。关闭浏览器后研究继续；需要停止后台程序时，在 Epivra 控制窗口点击“退出”。
+
+当前包**未取得 Windows 发布者签名或 Apple 公证**，系统可能提示未知开发者。这是桌面预览版，不承诺无系统提示安装。仓库仍为私有时，下载需要已获授权的 GitHub 账户。[发布说明与 SHA-256](https://github.com/studyzhige-ui/Epivra/releases/tag/v0.3.0) · [详细使用说明](docs/USAGE.md)
+
+基础版支持文本、文本 PDF、表格和联网研究。**OCR 和 Docker 分析在设置中按需准备**，无需重新下载另一种 Epivra 版本。Docker Desktop 需单独安装并启动。
+
 ## 研究方式
 
 描述问题、用途与资料范围，阅读并批准初始研究路线。研究负责人调查问题，维护发现和待解冲突，整理写作依据，并持续修订共享稿件。负责人可以直接调查和写作，也可以按需将具体任务交给助手。
@@ -14,22 +34,6 @@ Epivra 是本地自主研究工作台，将问题与获授权的资料转化为�
 研究只需初次批准，之后在已授权范围内自主推进，不再要求重复审批。你可以通过工作台暂停、取消、补充资料或调整方向。保存草稿不等于发布结果：当前稿件必须经过独立审稿者认可才能发布，修改后的稿件需要重新审阅。报告没有默认字数上限。
 
 来源、摘录、研究发现、报告和已记录用量保存在本地工作区。引用检查和独立审阅便于核查，但不保证研究结论正确。
-
-## 快速开始
-
-需要 **Python 3.11 或更高版本**，以及可用的模型供应商服务。在 Windows PowerShell 中克隆仓库并运行：
-
-```powershell
-git clone https://github.com/studyzhige-ui/Epivra.git
-cd Epivra
-python -m venv .venv
-.venv/Scripts/python.exe -m pip install .
-.venv/Scripts/epivra.exe --lang zh-CN web --port 0
-```
-
-打开“连接与设置”，选择供应商，输入 API 密钥并选择模型。新建研究、选择资料、生成路线，确认后开始研究。浏览器会自动打开；端口 `0` 表示选择可用端口。研究期间保持宿主运行。
-
-运行工作台不需要 Node.js、前端构建或数据库服务器。macOS/Linux 的虚拟环境可执行文件位于 `.venv/bin/`。当前已验证的本地环境为 Windows，不声明已完成跨平台验收。
 
 ## 入口与能力
 
@@ -52,14 +56,28 @@ Web 界面可切换简体中文与英文。报告语言请在研究需求中指�
 
 ## 可选组件
 
-使用虚拟环境中的 Python 安装：
+打开“连接与设置”中的“可选功能”：
+
+- **OCR 文档解析**：点击安装，等待依赖与模型下载、验证完成。适用于扫描件、图片和复杂文档。下载可能需要数 GB；安装期间保持 Epivra 运行。完成后新研究自动使用组件，无需手填模型路径。
+- **Docker 数据分析**：先安装并启动 [Docker Desktop](https://www.docker.com/products/docker-desktop/)，再点击“准备 Docker 分析”。镜像准备完成后勾选“启用 Docker 数据分析”。准备镜像需要联网，实际分析容器禁止联网。
+
+两项可以任意组合；不使用时无需下载。准备进度和失败原因显示在设置中。
+
+## 从源码运行（开发者）
+
+需要 Python 3.11+ 和 Git。Windows PowerShell：
 
 ```powershell
-.venv/Scripts/python.exe -m pip install ".[documents]"  # 文档解析与 OCR
-.venv/Scripts/python.exe -m pip install ".[mcp]"        # MCP 集成
+git clone https://github.com/studyzhige-ui/Epivra.git
+cd Epivra
+python -m venv .venv
+.venv/Scripts/python.exe -m pip install ".[mcp]"
+.venv/Scripts/epivra-desktop.exe
 ```
 
-解析模型的下载方法见[本地模型说明](models/README.md)。需要数据分析时，安装支持 Linux 容器的 Docker，运行 `docker build -t epivra-analysis:1 sandbox` 构建镜像，再在设置中启用分析。这些组件均为可选项。
+macOS 对应使用 `.venv/bin/python` 和 `.venv/bin/epivra-desktop`。
+已有源码工作区可用 `epivra-desktop --root <绝对路径>` 打开，不会自动搬迁资料或密钥。
+[发行构建说明](packaging/README.md)。
 
 ## 工作区与仓库结构
 
@@ -76,7 +94,7 @@ Web 界面可切换简体中文与英文。报告语言请在研究需求中指�
 | `.env` | 本地供应商凭据；不纳入 Git |
 | `mcp-servers.json` | 本地 MCP 连接与权限；不纳入 Git |
 
-请从固定工作区启动，或明确指定 `--root`。升级前停止研究并备份完整的 `.epivra/` 目录。恢复时复用已保存响应；结果未知的调用不会自动重发。运行合同不兼容的研究仍可查阅和导出，但不能隐式恢复执行。
+桌面版的数据位于 Windows 的 `%LOCALAPPDATA%\Epivra` 或 macOS 的 `~/Library/Application Support/Epivra`，可从控制窗口打开。表中的 `.epivra/`、`.env` 等用户文件在该数据目录内。程序与数据独立，升级前退出 Epivra 并备份整个数据目录，再替换程序文件。源码 CLI/Web 默认仍使用当前工作目录，可明确指定 `--root`。恢复时复用已保存响应；结果未知的调用不会自动重发。运行合同不兼容的研究仍可查阅和导出，但不能隐式恢复执行。
 
 配置、资料、MCP、备份与故障排查见[使用说明](docs/USAGE.md)。
 

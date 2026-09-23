@@ -410,6 +410,19 @@
               placeholder="留空不修改"
           /></label>
         </div>
+        <h3>可选功能</h3>
+        <p class="muted">基础版可直接研究文本、文本 PDF 和表格。以下功能按需准备，首次下载可能需要数 GB 空间。</p>
+        <div class="form-row">
+          <button type="button" id="install-documents">安装 OCR 文档解析</button>
+          <span id="documents-state" role="status"></span>
+        </div>
+        <div class="form-row">
+          <button type="button" id="install-analysis">准备 Docker 分析</button>
+          <a href="https://www.docker.com/products/docker-desktop/" target="_blank" rel="noopener noreferrer">下载 Docker Desktop</a>
+          <span id="analysis-state" role="status"></span>
+        </div>
+        <p class="muted">Docker Desktop 需单独安装并启动。准备完成后，再勾选下方的数据分析开关。</p>
+        <p id="component-status" role="status" aria-live="polite"></p>
         <h3>资料与工具</h3>
         <div class="form-row">
           <label
@@ -421,7 +434,7 @@
           ><label
             >Docling 模型文件夹<input
               id="docling-models"
-              placeholder="models/docling"
+              placeholder="留空使用已安装的 OCR 组件"
           /></label>
         </div>
         <label class="checkbox"

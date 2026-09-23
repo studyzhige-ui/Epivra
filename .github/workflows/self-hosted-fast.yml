@@ -1,7 +1,7 @@
 name: Self-hosted fast validation
 on:
   push:
-    branches: [main, improve/epivra-optimization]
+    branches: [main]
   workflow_dispatch:
 permissions:
   contents: read
@@ -10,11 +10,11 @@ concurrency:
   cancel-in-progress: false
 jobs:
   validate:
-    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/improve/epivra-optimization'
+    if: github.ref == 'refs/heads/main'
     runs-on: [self-hosted, Windows, X64, epivra]
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
       - name: Allocate isolated development check paths

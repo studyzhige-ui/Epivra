@@ -144,3 +144,26 @@ def private_directory(path: Path):
                 protect(Path(root) / name)
             except FileNotFoundError:
                 pass  # A transient child disappeared; other ACL failures remain fatal.
+
+
+def exclusive_lock(path: Path):
+    """Hold an advisory process lock until the returned file is closed."""
+    protect_if_present(path)
+    file = path.open("a+b")
+    try:
+        protect(path)
+        file.seek(0, 2)
+        if file.tell() == 0:
+            file.write(b"0")
+            file.flush()
+        file.seek(0)
+        if os.name == "nt":
+            import msvcrt
+            msvcrt.locking(file.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return file
+    except BaseException:
+        file.close()
+        raise

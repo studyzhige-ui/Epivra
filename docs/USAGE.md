@@ -8,44 +8,42 @@ Epivra 是在本机运行的自主研究工作台。提出问题、确认策略�
 
 Web 右上角可选择简体中文或 English；切换不会清空正在填写的需求或资料选择。CLI 与 MCP 使用 `--lang zh-CN` / `--lang en`，或设置 `EPIVRA_LANG`；CLI 的连接设置中也可切换当前会话语言。MCP 工具名称、参数和协议状态不翻译，工具说明按所选语言呈现。界面切换不改写用户输入、来源和已有报告；成果语言请在研究需求中指定。
 
-## 1. 安装和启动
+## 1. 下载、打开与退出
 
-需要 Python 3.11 或更高版本。以下为 Windows PowerShell，在 Epivra 项目目录执行：
+桌面版不需要安装 Python、Git、Node.js 或数据库。从 [GitHub Release](https://github.com/studyzhige-ui/Epivra/releases/tag/v0.3.0) 选择：
+
+| 平台 | 操作 |
+|---|---|
+| Windows 10/11 x64 | 下载 Windows ZIP，完整解压，双击 **Epivra.exe**。 |
+| macOS 14+ Apple Silicon | 下载 macOS DMG，将 **Epivra** 拖到“应用程序”，再打开。 |
+
+当前为未签名桌面预览版，Windows 可能提示未知发布者，macOS 尚未取得 Apple 公证。仓库私有期间，下载需已获授权的 GitHub 账户。
+
+macOS 首次因未验证开发者而被拦截时，在确认来源后，可按 [Apple 官方说明](https://support.apple.com/102445) 到“系统设置 → 隐私与安全性”选择仅为此应用“仍要打开”。不要全局关闭系统安全保护。
+
+浏览器自动打开，首次启动进入连接设置。重复打开会复用当前工作台；关闭浏览器不停止研究。通过 Epivra 控制窗口的“退出”关闭后台服务。组件安装期间请等待安装结束后再退出。本机休眠会中断研究执行。
+
+### 数据与升级
+
+控制窗口的“数据目录”打开实际工作区：
+- Windows：`%LOCALAPPDATA%\Epivra`
+- macOS：`~/Library/Application Support/Epivra`
+
+本文中的 `.env`、`.epivra/`、`.epivra-components/`、`mcp-servers.json` 均相对此目录。程序文件可以替换，用户数据独立保存。升级前退出 Epivra 并备份整个数据目录，然后替换应用。不要把凭据或研究数据放入安装包目录。已有源码工作区可用 `epivra-desktop --root <绝对路径>` 打开；程序不会自动迁移旧工作区。
+
+### 从源码运行（开发者）
+
+需要 Python 3.11+；Windows 在项目目录运行：
 
 ```powershell
 python -m venv .venv
-.venv/Scripts/python.exe -m pip install -e .
-.venv/Scripts/epivra.exe web
+.venv/Scripts/python.exe -m pip install ".[mcp]"
+.venv/Scripts/epivra-desktop.exe
 ```
 
-浏览器会自动打开。无需 Node.js、前端构建或数据库服务。端口占用时使用 `epivra web --port 0`。关闭浏览器不结束后台研究；研究时本机及宿主服务需要保持运行，系统休眠会中断执行。
+macOS/Linux 对应使用 `.venv/bin/python` 与 `.venv/bin/epivra-desktop`。源码 Web/CLI 默认使用当前目录，桌面入口默认使用上述用户数据目录。显式传入 `--root` 可统一工作区。
 
-偏好终端交互时运行 `.venv/Scripts/epivra.exe`，无参数进入工作台。macOS/Linux 对应使用 `.venv/bin/python` 与 `.venv/bin/epivra`；本轮主要验证平台为 Windows。
-
-下文命令假设已激活虚拟环境，或把 `epivra` 替换为上述完整路径。
-
-### 启动命令与参数
-
-安装完成后，每次启动只需在项目目录运行，无需重复安装或先激活虚拟环境：
-
-```powershell
-.\.venv\Scripts\epivra.exe --lang zh-CN web --port 0
-```
-
-| 部分 | 含义 |
-|---|---|
-| `.\.venv\Scripts\epivra.exe` | 使用本项目虚拟环境中的 Epivra 程序。 |
-| `--lang zh-CN` | 指定简体中文界面；英文为 `--lang en`。省略时读取 `EPIVRA_LANG`，未设置则默认简体中文。 |
-| `web` | 启动 Web 工作台并自动打开浏览器；省略此子命令则进入交互式 CLI。 |
-| `--port 0` | 由系统选择空闲端口，终端输出实际访问地址；省略则使用固定端口 `8765`，也可指定如 `--port 8080`。 |
-
-语言参数放在 `web` 前，Web 参数放在其后，如上所示。`--port 0` 不是监听端口零，每次启动选择的端口可能不同，请使用本次输出的完整链接。Web 页面内仍可切换语言。
-
-只启动服务而不自动打开浏览器时，追加 `--no-browser`。查看 Web 参数帮助：
-
-```powershell
-.\.venv\Scripts\epivra.exe web --help
-```
+需要手动管理服务或终端自动化时使用 `epivra --root <目录> --lang zh-CN web --port 0` 或 `epivra --help`。下文中的 CLI 命令面向源码安装，假设已激活虚拟环境。
 
 ## 2. 配置连接
 
@@ -86,17 +84,21 @@ python -m venv .venv
 
 公共文献接口可通过宿主进程环境变量 `EPIVRA_CONTACT_EMAIL` 配置真实联系邮箱，PubMed 使用 email、Crossref 使用 mailto。未配置时仍使用公共接口。
 
-基础安装支持文本、CSV/TSV、PDF 文本层和 XLSX。公式可读取但不重新计算。扫描 PDF、图片 OCR、DOCX/PPTX 等复杂资料安装可选依赖：
+基础安装支持文本、CSV/TSV、PDF 文本层和 XLSX。公式可读取但不重新计算。桌面版在“连接与设置 → 可选功能”点击安装 OCR 文档解析，等待依赖和模型准备完成；后续新研究自动使用，无需填写模型路径。下载可能需要数 GB，安装期间保持程序运行。
+
+仅源码安装可手动安装依赖：
 
 ```powershell
 python -m pip install ".[documents]"
 ```
 
-本项目的模型放在 `models/docling/`，运行时自动发现；新克隆项目按[模型说明](../models/README.md)下载。缺少依赖、模型或解析失败会明确反馈；OCR 不等于理解图表，重要图表和复杂排版仍应核查。
+源码安装的模型放在 `models/docling/`，运行时自动发现；新克隆项目按[模型说明](../models/README.md)下载。缺少依赖、模型或解析失败会明确反馈；OCR 不等于理解图表，重要图表和复杂排版仍应核查。
 
 单份资料上限为 256 MiB，解析协议输出上限为 64 MiB，授权目录快照最多 100,000 个入口。这些是资源保护边界，不是研究来源数量上限；超出时请缩小授权目录或拆分资料。
 
-统计、绘图及 Python 分析需要 Docker Linux 容器环境。安装并启动 Docker 后构建一次：
+统计、绘图及 Python 分析需要 Docker Linux 容器环境。桌面版先安装并启动 [Docker Desktop](https://www.docker.com/products/docker-desktop/)，再在可选功能中点击“准备 Docker 分析”；完成后启用数据分析。无需重新安装 Epivra。
+
+源码安装可手动构建镜像：
 
 ```powershell
 docker build -t epivra-analysis:1 sandbox
@@ -105,6 +107,8 @@ docker build -t epivra-analysis:1 sandbox
 在设置中启用数据分析。执行容器禁止联网，只接收本次授权输入，不挂载密钥或整个项目。无需分析时无需 Docker。
 
 ## 5. MCP 双向接入
+
+桌面包已包含 MCP 依赖。打开桌面程序即可启动宿主。外部 MCP 服务所需的命令或运行时仍由该服务提供；安装 Epivra 不会安装第三方服务。以下命令用于源码安装：
 
 ```powershell
 python -m pip install ".[mcp]"

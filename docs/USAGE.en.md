@@ -10,42 +10,42 @@ Select **English** or **简体中文** in the Web header. Switching preserves yo
 
 MCP tool names, parameters, and protocol states remain stable; descriptions use the selected language. Interface switching never rewrites user input, sources, or existing reports. Specify your preferred report language in the research request.
 
-## 1. Install and start
+## 1. Download, open, and quit
 
-Requires Python 3.11+. From the project directory in Windows PowerShell:
+Desktop downloads include Python and require no Git, Node.js, or database installation. Choose a package from the [GitHub Release](https://github.com/studyzhige-ui/Epivra/releases/tag/v0.3.0):
+
+| Platform | Steps |
+|---|---|
+| Windows 10/11 x64 | Download the Windows ZIP, extract the complete folder, and open **Epivra.exe**. |
+| macOS 14+ Apple Silicon | Open the macOS DMG, drag **Epivra** into Applications, then open it. |
+
+This is an unsigned desktop preview. Windows may report an unknown publisher; the macOS application is not Apple notarized. Downloads require an authorized GitHub account while the repository is private.
+
+If macOS blocks the first launch because the developer is unverified, confirm the download source and follow [Apple’s instructions](https://support.apple.com/102445) to allow this app under **System Settings → Privacy & Security → Open Anyway**. Do not disable system security globally.
+
+Your browser opens automatically, showing connection settings on first launch. Opening Epivra again reuses the running workbench. Closing the browser keeps research running; use **Quit** in the Epivra control window to stop the background service. Wait for component installation to finish before quitting. Computer sleep interrupts execution.
+
+### Data and upgrades
+
+The control window opens your **Data folder**:
+- Windows: `%LOCALAPPDATA%\Epivra`
+- macOS: `~/Library/Application Support/Epivra`
+
+Paths such as `.env`, `.epivra/`, `.epivra-components/`, and `mcp-servers.json` in this guide are relative to that folder. Before upgrading, quit Epivra and back up the entire data folder, then replace the application. Keep credentials and research out of the installation folder. Use `epivra-desktop --root <absolute-path>` to open an existing source workspace; existing data is never migrated automatically.
+
+### Run from source (developers)
+
+Requires Python 3.11+. From the project directory on Windows:
 
 ```powershell
 python -m venv .venv
-.venv/Scripts/python.exe -m pip install -e .
-.venv/Scripts/epivra.exe --lang en web
+.venv/Scripts/python.exe -m pip install ".[mcp]"
+.venv/Scripts/epivra-desktop.exe
 ```
 
-The browser opens automatically. No Node.js, frontend build, or database server is required. If the port is occupied, use `epivra web --port 0`. Closing the browser does not stop research. Keep the computer and host running; system sleep interrupts execution.
+On macOS/Linux use `.venv/bin/python` and `.venv/bin/epivra-desktop`. Source Web/CLI commands default to the current directory; the desktop entry defaults to the user data folder above. Pass `--root` explicitly to use the same workspace.
 
-For the terminal workbench, run `.venv/Scripts/epivra.exe --lang en`. On macOS/Linux use `.venv/bin/python` and `.venv/bin/epivra`; Windows is the primary platform validated so far. Commands below assume an activated virtual environment or the equivalent full executable path.
-
-### Startup command and arguments
-
-After installation, start from the project directory without reinstalling or activating the virtual environment:
-
-```powershell
-.\.venv\Scripts\epivra.exe --lang en web --port 0
-```
-
-| Part | Meaning |
-|---|---|
-| `.\.venv\Scripts\epivra.exe` | Run Epivra from this project's virtual environment. |
-| `--lang en` | Select English; use `--lang zh-CN` for Simplified Chinese. When omitted, `EPIVRA_LANG` applies, falling back to Simplified Chinese. |
-| `web` | Start the Web workbench and open the browser. Without this subcommand, Epivra opens the interactive CLI. |
-| `--port 0` | Let the system choose an available port and print the actual URL. Omit it to use port `8765`, or specify a port such as `--port 8080`. |
-
-Place the language option before `web` and Web options after it, as shown above. Port `0` requests an available port rather than listening on port zero. The selected port may change between launches; use the complete URL printed for the current launch. You can still switch languages in the Web header.
-
-Append `--no-browser` to run without opening the browser automatically. To list Web options:
-
-```powershell
-.\.venv\Scripts\epivra.exe web --help
-```
+For manual server operation use `epivra --root <path> --lang en web --port 0`; see `epivra --help` for automation. CLI commands below assume a source installation and an activated virtual environment.
 
 ## 2. Configure connections
 
@@ -90,17 +90,21 @@ Text and CSV/TSV default to UTF-8. Select `gb18030` when creating a study for ol
 
 Set `EPIVRA_CONTACT_EMAIL` in the host process environment to supply a real contact email to PubMed (email) and Crossref (mailto). Without it, public access remains available.
 
-The base installation handles text, CSV/TSV, text-layer PDFs, and XLSX. Spreadsheet formulas are read but not recalculated. For scanned PDFs, image OCR, DOCX/PPTX, and other complex materials:
+The base installation handles text, CSV/TSV, text-layer PDFs, and XLSX. Spreadsheet formulas are read but not recalculated. For scanned PDFs, image OCR, DOCX/PPTX, and other complex materials, desktop users choose **Connections & settings → Optional features → Install OCR**. Wait for packages and models to finish downloading. New research then uses them automatically, without a manual model path. Downloads can require several GB; keep Epivra running during setup.
+
+For a source installation, install dependencies manually:
 
 ```powershell
 python -m pip install ".[documents]"
 ```
 
-Local models are automatically discovered in `models/docling/`. After a fresh clone, follow the [model guide](../models/README.en.md) to download them. Missing dependencies, incomplete models, and parser failures are reported. OCR does not interpret charts; important figures and complex layouts still need review.
+In a source installation, local models are automatically discovered in `models/docling/`. After a fresh clone, follow the [model guide](../models/README.en.md) to download them. Missing dependencies, incomplete models, and parser failures are reported. OCR does not interpret charts; important figures and complex layouts still need review.
 
 A single material is limited to 256 MiB, parser output to 64 MiB, and an authorized directory snapshot to 100,000 entries. These are resource-protection limits, not research source-count limits; use smaller roots or split oversized materials when necessary.
 
-Statistics, charts, and Python analysis require Docker running Linux containers. Build the image once:
+Statistics, charts, and Python analysis require Docker running Linux containers. Desktop users install and start [Docker Desktop](https://www.docker.com/products/docker-desktop/), choose **Prepare Docker analysis** under Optional features, then enable analysis. No separate Epivra edition is needed.
+
+For a source installation, build the image manually:
 
 ```powershell
 docker build -t epivra-analysis:1 sandbox
@@ -109,6 +113,8 @@ docker build -t epivra-analysis:1 sandbox
 Enable analysis in settings. Containers have no network access and receive only the authorized inputs for that task, not credentials or the whole project. Docker is unnecessary when analysis is disabled.
 
 ## 5. Bidirectional MCP
+
+Desktop packages include MCP dependencies; opening Epivra starts its host. External MCP servers may still need their own commands or runtimes, which Epivra does not install. The following commands are for source installations:
 
 ```powershell
 python -m pip install ".[mcp]"

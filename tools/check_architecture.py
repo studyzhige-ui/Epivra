@@ -13,6 +13,8 @@ LAYERS = (
             {
                 "storage",
                 "local_security",
+                "platform_paths",
+                "components",
                 "diagnostics",
                 "prompts",
                 "context",
@@ -53,6 +55,7 @@ LAYERS = (
                 "mcp_server",
                 "mcp_tools",
                 "webui",
+                "desktop",
                 "presentation",
                 "report_export",
             }
@@ -60,10 +63,15 @@ LAYERS = (
     ),
 )
 ALLOWED = {
+    "platform_paths": set(),
+    "components": {"local_security", "platform_paths"},
+    "desktop": {"host", "cli_settings", "components", "local_security", "platform_paths", "webui"},
     "report_export": {"markdown_rules"},
     "presentation": {"domain", "citations", "research", "writing"},
     "locale": set(),
     "webui": {
+        "components",
+        "platform_paths",
         "analysis",
         "report_export",
         "locale",
@@ -90,6 +98,8 @@ ALLOWED = {
     "terminal": {"locale"},
     "cli_settings": {"adapters", "local_security", "model_catalog", "web_providers"},
     "host": {
+        "components",
+        "platform_paths",
         "local_security",
         "presentation",
         "locale",
@@ -110,7 +120,7 @@ ALLOWED = {
     "model_discovery": {"model_catalog"},
     "models": {"adapters", "model_catalog", "native_models"},
     "native_models": {"adapters", "domain"},
-    "materials": {"domain", "document_parser"},
+    "materials": {"domain", "document_parser", "platform_paths"},
     "document_parser": set(),
     "web_providers": {"adapters", "domain"},
     "public_sources": {"adapters"},
@@ -131,7 +141,7 @@ ALLOWED = {
     "review": {"domain"},
     "calculation": set(),
     "workspace": {"domain", "storage", "materials", "analysis"},
-    "analysis": set(),
+    "analysis": {"platform_paths"},
     "analysis_runtime": {"analysis", "domain", "storage", "workspace", "scheduling"},
     "harness": {
         "analysis_runtime",

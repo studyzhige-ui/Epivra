@@ -1,0 +1,87 @@
+name: Desktop release
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v0.3.*']
+permissions:
+  contents: read
+concurrency:
+  group: desktop-release-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-2022
+            architecture: x64
+            name: windows-x64
+          - runner: macos-14
+            architecture: arm64
+            name: macos-arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          architecture: ${{ matrix.architecture }}
+      - name: Install build and test tools
+        run: python -m pip install -e ".[mcp]" build ruff mypy resvg-py pillow
+      - name: Validate tag
+        shell: python
+        run: |
+          import os, tomllib
+          if os.environ["GITHUB_REF_TYPE"] == "tag":
+              with open("pyproject.toml", "rb") as f:
+                  version = tomllib.load(f)["project"]["version"]
+              assert os.environ["GITHUB_REF_NAME"] == "v" + version
+      - name: Regression tests
+        run: python -m unittest discover -s tests -q
+      - name: Architecture
+        run: python tools/check_architecture.py
+      - name: Lint
+        run: python -m ruff check src tests tools
+      - name: Types
+        run: python -m mypy
+      - name: Browser logic tests
+        shell: python
+        run: |
+          import pathlib, subprocess
+          for test in pathlib.Path("tests").glob("web_*.cjs"):
+              subprocess.run(["node", str(test)], check=True)
+      - name: Build and validate relocated native application
+        run: python tools/build_desktop.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-${{ matrix.name }}
+          path: |
+            dist/desktop/*.zip
+            dist/desktop/*.dmg
+            dist/desktop/*.sha256
+          if-no-files-found: error
+          retention-days: 14
+  publish:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: desktop-*
+          path: release
+          merge-multiple: true
+      - name: Publish desktop preview
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: gh release create "$GITHUB_REF_NAME" release/* --verify-tag --prerelease --title "Epivra $GITHUB_REF_NAME — Desktop preview" --notes-file packaging/RELEASE-NOTES.md

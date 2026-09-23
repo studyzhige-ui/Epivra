@@ -7,6 +7,30 @@
 
 Epivra is a local research workbench that turns a question and authorized materials into a source-linked report. It combines public web research, local documents, optional data analysis, and external MCP tools. Web, terminal, and MCP interfaces share the same local research workspace.
 
+## Download and open
+
+**Desktop preview 0.3.0** — no separate Python, Git, Node.js or database installation.
+
+| Your computer | Download |
+|---|---|
+| Windows 10/11, x64 | [Download Windows ZIP](https://github.com/studyzhige-ui/Epivra/releases/download/v0.3.0/Epivra-0.3.0-windows-x64.zip) |
+| macOS 14+, Apple Silicon (M-series) | [Download macOS DMG](https://github.com/studyzhige-ui/Epivra/releases/download/v0.3.0/Epivra-0.3.0-macos-arm64.dmg) |
+
+1. **Windows:** extract the entire ZIP and double-click **Epivra.exe**.
+   **macOS:** open the DMG, drag **Epivra** into Applications, then open it.
+2. Your browser opens automatically. On first launch, choose a provider, enter your own API key, select a model and save.
+3. Enter a research question, select the material scope, generate the route and approve it.
+
+Next time, open Epivra again. Repeated launches reopen the existing workbench.
+Closing the browser keeps research running; use **Quit** in the Epivra control window to stop the background host.
+
+These preview builds have **no Windows publisher certificate or Apple notarization**; your OS may show an unknown-developer warning. While this repository is private, downloads require an authorized GitHub account.
+[Release notes and SHA-256](https://github.com/studyzhige-ui/Epivra/releases/tag/v0.3.0) · [User guide](docs/USAGE.en.md)
+
+The base app supports text, text PDFs, spreadsheets and web research. Prepare
+**OCR and Docker analysis independently in Settings**; no separate Epivra edition
+is needed. Install and start Docker Desktop separately to use analysis.
+
 ## Research workflow
 
 Describe the question, intended use, and material scope, then review and approve the initial research route. A research owner investigates the question, maintains findings and unresolved conflicts, prepares the writing basis, and revises a shared manuscript. It can investigate and write directly or delegate focused tasks to assistants when useful.
@@ -14,22 +38,6 @@ Describe the question, intended use, and material scope, then review and approve
 Approval is required once. Research continues within that authorization without further approval requests; you can pause, cancel, add materials, or adjust direction through the workbench. A saved draft is not a published result. An independent reviewer must accept the current manuscript before publication, and changes to the manuscript require another review. Reports have no default word limit.
 
 Sources, excerpts, findings, reports, and recorded usage remain in the local workspace. Citation checks and independent review support inspection; they do not guarantee that conclusions are correct.
-
-## Quick start
-
-Requires **Python 3.11 or later** and access to a supported model provider. Clone the repository and run these commands in Windows PowerShell:
-
-```powershell
-git clone https://github.com/studyzhige-ui/Epivra.git
-cd Epivra
-python -m venv .venv
-.venv/Scripts/python.exe -m pip install .
-.venv/Scripts/epivra.exe --lang en web --port 0
-```
-
-Open **Connections & settings**, choose a provider, enter its API key, and select a model. Create a research question, select its materials, generate the route, and approve it. The browser opens automatically; port `0` selects an available port. Keep the host running while research proceeds.
-
-No Node.js, frontend build, or database server is needed to run the workbench. On macOS/Linux, virtual-environment executables are under `.venv/bin/`. Windows is the verified local environment; cross-platform acceptance is not claimed.
 
 ## Interfaces and capabilities
 
@@ -52,14 +60,28 @@ Provider calls may incur charges. Epivra does not impose a total research time, 
 
 ## Optional components
 
-Use the virtual environment's Python for installation:
+Open **Optional features** in Connections & settings:
+
+- **OCR document parsing:** choose Install and wait for dependencies and models to download and validate. This enables scans, images and complex documents. Downloads can require several GB. Keep Epivra running; new studies use the prepared component automatically.
+- **Docker data analysis:** install and start [Docker Desktop](https://www.docker.com/products/docker-desktop/), then choose Prepare Docker analysis. Once the image is ready, enable analysis. Image preparation needs a network connection; analysis containers run without network access.
+
+Enable either, both or neither. Settings show preparation progress and errors.
+
+## Run from source (developers)
+
+Requires Python 3.11+ and Git. In Windows PowerShell:
 
 ```powershell
-.venv/Scripts/python.exe -m pip install ".[documents]"  # Document parsing and OCR
-.venv/Scripts/python.exe -m pip install ".[mcp]"        # MCP integration
+git clone https://github.com/studyzhige-ui/Epivra.git
+cd Epivra
+python -m venv .venv
+.venv/Scripts/python.exe -m pip install ".[mcp]"
+.venv/Scripts/epivra-desktop.exe
 ```
 
-Download parsing models using the [local model guide](models/README.en.md). For data analysis, install Docker with Linux containers and build `docker build -t epivra-analysis:1 sandbox`, then enable analysis in settings. These components are optional.
+On macOS, use `.venv/bin/python` and `.venv/bin/epivra-desktop`.
+Use `epivra-desktop --root <absolute-path>` for an existing source workspace;
+data and keys are never silently migrated. [Build desktop releases](packaging/README.md).
 
 ## Workspace and repository
 
@@ -76,7 +98,7 @@ Download parsing models using the [local model guide](models/README.en.md). For 
 | `.env` | Local provider credentials; excluded from Git |
 | `mcp-servers.json` | Local MCP connections and permissions; excluded from Git |
 
-Run from a consistent workspace directory or specify `--root` explicitly. Before upgrading, stop work and back up the complete `.epivra/` directory. Saved responses are reused during recovery; calls with unknown outcomes are not automatically repeated. Studies created with incompatible runtime contracts remain available for inspection and export but cannot be silently resumed.
+Desktop data lives in `%LOCALAPPDATA%\Epivra` on Windows or `~/Library/Application Support/Epivra` on macOS. Open it from the control window. User files such as `.epivra/` and `.env` are inside this data folder, separate from the application. Quit Epivra and back up the complete data folder before replacing the app. Source CLI/Web commands still use the current workspace unless `--root` is specified. Saved responses are reused during recovery; calls with unknown outcomes are not automatically repeated. Studies created with incompatible runtime contracts remain available for inspection and export but cannot be silently resumed.
 
 See the [user guide](docs/USAGE.en.md) for configuration, materials, MCP, backups, and troubleshooting.
 

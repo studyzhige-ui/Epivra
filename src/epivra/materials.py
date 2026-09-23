@@ -17,6 +17,7 @@ from pathlib import Path
 
 from .document_parser import FORMATS
 from .domain import encode
+from .platform_paths import kill_child, python_executable
 
 TEXT_SUFFIXES = {".txt", ".md", ".json", ".yaml", ".yml", ".html"}
 SUPPORTED_SUFFIXES = TEXT_SUFFIXES | {".csv", ".tsv", ".pdf", ".xlsx"} | FORMATS
@@ -66,7 +67,7 @@ async def _parse_process(name, raw, timeout, options):
         HF_HUB_OFFLINE="1", TRANSFORMERS_OFFLINE="1", HF_HUB_DISABLE_TELEMETRY="1"
     )
     process = await asyncio.create_subprocess_exec(
-        sys.executable,
+        python_executable(),
         "-m",
         "epivra.materials",
         Path(name).name,
@@ -118,7 +119,7 @@ async def _parse_process(name, raw, timeout, options):
             job.cancel()
         if process.returncode is None:
             try:
-                process.kill()
+                await asyncio.to_thread(kill_child, process)
             except ProcessLookupError:
                 pass
 
@@ -367,11 +368,14 @@ if __name__ == "__main__":
     socket.socket.connect = deny_network
     socket.create_connection = deny_network
     try:
+        options = json.loads(sys.argv[2]) if len(sys.argv) > 2 else {}
+        if options.get("packages_path"):
+            sys.path.insert(0, options["packages_path"])
         result = {
             "result": parse(
                 sys.argv[1],
                 sys.stdin.buffer.read(),
-                json.loads(sys.argv[2]) if len(sys.argv) > 2 else {},
+                options,
             )
         }
     except ValueError as exc:

@@ -42,3 +42,5 @@ analysis-settings.json
 /evals/
 /.github/DEVELOPMENT_RECOVERY.md
 /.github/development-state.json
+
+.epivra-components/

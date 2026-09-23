@@ -10,6 +10,8 @@ import subprocess
 import time
 from pathlib import Path
 
+from .platform_paths import docker_executable
+
 DEFAULTS = {
     "image": "epivra-analysis:1",
     "timeout": 120,
@@ -39,7 +41,7 @@ async def docker(*args, cap=32 * 1024 * 1024, timeout=30):
     env = {k: v for k, v in os.environ.items() if k.upper() in allowed}
     try:
         process = await asyncio.create_subprocess_exec(
-            "docker",
+            docker_executable(),
             *args,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,

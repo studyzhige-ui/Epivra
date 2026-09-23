@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "epivra"
-version = "0.2.0"
+version = "0.3.0"
 description = "Epivra: a local autonomous research workbench."
 requires-python = ">=3.11"
 readme = "README.md"
@@ -18,6 +18,7 @@ mcp = ["mcp>=2.2,<3"]
 epivra = "epivra.cli:main"
 epivra-mcp = "epivra.mcp_server:main"
 epivra-web = "epivra.webui:main"
+epivra-desktop = "epivra.desktop:main"
 
 [tool.setuptools.package-data]
 epivra = ["web/*"]

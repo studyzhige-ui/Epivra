@@ -1287,6 +1287,44 @@ function selectedRoleModels() {
   }
   return result;
 }
+let componentTimer;
+const componentPhases = {
+  preparing: "正在准备…", downloading_packages: "正在下载 OCR 依赖…",
+  downloading_models: "正在下载 OCR 模型…", checking_docker: "正在检查 Docker…",
+  building_image: "正在构建分析镜像…", validating: "正在验证组件…", complete: "准备完成",
+};
+async function refreshComponents() {
+  clearTimeout(componentTimer);
+  try {
+    const state = await api("/api/components");
+    $("documents-state").textContent = t(state.documents ? "已安装" : "未安装");
+    $("analysis-state").textContent = t(state.analysis ? "已准备，可重新构建" : "未准备");
+    const busy = state.job.state === "running";
+    $("install-documents").disabled = busy || state.documents;
+    $("install-analysis").disabled = busy;
+    $("component-status").textContent = state.job.error ||
+      t(componentPhases[state.job.phase] || "");
+    if ($("settings-dialog").open)
+      componentTimer = setTimeout(refreshComponents, busy ? 2000 : 10000);
+  } catch (error) {
+    $("component-status").textContent = error.message;
+  }
+}
+for (const component of ["documents", "analysis"]) {
+  $("install-" + component).onclick = async () => {
+    if (!confirm(t("将联网下载可选组件，可能需要数 GB 空间。安装期间请保持 Epivra 运行。继续？"))) return;
+    try {
+      $("install-documents").disabled = $("install-analysis").disabled = true;
+      await api("/api/components", { component });
+      await refreshComponents();
+    } catch (error) {
+      $("component-status").textContent = error.message;
+      $("install-documents").disabled = $("install-analysis").disabled = false;
+    }
+  };
+}
+$("settings-dialog").addEventListener("close", () => clearTimeout(componentTimer));
+
 async function openSettings() {
   if (mutating) return;
   await loadConfig();
@@ -1343,6 +1381,7 @@ async function openSettings() {
     $("settings-feedback").textContent = e.message;
   }
   $("settings-dialog").showModal();
+  refreshComponents();
   if (config.providers.find((p) => p.id === $("provider").value).configured)
     fetchModels();
 }
@@ -1500,6 +1539,7 @@ async function boot() {
   }
   await loadConfig();
   await refreshList();
+  if (!config.providers.some((p) => p.configured)) await openSettings();
   const prior = sessionStorage.getItem("research-study");
   if (prior) {
     try {
