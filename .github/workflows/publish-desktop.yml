@@ -1,0 +1,70 @@
+name: Publish validated desktop build
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: Successful Desktop release run to publish
+        required: true
+        type: string
+permissions:
+  actions: read
+  contents: write
+concurrency:
+  group: publish-desktop
+  cancel-in-progress: false
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Verify build provenance
+        id: build
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          BUILD_RUN: ${{ inputs.run_id }}
+        shell: bash
+        run: |
+          [[ "$BUILD_RUN" =~ ^[0-9]+$ ]]
+          gh api "repos/$GH_REPO/actions/runs/$BUILD_RUN" > run.json
+          python - <<'PY'
+          import json, os
+          run = json.load(open("run.json"))
+          assert run["conclusion"] == "success", "Build must have passed"
+          assert run["path"] == ".github/workflows/desktop-release.yml"
+          assert run["head_repository"]["full_name"] == os.environ["GH_REPO"]
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write("sha=" + run["head_sha"] + "\n")
+          PY
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ steps.build.outputs.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.run_id }}
+          pattern: desktop-*
+          merge-multiple: true
+          path: release
+      - name: Verify and publish the exact tested artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          BUILD_SHA: ${{ steps.build.outputs.sha }}
+        shell: python
+        run: |
+          import hashlib, os, pathlib, subprocess, tomllib
+          version = tomllib.loads(pathlib.Path("pyproject.toml").read_text())["project"]["version"]
+          files = []
+          for platform, extension in [("windows-x64", "zip"), ("macos-arm64", "dmg")]:
+              path = pathlib.Path("release") / f"Epivra-{version}-{platform}.{extension}"
+              check = path.with_name(path.name + ".sha256")
+              expected, name = check.read_text().split()
+              assert name == path.name
+              assert hashlib.sha256(path.read_bytes()).hexdigest() == expected
+              files.extend([str(path), str(check)])
+          subprocess.run(["gh", "release", "create", "v" + version, *files,
+                          "--target", os.environ["BUILD_SHA"], "--prerelease",
+                          "--title", "Epivra " + version + " — Desktop preview",
+                          "--notes-file", "packaging/RELEASE-NOTES.md"], check=True)
