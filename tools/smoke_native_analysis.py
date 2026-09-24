@@ -19,12 +19,19 @@ async def verify(runtime, scientific=False):
     with tempfile.TemporaryDirectory(prefix="epivra-native-acceptance-") as folder:
         root = Path(folder)
         isolated_runtime = root / "runtime"
-        shutil.copytree(runtime, isolated_runtime, symlinks=True)
+        # Boundary cases need the real interpreter and standard library, not
+        # thousands of scientific-package files repeatedly granted to new SIDs.
+        # The complete distribution is exercised separately below.
+        def core_only(directory, names):
+            return {"site-packages"} if Path(directory) == runtime / "Lib" else set()
+        shutil.copytree(runtime, isolated_runtime, symlinks=True, ignore=core_only)
         secret = root / "fake-secret.txt"
         secret.write_text("FAKE-TEST-SECRET", encoding="utf-8")
         sandbox = NativeSandbox(root, isolated_runtime)
         passed = []
         async def run(name, code, **limits):
+            started = time.monotonic()
+            print("START: " + name, file=sys.stderr, flush=True)
             source = root / ("source-" + name)
             source.mkdir()
             (source / "data").mkdir()
@@ -35,6 +42,7 @@ async def verify(runtime, scientific=False):
                 return await sandbox.run(job, source, {**DEFAULTS, **limits}, True, lambda: None)
             finally:
                 await sandbox.cleanup(job)
+                print(f"END: {name} ({time.monotonic() - started:.2f}s)", file=sys.stderr, flush=True)
         normal = await run("normal", "import csv,statistics,json\nprint('中文日志')\n"
                            "values=[float(r['x']) for r in csv.DictReader((INPUT_DIR/'sample.csv').open())]\n"
                            "(OUTPUT_DIR/'summary.json').write_text(json.dumps({'mean':statistics.mean(values)}))\n")
@@ -160,22 +168,31 @@ else:
         passed.append("scratch-monitor-limit")
         source = root / "source-cancel"
         source.mkdir()
-        (source / "analysis.py").write_text("while True: pass", encoding="utf-8")
+        (source / "analysis.py").write_text("(OUTPUT_DIR/'started').write_text('ready')\nwhile True: pass", encoding="utf-8")
         job = hashlib.sha256(b"cancel").hexdigest()
         task = asyncio.create_task(sandbox.run(job, source, DEFAULTS, True, lambda: None))
+        print("START: cancellation startup", file=sys.stderr, flush=True)
         try:
-            async with asyncio.timeout(30):
-                while job not in sandbox.active:
+            async with asyncio.timeout(120):
+                marker = sandbox.folder(job) / "outputs/started"
+                while not marker.is_file():
                     if task.done():
-                        await task
+                        result = await task
+                        raise AssertionError(f"Worker exited before cancellation: {result}")
                     await asyncio.sleep(0.02)
             task.cancel()
             result = await asyncio.gather(task, return_exceptions=True)
             assert isinstance(result[0], asyncio.CancelledError), result
             assert job not in sandbox.active
         finally:
+            # Directory/profile cleanup must never race an unfinished launch.
+            # Cancellation itself waits for the launch thread and reaps its child.
+            if not task.done():
+                task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
             await sandbox.cleanup(job)
         passed.append("cancel-reaps-worker")
+        print("END: cancel-reaps-worker", file=sys.stderr, flush=True)
         # Collector rejects a hard link even if a trusted test creates it.
         linked = root / "hard-link"
         import os
@@ -187,6 +204,9 @@ else:
         else:
             raise AssertionError("hard link accepted")
         if scientific:
+            complete_runtime = root / "scientific-runtime"
+            shutil.copytree(runtime, complete_runtime, symlinks=True)
+            sandbox = NativeSandbox(root, complete_runtime)
             result = await run("scientific", """
 import numpy as np,pandas as pd,matplotlib,scipy.stats,statsmodels.api as sm,seaborn
 from sklearn.linear_model import LinearRegression
