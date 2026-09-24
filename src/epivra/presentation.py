@@ -1,8 +1,9 @@
-"""Read-only public work/report views. Never inspect model steps or responses."""
+"""Read-only public work/report views. Never expose model steps or responses."""
 
 from .citations import occurrences
 from .domain import Conflict
 from .research import ResearchLedger
+from .usage import summarize
 from .writing import WritingWorkspace
 
 
@@ -90,7 +91,7 @@ def source_page(store, study, ref, offset=0, length=12000):
     }
 
 
-def progress(store, study, errors=None):
+def progress(store, study, errors=None, runtime=None):
     direction = store.control(study).direction
     works = [w for w in store.list(study, "work") if w.body["direction"] == direction]
     results = {r.body.get("producer"): r for r in store.list(study, "work_result")}
@@ -110,11 +111,22 @@ def progress(store, study, errors=None):
     ):
         for item in store.list(study, kind):
             revisions.setdefault(item.body.get("producer"), {})[kind] = item.ref
+    attempts = {a.body["work"]: a for a in store.list(study, "agent_attempt")}
+    ended = {a.body["work"]: a for a in store.list(study, "agent_attempt_end")}
+    live = (runtime or {}).get("work", {})
+    unknown = {op["work"] for op in store.unsettled(study)}
+    usage = store.usage_records(study)
     items = []
     for work in works:
         result = results.get(work.ref)
         question = questions.get(work.ref)
         error = (errors or {}).get(work.ref)
+        attempt, end = attempts.get(work.ref), ended.get(work.ref)
+        if not error and work.ref not in live:
+            if work.ref in unknown:
+                error = "Unknown paid operation; reconcile its outcome before continuing."
+            elif end and attempt and end.body["attempt"] == attempt.ref:
+                error = end.body.get("error")
         wait = waits.get(work.ref)
         waiting = wait and any(ref not in results for ref in wait.body.get("refs", []))
         state = (
@@ -124,12 +136,17 @@ def progress(store, study, errors=None):
             if result
             else "blocked"
             if error
+            else "interrupted"
+            if store.work_interrupted(study, work.ref)
             else "clarification"
             if question
+            else live[work.ref]["state"]
+            if work.ref in live
             else "waiting"
             if waiting
-            else "pending"
+            else (runtime or {}).get("work", {}).get(work.ref, {}).get("state", "pending")
         )
+        received = store.received_messages(study, work.ref)
         items.append(
             {
                 "ref": work.ref,
@@ -140,6 +157,14 @@ def progress(store, study, errors=None):
                 "revision": revisions.get(work.ref),
                 "question": question.body["text"] if question else None,
                 "error": error,
+                "waiting_for": wait.body.get("refs", []) if waiting else [],
+                "runtime": live.get(work.ref),
+                "last_activity_at": (end.body["finished_at"] if end and (not attempt or end.seq > attempt.seq)
+                                     else attempt.body["started_at"] if attempt else None),
+                "usage": summarize([record for record in usage if record["work"] == work.ref]),
+                "messages": [{"ref": m.ref, "mode": m.body["mode"],
+                              "state": "received" if m.ref in received else "pending"}
+                             for m in store.work_messages(study, work.ref)],
             }
         )
     research = ResearchLedger(store).snapshot(study)

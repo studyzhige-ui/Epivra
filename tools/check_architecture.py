@@ -25,6 +25,7 @@ LAYERS = (
                 "models",
                 "native_models",
                 "scheduling",
+                "agent_runtime",
                 "usage",
                 "web_providers",
                 "public_sources",
@@ -37,6 +38,8 @@ LAYERS = (
                 "markdown_rules",
                 "calculation",
                 "analysis",
+                "sandbox_windows",
+                "native_analysis",
                 "mcp_client",
             }
         ),
@@ -64,10 +67,10 @@ LAYERS = (
 )
 ALLOWED = {
     "platform_paths": set(),
-    "components": {"local_security", "platform_paths"},
+    "components": {"local_security", "platform_paths", "native_analysis", "analysis"},
     "desktop": {"host", "cli_settings", "components", "local_security", "platform_paths", "webui"},
     "report_export": {"markdown_rules"},
-    "presentation": {"domain", "citations", "research", "writing"},
+    "presentation": {"domain", "citations", "research", "writing", "usage"},
     "locale": set(),
     "webui": {
         "components",
@@ -98,6 +101,8 @@ ALLOWED = {
     "terminal": {"locale"},
     "cli_settings": {"adapters", "local_security", "model_catalog", "web_providers"},
     "host": {
+        "native_analysis",
+        "agent_runtime",
         "components",
         "platform_paths",
         "local_security",
@@ -125,6 +130,7 @@ ALLOWED = {
     "web_providers": {"adapters", "domain"},
     "public_sources": {"adapters"},
     "scheduling": set(),
+    "agent_runtime": set(),
     "adapters": {"domain", "local_security"},
     "__init__": set(),
     "domain": set(),
@@ -142,7 +148,9 @@ ALLOWED = {
     "calculation": set(),
     "workspace": {"domain", "storage", "materials", "analysis"},
     "analysis": {"platform_paths"},
-    "analysis_runtime": {"analysis", "domain", "storage", "workspace", "scheduling"},
+    "sandbox_windows": {"local_security"},
+    "native_analysis": {"analysis", "local_security", "sandbox_windows"},
+    "analysis_runtime": {"native_analysis", "analysis", "domain", "storage", "workspace", "scheduling"},
     "harness": {
         "analysis_runtime",
         "research",
@@ -158,6 +166,7 @@ ALLOWED = {
         "review",
     },
     "application": {
+        "agent_runtime",
         "public_sources",
         "scheduling",
         "mcp_tools",

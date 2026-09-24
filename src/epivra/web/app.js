@@ -271,7 +271,7 @@ function renderStatus(s) {
     : s.error
       ? t("研究暂时阻断：{0}。可暂停后检查连接设置，更新密钥并重新载入。", s.error)
       : s.analysis_cleanup_error
-        ? t("分析容器清理需要处理，请检查 Docker 状态。")
+        ? t("分析沙盒清理尚未完成，请查看错误详情。")
         : "";
   $("approve").hidden = s.cancelled || s.approved || !s.plans?.length;
   $("pause-resume").hidden = s.cancelled || s.published;
@@ -524,7 +524,7 @@ async function loadProgress() {
     const opened = new Set(Array.from(existing.values()).filter(el => el.open).map(el => el.dataset.ref));
     $("work-list").dataset.signature = signature;
     $("work-list").replaceChildren();
-    const states = {cancelled:t("已取消"), delivered:t("已交付"), blocked:t("需要处理"), clarification:t("等待负责人澄清"), waiting:t("等待依赖成果"), pending:t("已安排，尚未交付")};
+    const states = {active:t("执行回合中"), waiting_provider:t("等待供应商"), queued:t("排队中"), running:t("正在执行"), interrupted:t("已中断，等待负责人继续"), cancelled:t("已取消"), delivered:t("已交付"), blocked:t("需要处理"), clarification:t("等待负责人澄清"), waiting:t("等待依赖成果"), pending:t("已安排，尚未交付")};
     if (result.research) {
       const panel = node("section", undefined, "work-card card"), research = result.research;
       panel.append(node("strong", t("研究依据与文稿")));
@@ -570,6 +570,21 @@ async function loadProgress() {
           body.replaceChildren();
           if (w.question) body.append(node("p", w.question, "alert"));
           if (w.error) body.append(node("p", w.error, "alert"));
+          if (w.runtime?.resource) body.append(node("p", t("等待资源：{0}", w.runtime.resource), "muted"));
+          if (w.waiting_for?.length) {
+            const tasks = result.work.filter(item => w.waiting_for.includes(item.ref)).map(item => item.task);
+            body.append(node("p", t("等待任务：{0}", tasks.join("；")), "muted"));
+          }
+          if (w.messages?.length) {
+            const received = w.messages.filter(message => message.state === "received").length;
+            body.append(node("p", t("负责人消息：{0} 条已接收，{1} 条待接收。接收不代表内容已核实。", received, w.messages.length - received), "muted"));
+          }
+          if (w.last_activity_at) body.append(node("p", t("最近执行记录：{0}", new Date(w.last_activity_at * 1000).toLocaleString()), "muted"));
+          for (const usage of w.usage || []) {
+            const tokens = usage.totals?.total_tokens;
+            body.append(node("p", t("{0}：{1} 次调用，已报告 token：{2}；未报告部分不估算。",
+              usage.model || usage.resource, usage.calls, tokens === null ? "—" : tokens), "muted"));
+          }
           if (!detail.entries.length) body.append(node("p", t("尚无公开阶段成果；交付后可在这里查看。"), "muted"));
           for (const entry of detail.entries) {
             const section = node("section");
@@ -1290,15 +1305,15 @@ function selectedRoleModels() {
 let componentTimer;
 const componentPhases = {
   preparing: "正在准备…", downloading_packages: "正在下载 OCR 依赖…",
-  downloading_models: "正在下载 OCR 模型…", checking_docker: "正在检查 Docker…",
-  building_image: "正在构建分析镜像…", validating: "正在验证组件…", complete: "准备完成",
+  downloading_models: "正在下载 OCR 模型…", verifying_archive: "正在校验内置分析包…",
+  extracting_runtime: "正在解包内置 Python 环境…", validating: "正在验证组件…", complete: "准备完成",
 };
 async function refreshComponents() {
   clearTimeout(componentTimer);
   try {
     const state = await api("/api/components");
     $("documents-state").textContent = t(state.documents ? "已安装" : "未安装");
-    $("analysis-state").textContent = t(state.analysis ? "已准备，可重新构建" : "未准备");
+    $("analysis-state").textContent = t(state.analysis ? "已准备" : "未准备");
     const busy = state.job.state === "running";
     $("install-documents").disabled = busy || state.documents;
     $("install-analysis").disabled = busy;
@@ -1312,7 +1327,7 @@ async function refreshComponents() {
 }
 for (const component of ["documents", "analysis"]) {
   $("install-" + component).onclick = async () => {
-    if (!confirm(t("将联网下载可选组件，可能需要数 GB 空间。安装期间请保持 Epivra 运行。继续？"))) return;
+    if (component === "documents" && !confirm(t("将联网下载可选组件，可能需要数 GB 空间。安装期间请保持 Epivra 运行。继续？"))) return;
     try {
       $("install-documents").disabled = $("install-analysis").disabled = true;
       await api("/api/components", { component });

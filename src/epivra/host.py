@@ -11,7 +11,7 @@ import uuid
 from pathlib import Path
 
 from .adapters import credentials
-from .analysis import settings as analysis_settings
+from .agent_runtime import AgentRuntime
 from .analysis_runtime import AnalysisRuntime
 from .application import online_service
 from .components import documents
@@ -19,6 +19,8 @@ from .local_security import private_directory, protect, protect_if_present
 from .locale import LANGUAGES, configure, tr
 from .model_catalog import OFFICIAL_PROVIDERS
 from .models import freeze_model_settings
+from .native_analysis import NativeSandbox
+from .native_analysis import settings as native_analysis_settings
 from .platform_paths import kill_child, python_executable
 from .presentation import (
     progress,
@@ -63,6 +65,8 @@ class Host:
             raise
         self.factory = factory
         self.services = {}
+        self.agent_runtime = AgentRuntime()
+        self.native_analysis = NativeSandbox(self.state, component_root=self.root)
         self.failures = {}
         self.clients = {}
         self.token = secrets.token_urlsafe(32)
@@ -88,7 +92,7 @@ class Host:
                             study, "delete_request"
                         ):
                             continue
-                        await AnalysisRuntime(self.store).reconcile(study)
+                        await AnalysisRuntime(self.store, native=self.native_analysis).reconcile(study)
                     self.analysis_errors.pop(study, None)
                 except (ValueError, OSError, TimeoutError) as exc:
                     self.analysis_errors[study] = str(exc)
@@ -109,6 +113,8 @@ class Host:
                     credentials(self.root / ".env"),
                     scheduler=self.scheduler,
                 )
+            service.runtime = self.agent_runtime
+            service.harness.analysis.native = self.native_analysis
             self.services[study] = service
             self.clients[study] = clients
             self.failures.pop(study, None)
@@ -158,7 +164,7 @@ class Host:
             for client in self.clients.get(study, []):
                 await client.close()
             async with self.analysis_locks.setdefault(study, asyncio.Lock()):
-                await AnalysisRuntime(self.store).reconcile(study)
+                await AnalysisRuntime(self.store, native=self.native_analysis).reconcile(study)
                 self.store.delete_study(study)
             for mapping in (
                 self.services,
@@ -248,7 +254,8 @@ class Host:
                     if path.exists()
                     else {}
                 )
-                policy["analysis"] = await analysis_settings(overrides)
+                policy["analysis"] = native_analysis_settings(
+                    self.root, {**overrides, "backend": "native"})
             if policy["network"]:
                 keys = credentials(self.root / ".env")
                 available = [
@@ -338,7 +345,7 @@ class Host:
             )
         if action == "progress":
             service = self.services.get(study)
-            return progress(self.store, study, service.work_errors if service else {})
+            return progress(self.store, study, service.work_errors if service else {}, self.agent_runtime.snapshot(study))
         if action == "work_detail":
             return work_detail(self.store, study, request["work"])
         if action == "download":

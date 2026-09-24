@@ -1,0 +1,170 @@
+--- a/Modules/overlapped.c
++++ b/Modules/overlapped.c
+@@ -154,56 +154,6 @@
+ /*
+  * Some functions should be loaded at runtime
+  */
+-
+-static LPFN_ACCEPTEX Py_AcceptEx = NULL;
+-static LPFN_CONNECTEX Py_ConnectEx = NULL;
+-static LPFN_DISCONNECTEX Py_DisconnectEx = NULL;
+-static LPFN_TRANSMITFILE Py_TransmitFile = NULL;
+-
+-#define GET_WSA_POINTER(s, x)                                           \
+-    (SOCKET_ERROR != WSAIoctl(s, SIO_GET_EXTENSION_FUNCTION_POINTER,    \
+-                              &Guid##x, sizeof(Guid##x), &Py_##x,       \
+-                              sizeof(Py_##x), &dwBytes, NULL, NULL))
+-
+-static int
+-initialize_function_pointers(void)
+-{
+-    GUID GuidAcceptEx = WSAID_ACCEPTEX;
+-    GUID GuidConnectEx = WSAID_CONNECTEX;
+-    GUID GuidDisconnectEx = WSAID_DISCONNECTEX;
+-    GUID GuidTransmitFile = WSAID_TRANSMITFILE;
+-    SOCKET s;
+-    DWORD dwBytes;
+-
+-    if (Py_AcceptEx != NULL &&
+-        Py_ConnectEx != NULL &&
+-        Py_DisconnectEx != NULL &&
+-        Py_TransmitFile != NULL)
+-    {
+-        // All function pointers are initialized already
+-        // by previous module import
+-        return 0;
+-    }
+-
+-    s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+-    if (s == INVALID_SOCKET) {
+-        SetFromWindowsErr(WSAGetLastError());
+-        return -1;
+-    }
+-
+-    if (!GET_WSA_POINTER(s, AcceptEx) ||
+-        !GET_WSA_POINTER(s, ConnectEx) ||
+-        !GET_WSA_POINTER(s, DisconnectEx) ||
+-        !GET_WSA_POINTER(s, TransmitFile))
+-    {
+-        closesocket(s);
+-        SetFromWindowsErr(WSAGetLastError());
+-        return -1;
+-    }
+-
+-    closesocket(s);
+-    return 0;
+-}
+ 
+ /*
+  * Completion port stuff
+@@ -1332,6 +1282,17 @@
+         return NULL;
+     }
+ 
++    /* Query the actual socket provider only when this operation is used.
++       Local storage avoids shared mutable state across interpreter GILs. */
++    LPFN_ACCEPTEX operation = NULL;
++    GUID extension = WSAID_ACCEPTEX;
++    DWORD bytes;
++    if (WSAIoctl((SOCKET)ListenSocket, SIO_GET_EXTENSION_FUNCTION_POINTER,
++                 &extension, sizeof(extension), &operation, sizeof(operation),
++                 &bytes, NULL, NULL) == SOCKET_ERROR) {
++        return SetFromWindowsErr(WSAGetLastError());
++    }
++
+     size = sizeof(struct sockaddr_in6) + 16;
+     buf = PyBytes_FromStringAndSize(NULL, size*2);
+     if (!buf)
+@@ -1342,7 +1303,7 @@
+     self->allocated_buffer = buf;
+ 
+     Py_BEGIN_ALLOW_THREADS
+-    ret = Py_AcceptEx((SOCKET)ListenSocket, (SOCKET)AcceptSocket,
++    ret = operation((SOCKET)ListenSocket, (SOCKET)AcceptSocket,
+                       PyBytes_AS_STRING(buf), 0, size, size, &BytesReceived,
+                       &self->overlapped);
+     Py_END_ALLOW_THREADS
+@@ -1454,11 +1415,22 @@
+     if (Length < 0)
+         return NULL;
+ 
++    /* Query the actual socket provider only when this operation is used.
++       Local storage avoids shared mutable state across interpreter GILs. */
++    LPFN_CONNECTEX operation = NULL;
++    GUID extension = WSAID_CONNECTEX;
++    DWORD bytes;
++    if (WSAIoctl((SOCKET)ConnectSocket, SIO_GET_EXTENSION_FUNCTION_POINTER,
++                 &extension, sizeof(extension), &operation, sizeof(operation),
++                 &bytes, NULL, NULL) == SOCKET_ERROR) {
++        return SetFromWindowsErr(WSAGetLastError());
++    }
++
+     self->type = TYPE_CONNECT;
+     self->handle = ConnectSocket;
+ 
+     Py_BEGIN_ALLOW_THREADS
+-    ret = Py_ConnectEx((SOCKET)ConnectSocket, Address, Length,
++    ret = operation((SOCKET)ConnectSocket, Address, Length,
+                        NULL, 0, NULL, &self->overlapped);
+     Py_END_ALLOW_THREADS
+ 
+@@ -1495,11 +1467,22 @@
+         return NULL;
+     }
+ 
++    /* Query the actual socket provider only when this operation is used.
++       Local storage avoids shared mutable state across interpreter GILs. */
++    LPFN_DISCONNECTEX operation = NULL;
++    GUID extension = WSAID_DISCONNECTEX;
++    DWORD bytes;
++    if (WSAIoctl((SOCKET)Socket, SIO_GET_EXTENSION_FUNCTION_POINTER,
++                 &extension, sizeof(extension), &operation, sizeof(operation),
++                 &bytes, NULL, NULL) == SOCKET_ERROR) {
++        return SetFromWindowsErr(WSAGetLastError());
++    }
++
+     self->type = TYPE_DISCONNECT;
+     self->handle = Socket;
+ 
+     Py_BEGIN_ALLOW_THREADS
+-    ret = Py_DisconnectEx((SOCKET)Socket, &self->overlapped, flags, 0);
++    ret = operation((SOCKET)Socket, &self->overlapped, flags, 0);
+     Py_END_ALLOW_THREADS
+ 
+     self->error = err = ret ? ERROR_SUCCESS : WSAGetLastError();
+@@ -1544,13 +1527,24 @@
+         return NULL;
+     }
+ 
++    /* Query the actual socket provider only when this operation is used.
++       Local storage avoids shared mutable state across interpreter GILs. */
++    LPFN_TRANSMITFILE operation = NULL;
++    GUID extension = WSAID_TRANSMITFILE;
++    DWORD bytes;
++    if (WSAIoctl((SOCKET)Socket, SIO_GET_EXTENSION_FUNCTION_POINTER,
++                 &extension, sizeof(extension), &operation, sizeof(operation),
++                 &bytes, NULL, NULL) == SOCKET_ERROR) {
++        return SetFromWindowsErr(WSAGetLastError());
++    }
++
+     self->type = TYPE_TRANSMIT_FILE;
+     self->handle = Socket;
+     self->overlapped.Offset = offset;
+     self->overlapped.OffsetHigh = offset_high;
+ 
+     Py_BEGIN_ALLOW_THREADS
+-    ret = Py_TransmitFile((SOCKET)Socket, File, count_to_write,
++    ret = operation((SOCKET)Socket, File, count_to_write,
+                           count_per_send, &self->overlapped, NULL, flags);
+     Py_END_ALLOW_THREADS
+ 
+@@ -2036,9 +2030,6 @@
+ 
+     Py_DECREF(socket_module);
+ 
+-    if (initialize_function_pointers() < 0) {
+-        return -1;
+-    }
+ 
+     PyTypeObject *overlapped_type = (PyTypeObject *)PyType_FromModuleAndSpec(
+         module, &overlapped_type_spec, NULL);

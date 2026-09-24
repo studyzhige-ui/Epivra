@@ -29,6 +29,8 @@ from .writing import WritingWorkspace
 
 class Store:
     def __init__(self, path: Path):
+        self._events: dict[str, Any] = {}
+        self._changed: set[str] = set()
         if path.is_symlink():
             raise ValueError("database must not be a symbolic link")
         self.path = path.resolve()
@@ -241,9 +243,13 @@ class Store:
     @contextmanager
     def transaction(self) -> Iterator[None]:
         self.db.execute("BEGIN IMMEDIATE")
+        self._changed.clear()
         try:
             yield
             self.db.execute("COMMIT")
+            for study in self._changed:
+                if study in self._events:
+                    self._events[study].set()
         except BaseException as exc:
             if self.db.in_transaction:
                 try:
@@ -501,11 +507,13 @@ class Store:
         for ref in parents:
             self.get(study, ref)
         ref = identity(study, kind, body, parents)
-        self.db.execute(
+        inserted = self.db.execute(
             "INSERT OR IGNORE INTO artifacts(ref,study,kind,body,parents,created_at) "
             "VALUES(?,?,?,?,?,?)",
             (ref, study, kind, encode(body), encode(parents), time.time()),
         )
+        if inserted.rowcount:
+            self._changed.add(study)
         return self.get(study, ref)
 
     def put(
@@ -518,6 +526,7 @@ class Store:
             "work",
             "clarification",
             "clarification_answer",
+            "work_message",
         }:
             raise NotAllowed("reserved artifact requires its transaction entry point")
         with self.transaction():
@@ -698,7 +707,7 @@ class Store:
                 cancelled = True
             elif action == "steer":
                 text = payload.get("request", "")
-                if not isinstance(text, str) or not text.strip():
+                if not isinstance(text, str) or not text.strip() or len(text) > 4096:
                     raise ValueError("new direction is required")
                 previous = self.get(study, direction)
                 direction = self._put(
@@ -918,6 +927,63 @@ class Store:
         )):
             raise NotAllowed("work has been cancelled by its owner")
         return item
+
+
+    def watch(self, study):
+        """The Host event loop owns Store; notifications follow committed writes."""
+        import asyncio
+        return self._events.setdefault(study, asyncio.Event())
+
+    def work_messages(self, study, work):
+        return self.matching(study, "work_message", {"recipient": work})
+
+    def work_interrupted(self, study, work):
+        controls = [m for m in self.work_messages(study, work)
+                    if m.body["mode"] in {"interrupt", "continue"}]
+        return bool(controls and controls[-1].body["mode"] == "interrupt")
+
+    def work_generation(self, study, work):
+        controls = [m for m in self.work_messages(study, work)
+                    if m.body["mode"] in {"interrupt", "continue"}]
+        return controls[-1].ref if controls else None
+
+    def received_messages(self, study, work):
+        done = {a.body.get("step") for a in self.matching(study, "step_done", {})
+                if not a.body.get("discarded")}
+        return {m["ref"] for s in self.related(study, "step", work)
+                if s.ref in done for m in s.body["request"].get("inbox", [])}
+
+    def pending_messages(self, study, work):
+        received = self.received_messages(study, work)
+        return [m for m in self.work_messages(study, work) if m.ref not in received]
+
+    def message_work(self, study, owner, child, epoch, text, refs, mode, step, index):
+        with self.transaction():
+            actor = self.require_work(study, owner, epoch)
+            target = self.require_work(study, child, epoch)
+            if actor.body["role"] != "lead" or target.body.get("owner") != owner:
+                raise NotAllowed("only the delegating owner may steer its child")
+            if mode not in {"message", "continue", "interrupt"}:
+                raise ValueError("invalid work message mode")
+            if not isinstance(text, str) or not text.strip():
+                raise ValueError("work message requires text")
+            self._step_request(study, owner, step)
+            body = {"sender": owner, "recipient": child, "mode": mode,
+                    "text": text, "refs": list(dict.fromkeys(refs)),
+                    "direction": actor.body["direction"], "epoch": epoch, "index": index}
+            parents = (owner, child, actor.body["direction"], step, *refs)
+            ref = identity(study, "work_message", body, tuple(sorted(set(parents))))
+            if self.db.execute("SELECT 1 FROM artifacts WHERE study=? AND ref=?", (study, ref)).fetchone():
+                return self.get(study, ref)
+            if self.matching(study, "work_result", {"producer": child}):
+                raise NotAllowed("completed work is terminal; delegate a follow-up task")
+            if mode == "continue" and self.clarifications(study, work=child, open_only=True):
+                raise NotAllowed("answer the outstanding clarification before continuing")
+            for ref in refs:
+                item = self.get(study, ref)
+                if item.kind in {"step", "step_done", "control", "material_bytes", "model_request", "model_result", "work_message", "agent_attempt", "agent_attempt_end"}:
+                    raise NotAllowed("private execution and messages are not research inputs")
+            return self._put(study, "work_message", body, parents)
 
     def clarifications(
         self,

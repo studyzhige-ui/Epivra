@@ -15,11 +15,9 @@ Web 右上角可选择简体中文或 English；切换不会清空正在填写�
 | 平台 | 操作 |
 |---|---|
 | Windows 10/11 x64 | 下载 Windows ZIP，完整解压，双击 **Epivra.exe**。 |
-| macOS 14+ Apple Silicon | 下载 macOS DMG，将 **Epivra** 拖到“应用程序”，再打开。 |
 
-当前为未签名桌面预览版，Windows 可能提示未知发布者，macOS 尚未取得 Apple 公证。仓库私有期间，下载需已获授权的 GitHub 账户。
+当前为未签名桌面预览版，Windows 可能提示未知发布者；macOS 不再构建或验证。仓库私有期间，下载需已获授权的 GitHub 账户。
 
-macOS 首次因未验证开发者而被拦截时，在确认来源后，可按 [Apple 官方说明](https://support.apple.com/102445) 到“系统设置 → 隐私与安全性”选择仅为此应用“仍要打开”。不要全局关闭系统安全保护。
 
 浏览器自动打开，首次启动进入连接设置。重复打开会复用当前工作台；关闭浏览器不停止研究。通过 Epivra 控制窗口的“退出”关闭后台服务。组件安装期间请等待安装结束后再退出。本机休眠会中断研究执行。
 
@@ -27,7 +25,6 @@ macOS 首次因未验证开发者而被拦截时，在确认来源后，可按 [
 
 控制窗口的“数据目录”打开实际工作区：
 - Windows：`%LOCALAPPDATA%\Epivra`
-- macOS：`~/Library/Application Support/Epivra`
 
 本文中的 `.env`、`.epivra/`、`.epivra-components/`、`mcp-servers.json` 均相对此目录。程序文件可以替换，用户数据独立保存。升级前退出 Epivra 并备份整个数据目录，然后替换应用。不要把凭据或研究数据放入安装包目录。已有源码工作区可用 `epivra-desktop --root <绝对路径>` 打开；程序不会自动迁移旧工作区。
 
@@ -41,7 +38,7 @@ python -m venv .venv
 .venv/Scripts/epivra-desktop.exe
 ```
 
-macOS/Linux 对应使用 `.venv/bin/python` 与 `.venv/bin/epivra-desktop`。源码 Web/CLI 默认使用当前目录，桌面入口默认使用上述用户数据目录。显式传入 `--root` 可统一工作区。
+源码 Web/CLI 默认使用当前目录，桌面入口默认使用上述用户数据目录。显式传入 `--root` 可统一工作区。
 
 需要手动管理服务或终端自动化时使用 `epivra --root <目录> --lang zh-CN web --port 0` 或 `epivra --help`。下文中的 CLI 命令面向源码安装，假设已激活虚拟环境。
 
@@ -96,15 +93,16 @@ python -m pip install ".[documents]"
 
 单份资料上限为 256 MiB，解析协议输出上限为 64 MiB，授权目录快照最多 100,000 个入口。这些是资源保护边界，不是研究来源数量上限；超出时请缩小授权目录或拆分资料。
 
-统计、绘图及 Python 分析需要 Docker Linux 容器环境。桌面版先安装并启动 [Docker Desktop](https://www.docker.com/products/docker-desktop/)，再在可选功能中点击“准备 Docker 分析”；完成后启用数据分析。无需重新安装 Epivra。
+Python 分析使用 Windows x64 内置沙盒。在设置中点击**准备内置 Python 分析**，
+等待本地解包与校验后勾选启用。无需 Docker 或自行安装 Python。
 
-源码安装可手动构建镜像：
+运行时包含科学计算、统计、机器学习、图表及 Excel/Parquet 库。脚本只能访问本次
+授权的输入，不能联网或任意读取本机文件。保留进程、内存、CPU 与超时限制；
+输出和临时文件大小采用监控限制，并非硬磁盘配额。
 
-```powershell
-docker build -t epivra-analysis:1 sandbox
-```
-
-在设置中启用数据分析。执行容器禁止联网，只接收本次授权输入，不挂载密钥或整个项目。无需分析时无需 Docker。
+源码开发者先执行 `python tools/build_analysis_bundle.py`，构建时下载并校验
+固定版本运行时、编译器和依赖；下载桌面包的用户不需要执行此步骤。
+已发布的 0.3.0 包早于本功能，新版发行包发布后才适用上述桌面步骤。
 
 ## 5. MCP 双向接入
 
@@ -180,7 +178,7 @@ Epivra 对外提供 HTTP MCP 时，在启动进程的环境中设置独立环境
 - **模型列表获取失败：**检查密钥、地区、账户权限及网络；列表接口与推理接口权限可能不同。
 - **配置新密钥仍无效：**检查同名环境变量是否覆盖 `.env`，已暂停任务通过重载连接接续。
 - **无法解析扫描件：**确认安装 documents 扩展，且模型目录完整。
-- **无法启动分析：**确认 Docker 正在运行且已构建 `epivra-analysis:1`。
+- **无法启动分析：**先在设置中准备内置组件。校验失败时查看 .epivra-components/setup.log，不要放松沙盒限制。
 - **研究被阻断：**依据任务提示处理，再恢复。不要重复新建任务来替代恢复。
 
 当前功能已集成，供应商真实账户联调、跨题材与长文档研究评测仍有未覆盖范围。报告不是必然正确的结论，重要使用场景应回看来源、条件和不确定性。工程测试通过不等于研究质量验收通过。

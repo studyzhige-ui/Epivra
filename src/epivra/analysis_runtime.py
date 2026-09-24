@@ -4,17 +4,19 @@ import asyncio
 
 from .analysis import DockerSandbox
 from .domain import Conflict, NotAllowed
+from .native_analysis import NativeSandbox
 from .scheduling import Scheduler
 from .storage import Store
 from .workspace import Workspace
 
 
 class AnalysisRuntime:
-    def __init__(self, store: Store, scheduler=None, sandbox=None):
+    def __init__(self, store: Store, scheduler=None, sandbox=None, native=None):
         self.store = store
         self.workspace = Workspace(store)
         self.scheduler = scheduler or Scheduler()
         self.sandbox = sandbox or DockerSandbox()
+        self.native = native or NativeSandbox(store.path.parent)
 
     async def run(self, study, work, epoch, step, index, args):
         self.store.require_work(study, work.ref, epoch)
@@ -23,6 +25,8 @@ class AnalysisRuntime:
         )
         if not config or not self.store.control(study).approved:
             raise NotAllowed("analysis is not enabled for this work")
+        sandbox = self.native if config.get("backend") == "native" else self.sandbox
+        generation = self.store.work_generation(study, work.ref)
         inputs = {item["name"]: item["ref"] for item in args["inputs"]}
         if len(inputs) != len(args["inputs"]):
             raise ValueError("duplicate input names")
@@ -51,6 +55,7 @@ class AnalysisRuntime:
                     "step": step,
                     "index": index,
                     "image": config["image"],
+                    "backend": config.get("backend", "docker"),
                 },
                 (work.ref, step, *inputs.values()),
             )
@@ -70,10 +75,12 @@ class AnalysisRuntime:
 
         def guard():
             self.store.require_work(study, work.ref, epoch)
+            if self.store.work_interrupted(study, work.ref) or generation != self.store.work_generation(study, work.ref):
+                raise NotAllowed("analysis interrupted by its owner")
 
         try:
             async with self.scheduler.slot("analysis", guard):
-                result = await self.sandbox.run(job.ref, folder, config, fresh, guard)
+                result = await sandbox.run(job.ref, folder, config, fresh, guard)
             saved = self.workspace.save_analysis(
                 study, job, result, config["output_mb"] * 1024 * 1024
             )
@@ -93,10 +100,10 @@ class AnalysisRuntime:
             raise
         except (ValueError, KeyError, TypeError, OSError, TimeoutError) as exc:
             try:
-                await self.sandbox.cleanup(job.ref)
+                await sandbox.cleanup(job.ref)
             except (ValueError, OSError, TimeoutError) as cleanup_error:
                 raise RuntimeError(
-                    "Local analysis requires Docker recovery; execution retained for reconciliation"
+                    "Local analysis requires sandbox recovery; execution retained for reconciliation"
                 ) from cleanup_error
             saved = self.workspace.save_analysis(
                 study,
@@ -117,18 +124,19 @@ class AnalysisRuntime:
         return saved.body
 
     async def cleanup(self, study, job):
-        await self.sandbox.cleanup(job.ref)
+        sandbox = self.native if job.body.get("backend") == "native" else self.sandbox
+        await sandbox.cleanup(job.ref)
         self.workspace.clear_analysis_staging(job)
         self.store.put(study, "analysis_cleanup", {"job": job.ref}, (job.ref,))
 
     async def reconcile(self, study):
-        sandbox = self.sandbox
         c = self.store.control(study)
         cleaned = {a.body["job"] for a in self.store.list(study, "analysis_cleanup")}
         results = {a.body["job"] for a in self.store.list(study, "analysis_result")}
         for job in self.store.list(study, "analysis_job"):
             if job.ref in cleaned:
                 continue
+            sandbox = self.native if job.body.get("backend") == "native" else self.sandbox
             work = next(
                 a
                 for ref in job.parents
@@ -153,6 +161,14 @@ class AnalysisRuntime:
                 )
                 self.workspace.clear_analysis_staging(job)
                 self.store.put(study, "analysis_cleanup", {"job": job.ref}, (job.ref,))
+            elif job.body.get("backend") == "native":
+                # Host-owned native workers die on host loss; a lost local result
+                # is recorded explicitly rather than rerunning arbitrary code.
+                await sandbox.cleanup(job.ref)
+                self.workspace.save_analysis(study, job, {
+                    "status": "interrupted", "log": "Native execution interrupted by host restart; no automatic rerun.",
+                    "files": []}, config["output_mb"] * 1024 * 1024)
+                await self.cleanup(study, job)
             else:
                 info = await sandbox.inspect("dr-analysis-" + job.ref)
                 if info and info["State"]["Status"] == "exited":

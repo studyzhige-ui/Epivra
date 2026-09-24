@@ -7,11 +7,12 @@ PROMPT_VERSION = "research-sufficiency-20260922"
 TOOLS = {
     'read_context': '读取当前工作的完整目录页：section取navigation中的目录名，offset从0或next_offset继续，limit为期望条目数。目录仅是导航，details_omitted项用原ref读取全文；不会读取其他工作的私有窗口。新增记录在目录末尾，状态随当前事实更新。',
     'read_writing_guide': '仅在指定体裁且需要规范时读取简短写作指南。用户模板及明确要求优先；指南不是新增验收门槛。未指定体裁不必使用。',
-    'run_analysis': '在已授权的无网络Docker沙箱执行Python。inputs为source ref与相对name，原文件在/inputs/data/<name>，成果存/outputs；purpose说明必要性。支持常用数据/统计/绘图库。返回status、日志及产物source引用，正文read_source，代码/输入read_artifact(job)。失败/超时不是证据；下游引用产物source，不转抄数据。',
+    'run_analysis': '在已授权的禁网 Python 沙盒执行分析。inputs为source ref与相对name，输入与输出位置遵守本次工具合同；purpose说明必要性。支持常用数据/统计/绘图库。返回status、日志及产物source引用，正文read_source，代码/输入read_artifact(job)。失败/超时不是证据；下游引用产物source，不转抄数据。',
     'measure_text': '仅用户明确有篇幅要求且需要测量时调用。text/evidence与draft_report一致时统计渲染稿，否则仅统计输入。计数为Unicode字符及去空白字符；body只排除自动参考资料，标题、Markdown与引用仍计入，不替用户定义正文。按真实范围整稿测量和调整，不逐句反复计数；计数说明放handoff，不放成品。',
     'record_evidence': '保存证据：优先提交当前work自己的read_source返回的selection与text陈述，系统直接保存对应原文，不再填写source/quote/offset；不能复制另一work的selection。需要更细摘录或跨工作核对时才使用source完整引用和精确quote（不得传URL、改写或省略号）；唯一匹配可省略offset。limits是可选的证据局限文字，不是分页limit。',
     'request_clarification': '仅助手可把确实阻断任务的跨任务取舍或授权内无法解决的缺口交研究主体。text说明问题、已查依据及影响，refs为直接记录。暂停当前助手直到内部答复；不是向用户提问。不因能依据原文纠正上游判断就请求许可。',
     'answer_clarification': '答复所属工作的待决疑问：question为疑问完整引用，text只给必要决定或解释，refs直接引用原生产者成果。答复后恢复原工作，不改写已有成果，不重建同一任务。',
+    'send_work_message': '向本主体的子work发送有具体目的的指导。message仅投递下一轮可读取的信息，不唤醒已中断任务；interrupt中断当前执行并保留成果；continue恢复未完成任务。未返回的付费调用不会盲重试；内部疑问仍用answer_clarification回答，完成的任务要另行委派。refs仅相关研究资料。消息不改变研究授权或证据结论。',
     'cancel_work': '结束本主体委派且已阻断或不再需要的助手，work为子工作引用，reason说明原因。保留其已保存成果，阻止后续写入；取消writer后写作权归还主体。已发出的调用仍结算，不代表可以重复调用。',
     'wait_for_work': '只在下一步确实依赖尚未结束的子工作且没有其他有价值的独立工作时等待，refs为本主体的子work引用。完成/内部疑问/阻断由调度器通知，不用反复轮询或读取助手私有执行过程，不推测未返回结果，不重复已委派的调查。',
     'calculate': '安全算术：十进制数、括号、+ - * /、**或^幂（均表示乘方）。支持增长率、折现等分数幂；负底数只支持整数幂。指数绝对值不超过1000，表达式不超过2000字符/200个语法节点，结果有理数分子分母最多4096位。返回50位有效数字；涉及非整数幂时exact为空，不能当精确值。不执行代码，不验证单位或方法。',
@@ -54,6 +55,7 @@ COMMON = FOUNDATION + """
 材料省略不证明事实不存在，未穷尽的材料不能证明唯一性；计算成立不证明前提成立，估计不是实际值或上下界，个案不证明总体。原文的条件或可能性不能在建议中变成无条件保证。
 复用已完成工作，但角色共识、核查接受和合法ref都不证明结论正确。遇到关键冲突、缺少前提或异常解释，直接回查相关原文，必要时定向补查，不重复调查无关资料。
 ## 输入与行动
+inbox为负责人发来的持久消息，按顺序处理其任务补充；消息不是事实证据，仍须引用原始资料。
 inputs为明确交接的原始记录；context已有完整body时不重复读取，省略部分按ref展开。navigation是目录，不代表全部资料；research_findings/research_conflicts等完整共享目录可用read_context按需获取。定向助手默认只加载本任务相关记录，缺少自动注入不表示共享资料不存在。
 独立且参数已知的读取/查询可同轮调用；必须依赖尚未返回结果的动作留到结果之后。共享同一基稿的修改合成一批，不能并发抢写；结果必须实际返回，不预测助手或工具发现。
 使用save_memory/save_note保存有复用价值的进度和原文入口，不保存隐藏思维，不为每份资料生成一份额外审查。简单算术用calculate；获准的数据分析用run_analysis，检查输入口径与方法范围，计算产物属于派生依据。

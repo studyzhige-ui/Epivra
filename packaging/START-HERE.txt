@@ -1,29 +1,22 @@
-Epivra desktop / Epivra 桌面版
+Epivra Windows x64 / Windows 桌面版
 
-Windows: Extract the entire ZIP, then double-click Epivra.exe.
-macOS: Open the DMG, drag Epivra into Applications, then open Epivra.
-No separate Python, Git, Node.js or database installation is required.
+1. Extract the entire ZIP and double-click Epivra.exe.
+   完整解压 ZIP，双击 Epivra.exe。
+2. Configure your provider and API key in the browser.
+   在自动打开的界面配置供应商与自己的密钥。
+3. Enter a research question and approve the initial route.
+   输入研究问题，确认初始研究路线。
 
-Windows：完整解压 ZIP，然后双击 Epivra.exe。
-macOS：打开 DMG，把 Epivra 拖入“应用程序”，再打开 Epivra。
-无需单独安装 Python、Git、Node.js 或数据库。
-
-Your browser opens automatically. On first launch, choose a model provider and
-enter your own API key in Connections & settings. Provider calls may incur fees.
-关闭浏览器不会停止研究。需要退出时，在 Epivra 控制窗口点击“退出”。
-Closing the browser keeps research running. Use Quit in the Epivra control window.
-
-Optional OCR and Docker analysis are prepared from Connections & settings.
-Docker Desktop must be installed and started separately. Optional downloads can
-require several GB. Leave Epivra running until setup finishes.
-OCR 和 Docker 分析可在“连接与设置”中按需准备。Docker Desktop 需单独安装并启动。
-
-Data / 数据：
-Windows: %LOCALAPPDATA%\Epivra
-macOS: ~/Library/Application Support/Epivra
-The data folder is separate from the app. Back it up before upgrading.
-退出旧应用后替换应用文件；不要删除数据文件夹。
-
-These builds have no publisher certificate or Apple notarization yet.
-系统可能显示未知开发者提示；当前构建未获得发布者签名或 Apple 公证。
-Download only from https://github.com/studyzhige-ui/Epivra/releases
+No separate Python, Git, Node.js, database or Docker is required.
+无需单独安装 Python、Git、Node.js、数据库或 Docker。
+Prepare built-in Python analysis in Settings: local extraction and verification,
+then enable analysis. OCR is a separate optional download and may use several GB.
+设置中准备内置 Python 分析，完成本地解包与校验后启用；OCR 单独按需下载。
+Keep Epivra running during preparation. Use Quit in its control window to exit.
+准备期间保持运行；关闭浏览器不会退出应用，退出请使用控制窗口。
+Data / 数据：%LOCALAPPDATA%/Epivra
+Quit and back up this folder before replacing application files.
+升级前退出应用并备份数据目录，不要删除用户数据。
+Provider API calls may incur fees. The build has no publisher signature.
+供应商 API 调用可能收费；当前构建没有发布者签名。
+Official downloads: https://github.com/studyzhige-ui/Epivra/releases

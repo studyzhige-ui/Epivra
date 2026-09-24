@@ -109,7 +109,7 @@ class App:
         if action == "delete" and result.get("deleted") is False:
             raise WebError(
                 tr(
-                    "研究已停止，但资源清理尚未完成。请检查本地工具或Docker状态后重试删除；记录暂时保留。"
+                    "研究已停止，但资源清理尚未完成。请查看清理错误并重试删除；记录暂时保留。"
                 ),
                 503,
             )

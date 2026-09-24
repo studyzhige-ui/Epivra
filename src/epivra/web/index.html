@@ -411,17 +411,16 @@
           /></label>
         </div>
         <h3>可选功能</h3>
-        <p class="muted">基础版可直接研究文本、文本 PDF 和表格。以下功能按需准备，首次下载可能需要数 GB 空间。</p>
+        <p class="muted">文本、文本 PDF 和表格可直接研究。内置分析按需准备；OCR 需联网下载，可能需要数 GB 空间。</p>
         <div class="form-row">
           <button type="button" id="install-documents">安装 OCR 文档解析</button>
           <span id="documents-state" role="status"></span>
         </div>
         <div class="form-row">
-          <button type="button" id="install-analysis">准备 Docker 分析</button>
-          <a href="https://www.docker.com/products/docker-desktop/" target="_blank" rel="noopener noreferrer">下载 Docker Desktop</a>
+          <button type="button" id="install-analysis">准备 / 校验内置 Python 分析</button>
           <span id="analysis-state" role="status"></span>
         </div>
-        <p class="muted">Docker Desktop 需单独安装并启动。准备完成后，再勾选下方的数据分析开关。</p>
+        <p class="muted">分析组件随 Windows 下载包提供，准备时在本地解包和校验，无需 Docker。准备完成后勾选下方开关。</p>
         <p id="component-status" role="status" aria-live="polite"></p>
         <h3>资料与工具</h3>
         <div class="form-row">
@@ -438,8 +437,7 @@
           /></label>
         </div>
         <label class="checkbox"
-          ><input id="analysis" type="checkbox" />启用 Docker
-          数据分析（需要已构建的本地镜像）</label
+          ><input id="analysis" type="checkbox" />启用内置 Python 数据分析（需先准备组件）</label
         >
         <details>
           <summary>MCP 外部连接</summary>

@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import time
+import uuid
 from typing import Any
 
 from .adapters import ProviderFailure, rate_limit_delay
+from .agent_runtime import AgentRuntime
 from .domain import Conflict, RecoveryExhausted, RepeatedFailure
 from .harness import Harness
 from .storage import Store
@@ -13,11 +16,12 @@ from .usage import summarize
 
 
 class ResearchService:
-    def __init__(self, store: Store, harness: Harness, concurrency: int = 4):
+    def __init__(self, store: Store, harness: Harness, concurrency: int = 4, runtime=None):
         if concurrency < 1:
             raise ValueError("concurrency must be positive")
         self.store, self.harness = store, harness
         self.concurrency = concurrency
+        self.runtime = runtime or AgentRuntime(concurrency)
         self.tasks: dict[str, asyncio.Task] = {}
         self.errors: dict[str, str] = {}
         self.work_errors: dict[str, str] = {}
@@ -51,9 +55,11 @@ class ResearchService:
     async def _drive(self, study: str) -> None:
         active: dict[str, asyncio.Task] = {}
         delivered = set()
+        changed = self.store.watch(study)
         epoch = self.store.control(study).epoch
         try:
             while True:
+                changed.clear()
                 c = self.store.control(study)
                 if c.epoch != epoch:
                     raise Conflict("control changed while steps were active")
@@ -95,6 +101,13 @@ class ResearchService:
                     for child in children:
                         if self._discard_cancelled_error(study, child.ref):
                             continue
+                        messages = [m for m in self.store.work_messages(study, child.ref)
+                                    if m.body["mode"] in {"interrupt", "continue"}]
+                        ends = self.store.matching(study, "agent_attempt_end", {"work": child.ref}, limit=1)
+                        if (messages and messages[-1].body["mode"] == "continue" and ends
+                                and messages[-1].seq > ends[-1].seq):
+                            self.work_errors.pop(child.ref, None)
+                            self.repeated_failures.discard(child.ref)
                         if child.ref in self.repeated_failures:
                             try:
                                 self.harness._check_repeated(study, child.ref, c.epoch)
@@ -148,6 +161,8 @@ class ResearchService:
                     waiting = bool(
                         waits and any(w.ref in waits[-1].body["refs"] for w in pending)
                     )
+                    if any(self.store.work_interrupted(study, w.ref) for w in pending):
+                        waiting = False
                     questions = self.store.clarifications(
                         study, owner=root.ref, open_only=True
                     )
@@ -168,27 +183,30 @@ class ResearchService:
                             break
                         if w.ref not in active:
                             active[w.ref] = asyncio.create_task(
-                                self._run_child(study, w.ref)
-                                if w.body["owner"]
-                                else self.harness.step(study, w.ref)
+                                self._turn(study, w.ref, epoch)
                             )
                     if not active:
                         return
-                    done, _ = await asyncio.wait(
-                        active.values(),
-                        timeout=0.25,
-                        return_when=asyncio.FIRST_COMPLETED,
-                    )
+                    wake = asyncio.create_task(changed.wait())
+                    try:
+                        done, _ = await asyncio.wait(
+                            [*active.values(), wake],
+                            return_when=asyncio.FIRST_COMPLETED,
+                        )
+                    finally:
+                        wake.cancel()
+                        await asyncio.gather(wake, return_exceptions=True)
                     outcomes = []
                     for ref, task in tuple(active.items()):
                         if task in done:
                             del active[ref]
-                            outcomes.append(task.exception())
+                            if not task.cancelled():
+                                outcomes.append(task.exception())
                     for outcome in outcomes:
                         if outcome is not None:
                             raise outcome
                     continue
-                await self.harness.step(study, work.ref)
+                await self._turn(study, work.ref, epoch)
                 # Let control messages run even when every operation was replayed.
                 await asyncio.sleep(0)
         except asyncio.CancelledError:
@@ -210,6 +228,43 @@ class ResearchService:
             # another epoch starts. Host shutdown cancels and retains unknowns.
             if active:
                 await asyncio.gather(*active.values(), return_exceptions=True)
+
+    async def _turn(self, study, work, epoch):
+        self.harness.agent_runtime = self.runtime
+        self.store.require_work(study, work, epoch)
+        if self.harness.waiting(study, work) or self.harness.finished(study, work):
+            return
+        item = self.store.get(study, work)
+        attempt = self.store.put(study, "agent_attempt", {
+            "id": uuid.uuid4().hex, "work": work, "epoch": epoch,
+            "started_at": time.time(),
+        }, (work,))
+        with self.runtime.execution(study, work):
+            outcome = "completed_turn"
+            try:
+                if item.body["owner"]:
+                    await self._run_child(study, work)
+                    if work in self.work_errors:
+                        outcome = "blocked"
+                    elif self.store.work_interrupted(study, work):
+                        outcome = "interrupted"
+                else:
+                    await self.harness.step(study, work)
+            except asyncio.CancelledError:
+                outcome = "interrupted"
+                raise
+            except Conflict:
+                outcome = "superseded"
+                raise
+            except BaseException:
+                outcome = "failed"
+                raise
+            finally:
+                self.store.put(study, "agent_attempt_end", {
+                    "attempt": attempt.ref, "work": work,
+                    "outcome": outcome, "finished_at": time.time(),
+                    "error": self.work_errors.get(work),
+                }, (attempt.ref, work))
 
     def status(self, study: str) -> dict[str, Any]:
         c = self.store.control(study)
@@ -235,6 +290,7 @@ class ResearchService:
             "error": self.errors.get(study),
             "unsettled_operations": self.store.unsettled(study),
             "provider_queue": self.harness.scheduler.snapshot(),
+            "agent_runtime": self.runtime.snapshot(study),
             "usage": summarize(self.store.usage_records(study)),
             "analyses": [a.body for a in self.store.list(study, "analysis_result")],
             "clarifications": [

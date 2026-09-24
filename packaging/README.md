@@ -1,48 +1,32 @@
-# Desktop release engineering
+# Windows desktop release engineering
 
-The base app is one edition. OCR and Docker analysis are independent optional
-components configured by the user. There are two native artifacts, not four
-parallel product editions.
+Windows x64 is the supported build target. One edition includes the restricted
+Python analysis archive. OCR remains an independent optional download.
+macOS build and verification are discontinued.
 
-Run on Windows x64 or macOS 14+ Apple Silicon, using Python 3.12+:
-
-```
+```powershell
 python -m pip install -e ".[mcp]" build ruff mypy resvg-py pillow
+python tools/build_analysis_bundle.py
 python tools/build_desktop.py --output dist/desktop
 ```
 
-The build fetches a fixed python-build-standalone CPython 3.12.13 archive and
-checks its upstream SHA-256 before extraction. Runtime URLs and digests are in
-the build script. A build-only `--runtime-archive` argument accepts an already
-downloaded archive with the same required digest. No Python from the build
-machine is copied into the product.
+The analysis build verifies the pinned CPython archive, compiler wheel and all
+scientific wheel hashes. It builds the reviewed CPython IO correction, tests real
+overlapped IO and the complete LPAC scientific/boundary workload, then creates
+dist/analysis/runtime.zip and bundle.json with provenance and file hashes.
+Offline inputs: --runtime-archive, --compiler-wheel, --wheelhouse, --source-cache.
+Use a fresh output directory.
 
-The wheel and all base dependencies are installed inside that relocatable
-runtime. Package metadata and licenses stay bundled; THIRD-PARTY-PACKAGES.json
-records exact installed versions. The app icon is rendered from the repository
-SVG. Windows uses a .NET Framework launcher compiled for x64; macOS uses a
-native arm64 launcher inside an application bundle. Sandbox build resources are
-copied explicitly. No source workspace, .env or research state is packaged.
+The desktop builder includes the archive in its credential-free runtime.
+Preparation verifies and extracts it locally and performs restricted analysis
+before atomically marking it ready. End users need no Docker, compiler or download
+of scientific libraries.
 
-The mandatory smoke check copies the built application to another directory,
-removes system Python from PATH, launches the native entry point in an empty
-workspace, and checks Web assets/authentication, duplicate launch, a real parser
-subprocess, Tk, shutdown and restart. All provider credentials are excluded.
+Desktop acceptance relocates the application, removes system Python from PATH,
+and checks launch, authentication, duplicate launch, parser subprocesses, Tk,
+shutdown and restart, using empty data and no provider keys.
 
-The GitHub Desktop release workflow runs native bundle and source checks
-on windows-2022 and macos-14 arm64. Manual dispatch builds artifacts only. A
-matching v0.3.x tag publishes a **prerelease**, only after both jobs pass.
-
-Current artifacts are unsigned (macOS runtime binaries have only ad-hoc
-integrity signatures). No Developer ID trust or notarization is claimed.
-For a trusted general release, provision real Windows publisher and Apple
-Developer ID credentials, sign the full payload on the matching runner,
-notarize and staple the macOS bundle, and validate the downloaded quarantined
-artifact on clean machines. Never simulate this by removing quarantine or
-disabling Gatekeeper/SmartScreen.
-
-Release acceptance does not include the deferred semantic quality of research
-reports. Optional component download/installation and actual Docker workloads
-must be reported independently of the base application smoke check.
-
-Full regression suites and evaluation assets are maintained locally, outside Git tracking. The repository retains static gates and native bundle smoke checks.
+GitHub builds on windows-2022. Manual dispatch builds artifacts only; matching
+v0.3.x tags publish a prerelease after checks. Artifacts remain unsigned.
+Research-report quality is deferred. Full local regression suites stay outside
+Git tracking; runtime and desktop acceptance tools remain in the repository.

@@ -20,6 +20,10 @@ class NotAllowed(ValueError):
     """The requested action is outside the current authority."""
 
 
+class WorkInterrupted(Exception):
+    """A persistent child control superseded this execution attempt."""
+
+
 class RuntimeMismatch(NotAllowed):
     """An archived research protocol cannot resume under different semantics."""
 

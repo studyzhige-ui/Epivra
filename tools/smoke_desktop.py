@@ -10,12 +10,27 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
+from contextlib import contextmanager
 from pathlib import Path
+
+
+@contextmanager
+def temporary_workspace():
+    path = Path(tempfile.mkdtemp(prefix="Epivra relocation ")).resolve()
+    try:
+        yield path
+    finally:
+        if path.parent != Path(tempfile.gettempdir()).resolve():
+            raise ValueError("Unexpected temporary workspace")
+        target = str(path)
+        if sys.platform == "win32" and not target.startswith("\\\\?\\"):
+            target = "\\\\?\\UNC\\" + target[2:] if target.startswith("\\\\") else "\\\\?\\" + target
+        shutil.rmtree(target)
 
 
 def smoke(package):
     windows = sys.platform == "win32"
-    with tempfile.TemporaryDirectory(prefix="Epivra relocation ") as folder:
+    with temporary_workspace() as folder:
         base = Path(folder)
         moved = base / "space and 中文" / package.name
         shutil.copytree(package, moved, symlinks=True)
@@ -87,6 +102,25 @@ def smoke(package):
             subprocess.run([str(python), "-I", "-c",
                             "import tkinter; r=tkinter.Tk(); r.withdraw(); r.update(); r.destroy(); print('Tk OK')"],
                            cwd=base, env=env, check=True, timeout=30)
+            # Prepare the included component through the same authenticated API as Settings.
+            with request(record, "/api/components", {"component": "analysis"}) as response:
+                assert json.load(response)["job"]["state"] in {"running", "ready"}
+            deadline = time.monotonic() + 180
+            while True:
+                with request(record, "/api/components") as response:
+                    component = json.load(response)
+                if component["job"]["state"] == "failed":
+                    setup_log = root / ".epivra-components/setup.log"
+                    raise AssertionError((component, setup_log.read_text(encoding="utf-8")))
+                if component["analysis"]:
+                    break
+                if time.monotonic() >= deadline:
+                    raise AssertionError(("analysis preparation timed out", component))
+                time.sleep(0.5)
+            subprocess.run([str(python), "-I", "-c",
+                            "import sys; from epivra.native_analysis import settings; "
+                            "assert settings(sys.argv[1],{'backend':'native'})['backend']=='native'",
+                            str(root)], cwd=base, env=env, check=True, timeout=15)
             with request(record, "/api/desktop/quit", {}) as response:
                 assert json.load(response)["stopping"]
             assert process.wait(timeout=40) == 0
@@ -95,6 +129,8 @@ def smoke(package):
             assert sentinel.read_text() == "preserve upgrades"
             process = launch()
             record = wait_ready(process)
+            with request(record, "/api/components") as response:
+                assert json.load(response)["analysis"]
             subprocess.run([str(launcher), "--root", str(root), "--shutdown"],
                            cwd=base, env=env, check=True, timeout=15)
             assert process.wait(timeout=40) == 0
@@ -109,7 +145,7 @@ def smoke(package):
                     process.wait()
         assert not list(moved.rglob(".env"))
         assert not list(moved.rglob("state.db"))
-        print("Desktop smoke passed: native launch, relocation, assets, auth, duplicate, parser, Tk, exit and restart")
+    print("Desktop smoke passed: native launch, relocation, assets, auth, duplicate, parser, Tk, built-in analysis preparation, exit and restart")
 
 
 if __name__ == "__main__":

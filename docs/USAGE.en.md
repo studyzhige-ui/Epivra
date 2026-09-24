@@ -17,11 +17,9 @@ Desktop downloads include Python and require no Git, Node.js, or database instal
 | Platform | Steps |
 |---|---|
 | Windows 10/11 x64 | Download the Windows ZIP, extract the complete folder, and open **Epivra.exe**. |
-| macOS 14+ Apple Silicon | Open the macOS DMG, drag **Epivra** into Applications, then open it. |
 
-This is an unsigned desktop preview. Windows may report an unknown publisher; the macOS application is not Apple notarized. Downloads require an authorized GitHub account while the repository is private.
+This is an unsigned desktop preview. Windows may report an unknown publisher. macOS is no longer a build or verification target. Downloads require an authorized GitHub account while the repository is private.
 
-If macOS blocks the first launch because the developer is unverified, confirm the download source and follow [Apple’s instructions](https://support.apple.com/102445) to allow this app under **System Settings → Privacy & Security → Open Anyway**. Do not disable system security globally.
 
 Your browser opens automatically, showing connection settings on first launch. Opening Epivra again reuses the running workbench. Closing the browser keeps research running; use **Quit** in the Epivra control window to stop the background service. Wait for component installation to finish before quitting. Computer sleep interrupts execution.
 
@@ -29,7 +27,6 @@ Your browser opens automatically, showing connection settings on first launch. O
 
 The control window opens your **Data folder**:
 - Windows: `%LOCALAPPDATA%\Epivra`
-- macOS: `~/Library/Application Support/Epivra`
 
 Paths such as `.env`, `.epivra/`, `.epivra-components/`, and `mcp-servers.json` in this guide are relative to that folder. Before upgrading, quit Epivra and back up the entire data folder, then replace the application. Keep credentials and research out of the installation folder. Use `epivra-desktop --root <absolute-path>` to open an existing source workspace; existing data is never migrated automatically.
 
@@ -43,7 +40,7 @@ python -m venv .venv
 .venv/Scripts/epivra-desktop.exe
 ```
 
-On macOS/Linux use `.venv/bin/python` and `.venv/bin/epivra-desktop`. Source Web/CLI commands default to the current directory; the desktop entry defaults to the user data folder above. Pass `--root` explicitly to use the same workspace.
+Source Web/CLI commands default to the current directory; the desktop entry defaults to the user data folder above. Pass `--root` explicitly to use the same workspace.
 
 For manual server operation use `epivra --root <path> --lang en web --port 0`; see `epivra --help` for automation. CLI commands below assume a source installation and an activated virtual environment.
 
@@ -102,15 +99,18 @@ In a source installation, local models are automatically discovered in `models/d
 
 A single material is limited to 256 MiB, parser output to 64 MiB, and an authorized directory snapshot to 100,000 entries. These are resource-protection limits, not research source-count limits; use smaller roots or split oversized materials when necessary.
 
-Statistics, charts, and Python analysis require Docker running Linux containers. Desktop users install and start [Docker Desktop](https://www.docker.com/products/docker-desktop/), choose **Prepare Docker analysis** under Optional features, then enable analysis. No separate Epivra edition is needed.
+Python analysis runs in the built-in Windows x64 sandbox. In Settings choose
+**Prepare built-in Python analysis**, wait for local extraction and verification,
+then enable it. No Docker or separately installed Python is required.
 
-For a source installation, build the image manually:
+The bundled runtime includes scientific, statistical, ML, chart and Excel/Parquet
+libraries. Scripts receive only staged authorized inputs and cannot use the
+network or arbitrary local files. Process/memory/CPU restrictions and timeouts
+apply; output/scratch size limits use monitoring, not hard disk quotas.
 
-```powershell
-docker build -t epivra-analysis:1 sandbox
-```
-
-Enable analysis in settings. Containers have no network access and receive only the authorized inputs for that task, not credentials or the whole project. Docker is unnecessary when analysis is disabled.
+Source developers first run `python tools/build_analysis_bundle.py`. This build
+downloads and verifies the pinned runtime, compiler and wheels; downloaded desktop
+users do not run it. The published 0.3.0 package predates this feature.
 
 ## 5. Bidirectional MCP
 
@@ -186,7 +186,7 @@ Provider caching is an optimization, not a recovery dependency. Usage reports sh
 - **Model discovery fails:** check the key, region, account permissions, and network. Listing and inference permissions may differ.
 - **A new key has no effect:** check for an overriding environment variable. Reload credentials for paused tasks before resuming.
 - **Scanned materials fail:** verify that the documents extension and complete local model directory are installed.
-- **Analysis will not start:** check Docker and the `epivra-analysis:1` image.
+- **Analysis will not start:** prepare the built-in component in Settings. If verification fails, inspect .epivra-components/setup.log; do not disable sandbox restrictions.
 - **Research is blocked:** follow the task's message, fix the cause, and resume instead of creating a duplicate task.
 
 Research conclusions are not guaranteed correct; review important sources, limitations, and uncertainty. Engineering tests do not replace research quality evaluation.

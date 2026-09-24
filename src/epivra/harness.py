@@ -7,6 +7,7 @@ import math
 import re
 import time
 from collections.abc import Awaitable, Callable
+from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Protocol
@@ -23,6 +24,8 @@ from .domain import (
     RecoveryExhausted,
     RepeatedFailure,
     Reply,
+    UnknownOutcome,
+    WorkInterrupted,
     bounded_json,
     encode,
     identity,
@@ -179,6 +182,10 @@ BUILTINS = {
     ),
     "wait_for_work": ("lead", object_schema({"refs": STRINGS})),
     "cancel_work": ("lead", object_schema({"work": STRING, "reason": STRING})),
+    "send_work_message": ("lead", object_schema({
+        "work": STRING, "text": STRING, "refs": STRINGS,
+        "mode": {**STRING, "enum": ["message", "continue", "interrupt"]},
+    })),
     "pin_evidence": ("all", object_schema({"refs": STRINGS})),
     "delegate_work": (
         "lead",
@@ -563,7 +570,7 @@ def validate(value: Any, schema: dict[str, Any], path: str = "arguments") -> Non
         raise ValueError("expected one of: " + ", ".join(schema["enum"]))
 
 
-PRIVATE_ARTIFACT_KINDS = frozenset({"step", "step_done", "control", "material_bytes"})
+PRIVATE_ARTIFACT_KINDS = frozenset({"step", "step_done", "control", "material_bytes", "agent_attempt", "agent_attempt_end"})
 
 
 class Harness:
@@ -684,6 +691,12 @@ class Harness:
                     "description": tool.description,
                     "parameters": tool.schema,
                 }
+        if isinstance(policy.get("analysis"), dict) and policy["analysis"].get("backend") == "native" and "run_analysis" in result:
+            result["run_analysis"]["description"] = (
+                "在原生受限 Python 沙盒分析授权输入，无网络、无子进程。"
+                "使用 pathlib.Path 类型的 INPUT_DIR / name 读取输入，OUTPUT_DIR / name 保存成果；"
+                "不要硬编码 /inputs 或 /outputs。inputs 绑定 source ref 和相对 name。"
+                "purpose 说明必要性。返回状态、日志和产物 source 引用；失败不是证据。")
         return result
 
     def _read_denial(self, study: str, kind: str) -> str | None:
@@ -839,6 +852,8 @@ class Harness:
             "work_ref": work.ref,
             "direction_ref": direction.ref,
             "task": work.body["task"],
+            "work_generation": self.store.work_generation(study, work.ref),
+            "inbox": [{"ref": m.ref, **m.body} for m in self.store.pending_messages(study, work.ref)[:8]],
             "shared_context": work.body.get("shared_context", ""),
             "deliverable": work.body.get("deliverable", ""),
             "draft": self._draft_head(study, work),
@@ -879,6 +894,7 @@ class Harness:
                         a.ref for a in self._steps(study, "work_result", child.ref)
                     ],
                     "finished": self.finished(study, child.ref),
+                    "interrupted": self.store.work_interrupted(study, child.ref),
                 }
                 for child in self.store.matching(study, "work", {"owner": work.ref})
             ],
@@ -895,6 +911,10 @@ class Harness:
             ),
             "tool_versions": {name: tool.binding for name, tool in self.tools.items()},
         }
+        if not mandatory["inbox"]:
+            mandatory.pop("inbox")
+        if mandatory["work_generation"] is None:
+            mandatory.pop("work_generation")
         if work.body["role"] == "reviewer":
             report, parts = self._review(study, work)
             mandatory["review_mode"] = work.body.get("review_mode", "final")
@@ -941,6 +961,7 @@ class Harness:
                 "plan",
                 "note",
                 "clarification_answer",
+                "work_message",
                 "finding",
                 "research_conflict",
                 "writing_basis",
@@ -1134,108 +1155,115 @@ class Harness:
         invoke_received=None,
         research_key=None,
     ):
-        model = self._model_for(self.store.get(study, work))
-        retry = self._attempt(study, operation)
-        attempt = retry.body["attempt"] if retry else 0
-        key = retry.body["next"] if retry else operation
-        while True:
-            if retry:
-                # Persisted wall-clock deadline survives process restart. Short
-                # cooperative waits also fence pause/steer before another send.
-                while retry.body["not_before"] > time.time():
-                    self.store.require_work(study, work, epoch)
-                    await asyncio.sleep(
-                        min(0.25, retry.body["not_before"] - time.time())
+        runtime = getattr(self, "agent_runtime", None)
+        phase = runtime.phase(study, work, "waiting_provider", resource) if runtime and request_step else nullcontext()
+        with phase:
+            model = self._model_for(self.store.get(study, work))
+            retry = self._attempt(study, operation)
+            attempt = retry.body["attempt"] if retry else 0
+            key = retry.body["next"] if retry else operation
+            while True:
+                if retry:
+                    # Persisted wall-clock deadline survives process restart. Short
+                    # cooperative waits also fence pause/steer before another send.
+                    while retry.body["not_before"] > time.time():
+                        self._execution_guard(study, work, epoch, step)
+                        await asyncio.sleep(
+                            min(0.25, retry.body["not_before"] - time.time())
+                        )
+                if self.store.operation_status(study, key) is None:
+                    queued_at = self.scheduler.clock()
+                    tokens = (
+                        request.get("wire", {}).get("estimated_input_tokens", 0)
+                        + getattr(model, "max_tokens", 0)
+                        if request_step is not None
+                        else 0
                     )
-            if self.store.operation_status(study, key) is None:
-                queued_at = self.scheduler.clock()
-                tokens = (
-                    request.get("wire", {}).get("estimated_input_tokens", 0)
-                    + getattr(model, "max_tokens", 0)
-                    if request_step is not None
+                    async with self.scheduler.slot(
+                        resource,
+                        lambda: self._execution_guard(study, work, epoch, step),
+                        tokens,
+                    ) as admitted:
+                        runtime = getattr(self, "agent_runtime", None)
+                        slot = runtime.turn(study, work, lambda: self._execution_guard(study, work, epoch, step)) if runtime and request_step else nullcontext()
+                        async with slot:
+                            self._execution_guard(study, work, epoch, step)
+                            raw = self.store.admit(
+                                study,
+                                work,
+                                epoch,
+                                key,
+                                request,
+                                request_step=request_step,
+                                admission={
+                                    "queued_at": queued_at,
+                                    "at": admitted,
+                                    "resource": resource,
+                                    "tokens": tokens,
+                                    "model": getattr(model, "model", None)
+                                    if request_step
+                                    else None,
+                                    **({"research_key": research_key} if research_key else {}),
+                                },
+                            )
+                            if raw is None:
+                                self.store.mark_invoked(key, self.scheduler.clock())
+                                raw = (
+                                    await invoke_received(
+                                        lambda value: self.store.settle(
+                                            key, value, settled_at=self.scheduler.clock()
+                                        )
+                                    )
+                                    if invoke_received
+                                    else await invoke()
+                                )
+                                self.store.settle(key, raw, settled_at=self.scheduler.clock())
+                else:
+                    raw = self.store.admit(
+                        study, work, epoch, key, request, request_step=request_step
+                    )
+                delay = retry_delay(raw, attempt) if retry_delay else None
+                if (
+                    delay is None
+                    and retry_on_resume
+                    and retry_on_resume(raw)
+                    and epoch > self.store.admission_epoch(study, key)
+                ):
+                    delay = 0
+                if delay is None:
+                    self._execution_guard(study, work, epoch, step)
+                    return raw
+                if not math.isfinite(delay) or delay < 0:
+                    raise ValueError("invalid provider retry delay")
+                epoch_attempt = (
+                    retry.body.get("epoch_attempt", retry.body["attempt"])
+                    if retry and retry.body.get("recovery_epoch", epoch) == epoch
                     else 0
                 )
-                async with self.scheduler.slot(
-                    resource,
-                    lambda: self.store.require_work(study, work, epoch),
-                    tokens,
-                ) as admitted:
-                    raw = self.store.admit(
-                        study,
-                        work,
-                        epoch,
-                        key,
-                        request,
-                        request_step=request_step,
-                        admission={
-                            "queued_at": queued_at,
-                            "at": admitted,
-                            "resource": resource,
-                            "tokens": tokens,
-                            "model": getattr(model, "model", None)
-                            if request_step
-                            else None,
-                            **({"research_key": research_key} if research_key else {}),
-                        },
+                if epoch_attempt >= 5:
+                    raise RecoveryExhausted(
+                        "automatic recovery exhausted for this operation; explicit resume required"
                     )
-                    if raw is None:
-                        self.store.mark_invoked(key, self.scheduler.clock())
-                        raw = (
-                            await invoke_received(
-                                lambda value: self.store.settle(
-                                    key, value, settled_at=self.scheduler.clock()
-                                )
-                            )
-                            if invoke_received
-                            else await invoke()
-                        )
-                        self.store.settle(key, raw, settled_at=self.scheduler.clock())
-            else:
-                raw = self.store.admit(
-                    study, work, epoch, key, request, request_step=request_step
+                attempt += 1
+                next_key = identity("retry", operation, attempt)
+                retry = self.store.put(
+                    study,
+                    "retry",
+                    {
+                        "operation": operation,
+                        "previous": key,
+                        "next": next_key,
+                        "attempt": attempt,
+                        "recovery_epoch": epoch,
+                        "epoch_attempt": epoch_attempt + 1,
+                        "not_before": time.time() + delay,
+                        "resource": resource,
+                    },
+                    (work, step),
                 )
-            delay = retry_delay(raw, attempt) if retry_delay else None
-            if (
-                delay is None
-                and retry_on_resume
-                and retry_on_resume(raw)
-                and epoch > self.store.admission_epoch(study, key)
-            ):
-                delay = 0
-            if delay is None:
-                self.store.require_work(study, work, epoch)
-                return raw
-            if not math.isfinite(delay) or delay < 0:
-                raise ValueError("invalid provider retry delay")
-            epoch_attempt = (
-                retry.body.get("epoch_attempt", retry.body["attempt"])
-                if retry and retry.body.get("recovery_epoch", epoch) == epoch
-                else 0
-            )
-            if epoch_attempt >= 5:
-                raise RecoveryExhausted(
-                    "automatic recovery exhausted for this operation; explicit resume required"
-                )
-            attempt += 1
-            next_key = identity("retry", operation, attempt)
-            retry = self.store.put(
-                study,
-                "retry",
-                {
-                    "operation": operation,
-                    "previous": key,
-                    "next": next_key,
-                    "attempt": attempt,
-                    "recovery_epoch": epoch,
-                    "epoch_attempt": epoch_attempt + 1,
-                    "not_before": time.time() + delay,
-                    "resource": resource,
-                },
-                (work, step),
-            )
-            self.scheduler.defer(resource, retry.body["not_before"])
-            self.store.require_work(study, work, epoch)
-            key = next_key
+                self.scheduler.defer(resource, retry.body["not_before"])
+                self._execution_guard(study, work, epoch, step)
+                key = next_key
 
     def _steps(self, study: str, kind: str, work: str, *, limit=None) -> list[Artifact]:
         return self.store.related(
@@ -1259,6 +1287,8 @@ class Harness:
     def _handoff_inputs(self, study: str, work: Artifact) -> tuple[str, ...]:
         questions = {q.ref for q in self.store.clarifications(study, work=work.ref)}
         refs = list(work.body["inputs"])
+        for message in self.store.work_messages(study, work.ref):
+            refs.extend((message.ref, *message.body["refs"]))
         for answer in self.store.list(study, "clarification_answer"):
             if answer.body["question"] in questions:
                 refs.extend((answer.ref, *answer.body["refs"]))
@@ -1287,7 +1317,7 @@ class Harness:
         ]
 
     def waiting(self, study: str, work: str) -> bool:
-        return bool(self.store.clarifications(study, work=work, open_only=True))
+        return self.store.work_interrupted(study, work) or bool(self.store.clarifications(study, work=work, open_only=True))
 
     def _draft_head(self, study: str, work: Artifact) -> dict | None:
         draft = self.writing.current(study, work.body["direction"])
@@ -1304,7 +1334,26 @@ class Harness:
     def finished(self, study: str, work: str) -> bool:
         return bool(self._steps(study, "work_result", work))
 
+    def _execution_guard(self, study, work, epoch, step):
+        self.store.require_work(study, work, epoch)
+        generation = self.store.work_generation(study, work)
+        if generation is None:
+            return
+        request = self.store.get(study, step).body["request"]
+        if (self.store.work_interrupted(study, work)
+                or request.get("work_generation") != generation):
+            if any(op["work"] == work for op in self.store.unsettled(study)):
+                raise UnknownOutcome("interrupted work retains an unknown paid operation")
+            self.store.put(study, "step_done", {"step": step, "failure": None, "discarded": True}, (work, step))
+            raise WorkInterrupted()
+
     async def step(self, study: str, work_ref: str) -> str:
+        try:
+            return await self._step(study, work_ref)
+        except WorkInterrupted:
+            return "waiting" if self.store.work_interrupted(study, work_ref) else "continue"
+
+    async def _step(self, study: str, work_ref: str) -> str:
         # One active sampler per work. User commands remain synchronous and do not
         # wait for this lock, so they can fence an in-flight external request.
         lock = self._locks.setdefault(work_ref, asyncio.Lock())
@@ -1342,10 +1391,12 @@ class Harness:
                         "number": steps[-1].body["number"] + 1 if steps else 0,
                         "epoch": control.epoch,
                         "progress": self._progress(study),
+                        "message_watermark": self._message_watermark(study, work_ref),
                         "request": self._request(study, work),
                     },
                     (work_ref,),
                 )
+            self._execution_guard(study, work_ref, control.epoch, step.ref)
             operation = identity("model", work_ref, step.ref)
             if step.body["request"]["provider"] != model.identity:
                 raise NotAllowed("pending work requires its original model binding")
@@ -1385,7 +1436,7 @@ class Harness:
                 request_step=step.ref,
             )
             # Always save the external result; only then check the admission fence.
-            self.store.require_work(study, work_ref, control.epoch)
+            self._execution_guard(study, work_ref, control.epoch, step.ref)
             try:
                 decode = getattr(model, "decode", None)
                 reply = Reply.from_json(decode(raw) if decode else raw)
@@ -1412,6 +1463,7 @@ class Harness:
             prefetched: set[int] = set()
             prefetch_errors = {}
             for index, call in enumerate(reply.calls):
+                self._execution_guard(study, work_ref, control.epoch, step.ref)
                 if index not in prefetched:
                     batch = []
                     for j in range(
@@ -1749,6 +1801,10 @@ class Harness:
             ),
         )
 
+    def _message_watermark(self, study, work):
+        messages = self.store.work_messages(study, work)
+        return messages[-1].ref if messages else None
+
     def _check_repeated(self, study, work, epoch):
         recent = self._steps(study, "step_done", work, limit=3)
         if len(recent) != 3 or not recent[0].body.get("failure"):
@@ -1759,6 +1815,7 @@ class Harness:
             len({a.body.get("failure") for a in recent}) == 1
             and all(s.body.get("epoch") == epoch for s in steps)
             and all(s.body.get("progress") == progress for s in steps)
+            and all(s.body.get("message_watermark") == self._message_watermark(study, work) for s in steps)
         ):
             raise RepeatedFailure(
                 "Three identical failed rounds without progress; change the input or method before resuming this work."
@@ -1805,7 +1862,13 @@ class Harness:
     def _builtin(
         self, study: str, work: Artifact, epoch: int, step: str, index: int, call: Call
     ) -> Any:
-        self.store.require_work(study, work.ref, epoch)
+        self._execution_guard(study, work.ref, epoch, step)
+        if call.name in {"finish_work", "submit_review"} and self.store.work_messages(study, work.ref):
+            received = self.store.received_messages(study, work.ref) | {
+                m["ref"] for m in self.store.get(study, step).body["request"].get("inbox", [])}
+            remaining = sum(m.ref not in received for m in self.store.work_messages(study, work.ref))
+            if remaining:
+                return {"not_delivered": "Read the next inbox before delivery.", "pending_messages": remaining}
         capacity = input_capacity(self._model_for(work))
         fits = self._read_fits(study, work, step, index, call) if call.name in READ_TOOLS else None
         direction = work.body["direction"]
@@ -1921,6 +1984,10 @@ class Harness:
                 deliverable=args.get("deliverable", ""),
             )
             return {"work": child.ref}
+        if call.name == "send_work_message":
+            item = self.store.message_work(study, work.ref, args["work"], epoch,
+                args["text"], args["refs"], args["mode"], step, index)
+            return {"ref": item.ref, "mode": item.body["mode"], "work": args["work"]}
         if call.name == "cancel_work":
             cancellation = self.store.cancel_work(
                 study, work.ref, args["work"], epoch, args["reason"]

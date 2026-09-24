@@ -1,19 +1,24 @@
 """Optional local components, installed only after an explicit user action."""
 
+import asyncio
+import hashlib
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
 import threading
-from pathlib import Path
+import uuid
+import zipfile
+from pathlib import Path, PurePosixPath
 
-from .local_security import exclusive_lock, private_directory
+from .analysis import DEFAULTS
+from .local_security import exclusive_lock, private_directory, protect
+from .native_analysis import NativeSandbox, component, component_base, regular
 from .platform_paths import (
     component_environment,
-    docker_executable,
     python_executable,
-    sandbox_resources,
 )
 
 DOCUMENT_REQUIREMENTS = ["docling==2.129.0", "onnxruntime==1.30.0"]
@@ -32,6 +37,50 @@ def python_with_packages(packages, code, *args):
     return [python_executable(), "-I", "-c", bootstrap, str(packages), *map(str, args)]
 
 
+def analysis_ready(root):
+    try:
+        installed = component(root)
+        ready = installed / "ready.json"
+        if hashlib.sha256(ready.read_bytes()).hexdigest() != installed.name:
+            return False
+        manifest = json.loads(ready.read_text(encoding="utf-8"))
+        files = runtime_manifest(installed)["files"]
+        for name in ("python.exe", "DLLs/_overlapped.pyd"):
+            with (installed / "runtime" / name).open("rb") as stream:
+                if hashlib.file_digest(stream, "sha256").hexdigest() != files.get(name):
+                    return False
+        return (isinstance(manifest, dict) and manifest.get("verified") is True and manifest.get("platform") == "win32"
+                and (installed / "runtime/python.exe").is_file()
+                and (installed / "runtime/DLLs/_overlapped.pyd").is_file())
+    except (OSError, ValueError, KeyError):
+        return False
+
+
+def runtime_manifest(stage):
+    manifest = json.loads((stage / "manifest.json").read_text(encoding="utf-8"))
+    if not isinstance(manifest, dict) or not isinstance(manifest.get("files"), dict):
+        raise ValueError("Invalid analysis file manifest")
+    if any(not isinstance(value, str) or len(value) != 64
+           or any(c not in "0123456789abcdef" for c in value)
+           for value in manifest["files"].values()):
+        raise ValueError("Invalid analysis file digest")
+    return manifest
+
+
+def verify_runtime(stage):
+    manifest = runtime_manifest(stage)
+    runtime = stage / "runtime"
+    actual = {p.relative_to(runtime).as_posix(): p for p in runtime.rglob("*") if p.is_file()}
+    if actual.keys() != manifest["files"].keys():
+        raise ValueError("Analysis runtime file list differs from the manifest.")
+    for name, path in actual.items():
+        regular(path)
+        with path.open("rb") as stream:
+            if hashlib.file_digest(stream, "sha256").hexdigest() != manifest["files"][name]:
+                raise ValueError("Analysis runtime file integrity check failed.")
+    return manifest
+
+
 class Components:
     def __init__(self, root):
         self.root = Path(root).resolve()
@@ -45,7 +94,7 @@ class Components:
             job = dict(self.job)
         return {
             "documents": bool(documents(self.root)),
-            "analysis": (self.root / ".epivra-components/analysis-ready.json").is_file(),
+            "analysis": analysis_ready(self.root),
             "job": job,
         }
 
@@ -119,26 +168,105 @@ class Components:
             stage.rename(target)
 
     def _analysis(self, base, log):
-        docker = docker_executable()
-        self.phase("checking_docker")
-        self._command([docker, "info", "--format", "{{.OSType}}"], log, timeout=30)
-        recipe = sandbox_resources()
-        if not (recipe / "Dockerfile").is_file():
-            raise RuntimeError("This installation is missing the analysis image recipe.")
-        self.phase("building_image")
-        self._command([docker, "build", "-t", "epivra-analysis:1", str(recipe)], log)
-        self.phase("validating")
-        self._command([docker, "run", "--rm", "--network", "none",
-                       "--entrypoint", "python", "epivra-analysis:1",
-                       "-c", "import numpy,pandas,matplotlib; print('analysis-ready')"], log, timeout=120)
-        (base / "analysis-ready.json").write_text('{"image":"epivra-analysis:1"}', encoding="utf-8")
+        if sys.platform != "win32":
+            raise ValueError("Built-in analysis requires Windows x64.")
+        generations = component_base(self.root)
+        generations.mkdir(parents=True, exist_ok=True)
+        protect(generations)
+        bundled = Path(sys.prefix) / "epivra-resources/analysis"
+        recipe = bundled if bundled.is_dir() else Path(__file__).resolve().parents[2] / "dist/analysis"
+        if not (recipe / "bundle.json").is_file():
+            raise RuntimeError(
+                "The built-in analysis archive is missing. Use the complete Windows download. "
+                "Source developers: run python tools/build_analysis_bundle.py first.")
+        catalog = json.loads((recipe / "bundle.json").read_text(encoding="utf-8"))
+        if not isinstance(catalog, dict):
+            raise ValueError("Invalid analysis archive catalog")
+        archive = recipe / "runtime.zip"
+        self.phase("verifying_archive")
+        with archive.open("rb") as stream:
+            digest = hashlib.file_digest(stream, "sha256").hexdigest()
+        if (catalog.get("component") != generations.name or catalog.get("platform") != "win32"
+                or digest != catalog.get("sha256")):
+            raise ValueError("Analysis archive integrity check failed. Download the complete application again.")
+        if analysis_ready(self.root):
+            installed = component(self.root)
+            ready = json.loads((installed / "ready.json").read_text(encoding="utf-8"))
+            if ready.get("bundle_sha256") == digest:
+                self.phase("validating")
+                try:
+                    verify_runtime(installed)
+                except (OSError, ValueError, KeyError):
+                    pass  # Repair creates a new generation; never overwrite pinned research.
+                else:
+                    return
+        with tempfile.TemporaryDirectory(prefix="analysis-install-", dir=base) as folder:
+            stage = Path(folder)
+            private_directory(stage)
+            self.phase("extracting_runtime")
+            with zipfile.ZipFile(archive) as bundle:
+                entries = bundle.infolist()
+                if len(entries) > 50000 or sum(e.file_size for e in entries) > 2 * 1024**3:
+                    raise ValueError("Analysis archive exceeds its installation limit.")
+                for entry in entries:
+                    path = PurePosixPath(entry.filename)
+                    if (path.is_absolute() or ".." in path.parts
+                            or any(part.endswith((".", " ")) for part in path.parts)
+                            or ":" in entry.filename or "\\" in entry.filename
+                            or (entry.external_attr >> 16) & 0o170000 == 0o120000):
+                        raise ValueError("Unsafe analysis archive entry.")
+                bundle.extractall(stage)
+            manifest = verify_runtime(stage)
+            if (manifest.get("component") != generations.name or manifest.get("platform") != "win32"
+                    or manifest.get("architecture") != "x64"):
+                raise ValueError("Unsupported analysis runtime manifest.")
+            runtime = stage / "runtime"
+            self.phase("validating")
+            async def verify():
+                source = stage / "probe"
+                source.mkdir()
+                (source / "analysis.py").write_text(
+                    "import numpy,pandas,statsmodels.api; from sklearn.linear_model import LinearRegression; "
+                    "assert numpy.isclose(LinearRegression().fit([[0],[1]],[1,3]).predict([[2]])[0],5); "
+                    "print('analysis-ready')", encoding="utf-8")
+                sandbox = NativeSandbox(stage / "verification", runtime)
+                job = hashlib.sha256(b"component-verification").hexdigest()
+                try:
+                    result = await sandbox.run(job, source, DEFAULTS, True, lambda: None)
+                    log.write(result["log"].encode("utf-8"))
+                    if result["status"] != "succeeded":
+                        raise RuntimeError("Restricted analysis verification failed. See setup.log.")
+                finally:
+                    await sandbox.cleanup(job)
+            asyncio.run(verify())
+            # Only runtime and provenance are installed; test staging is not part of the component.
+            shutil.rmtree(stage / "probe")
+            shutil.rmtree(stage / "verification")
+            (stage / "ready.json").write_text(json.dumps({
+                "platform": "win32", "verified": True, "bundle_sha256": digest,
+                "component": generations.name, "python": manifest["python"],
+                "generation": uuid.uuid4().hex,
+            }), encoding="utf-8")
+            identity = hashlib.sha256((stage / "ready.json").read_bytes()).hexdigest()
+            stage.rename(generations / identity)
+            pointer = generations / ".current.tmp"
+            pointer.write_text(json.dumps({"identity": identity}), encoding="utf-8")
+            os.replace(pointer, generations / "current.json")
 
     def _install(self, component):
         base = self.root / ".epivra-components"
         handle = None
         try:
-            private_directory(base)
+            base.mkdir(parents=True, exist_ok=True)
+            protect(base)
             handle = exclusive_lock(base / "setup.lock")
+            for stage in base.glob("analysis-install-*"):
+                regular(stage)
+                if stage.resolve() != stage:
+                    raise ValueError("Unexpected component recovery directory")
+                sandbox = NativeSandbox(stage / "verification", stage / "runtime")
+                asyncio.run(sandbox.cleanup(hashlib.sha256(b"component-verification").hexdigest()))
+                shutil.rmtree(stage)
             with (base / "setup.log").open("wb") as log:
                 if component == "documents":
                     self._documents(base, log)
@@ -148,10 +276,7 @@ class Components:
                 self.job.update(state="ready", phase="complete")
         except Exception as exc:
             with self.lock:
-                self.job.update(state="failed", error=(
-                    "Docker Desktop is unavailable. Install and start it, then try again."
-                    if isinstance(exc, FileNotFoundError) and component == "analysis"
-                    else str(exc)))
+                self.job.update(state="failed", error=str(exc))
         finally:
             if handle:
                 handle.close()

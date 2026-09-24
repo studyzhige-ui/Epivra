@@ -262,7 +262,7 @@ class Workbench:
                     defaults["docling_models"] = str(path)
             else:
                 defaults["analysis"] = await self.ui.confirm(
-                    tr("默认启用 Docker 数据分析？需要已经构建本地镜像。")
+                    tr("默认启用内置 Python 数据分析？需要先在设置中准备分析组件。")
                 )
             cli_settings.save(self.root, defaults)
             self.ui.show(tr("默认设置已保存，只应用于新研究。"))
