@@ -88,12 +88,10 @@ data and keys are never silently migrated. [Build desktop releases](packaging/RE
 | Path | Contents |
 |---|---|
 | `src/epivra/` | Application code, Web assets, and interface translations |
-| `tests/` | Offline regression tests |
 | `tools/` | Development checks and local diagnostics |
 | `sandbox/` | Isolated analysis image and runner |
 | `models/` | Parsing-model instructions and manifest; weights stay local |
 | `docs/` | English and Chinese user guides and README images |
-| `eval/` | Reference materials |
 | `.epivra/` | Private local research, imported materials, settings, and recovery records; excluded from Git |
 | `.env` | Local provider credentials; excluded from Git |
 | `mcp-servers.json` | Local MCP connections and permissions; excluded from Git |
@@ -106,11 +104,10 @@ See the [user guide](docs/USAGE.en.md) for configuration, materials, MCP, backup
 
 ```powershell
 python -m pip install -e ".[mcp]" ruff mypy build
-python -m unittest discover -s tests
 python tools/check_architecture.py
-ruff check src tests tools
+ruff check src tools
 mypy
 python -m build --wheel
 ```
 
-These checks run without model or search API calls. The source includes Node-based Web regression tests; Node.js is only needed to run those tests, not the application.
+These checks run without model or search API calls. Regression suites and evaluation materials are maintained locally and are not included in this repository. Desktop builds retain native application smoke checks.

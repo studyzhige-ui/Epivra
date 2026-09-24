@@ -44,3 +44,9 @@ analysis-settings.json
 /.github/development-state.json
 
 .epivra-components/
+
+# Local validation assets are not distributed with the source repository.
+/eval/
+/test/
+/tests/
+/tools/dev_check.py

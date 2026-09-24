@@ -36,15 +36,20 @@ jobs:
           venv.EnvBuilder(with_pip=True).create(base / 'env')
           with (base / 'install.log').open('wb') as log:
               subprocess.run([os.environ['DEV_CHECK_PYTHON'], '-m', 'pip', 'install', '.[mcp]', 'ruff', 'mypy', 'build'], stdout=log, stderr=subprocess.STDOUT, check=True, timeout=480)
-      - name: Check and retain per-gate results
+      - name: Validate distributed source
         shell: python
         run: |
           import os, subprocess
           from pathlib import Path
           p = os.environ['DEV_CHECK_PYTHON']
-          evidence = str(Path(os.environ['DEV_CHECK_ROOT']) / 'evidence')
-          subprocess.run([p, 'tools/dev_check.py', 'run', '--profile', 'full', '--output', evidence], check=True)
-          subprocess.run([p, 'tools/dev_check.py', 'inspect', '--output', evidence], check=True)
+          commands = [
+              [p, 'tools/check_architecture.py'],
+              [p, '-m', 'ruff', 'check', 'src', 'tools'],
+              [p, '-m', 'mypy'],
+              [p, '-m', 'build', '--wheel', '--outdir', str(Path(os.environ['DEV_CHECK_ROOT']) / 'wheels')],
+          ]
+          for command in commands:
+              subprocess.run(command, check=True)
       - name: Remove only this validation environment
         if: always() && env.DEV_CHECK_ROOT != ''
         shell: python

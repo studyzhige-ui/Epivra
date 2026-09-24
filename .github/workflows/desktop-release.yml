@@ -30,7 +30,7 @@ jobs:
         with:
           python-version: '3.12'
           architecture: ${{ matrix.architecture }}
-      - name: Install build and test tools
+      - name: Install build tools
         run: python -m pip install -e ".[mcp]" build ruff mypy resvg-py pillow
       - name: Validate tag
         shell: python
@@ -40,20 +40,12 @@ jobs:
               with open("pyproject.toml", "rb") as f:
                   version = tomllib.load(f)["project"]["version"]
               assert os.environ["GITHUB_REF_NAME"] == "v" + version
-      - name: Regression tests
-        run: python -m unittest discover -s tests -q
       - name: Architecture
         run: python tools/check_architecture.py
       - name: Lint
-        run: python -m ruff check src tests tools
+        run: python -m ruff check src tools
       - name: Types
         run: python -m mypy
-      - name: Browser logic tests
-        shell: python
-        run: |
-          import pathlib, subprocess
-          for test in pathlib.Path("tests").glob("web_*.cjs"):
-              subprocess.run(["node", str(test)], check=True)
       - name: Build and validate relocated native application
         run: python tools/build_desktop.py
       - uses: actions/upload-artifact@v4

@@ -84,12 +84,10 @@ macOS 对应使用 `.venv/bin/python` 和 `.venv/bin/epivra-desktop`。
 | 路径 | 内容 |
 |---|---|
 | `src/epivra/` | 应用代码、Web 资源和界面翻译 |
-| `tests/` | 离线回归测试 |
 | `tools/` | 开发检查与本地诊断工具 |
 | `sandbox/` | 隔离分析镜像与执行器 |
 | `models/` | 解析模型说明及清单；模型权重保留在本地 |
 | `docs/` | 中英文使用说明及 README 图片 |
-| `eval/` | 参考资料 |
 | `.epivra/` | 本地私有研究、导入资料、设置及恢复记录；不纳入 Git |
 | `.env` | 本地供应商凭据；不纳入 Git |
 | `mcp-servers.json` | 本地 MCP 连接与权限；不纳入 Git |
@@ -102,11 +100,10 @@ macOS 对应使用 `.venv/bin/python` 和 `.venv/bin/epivra-desktop`。
 
 ```powershell
 python -m pip install -e ".[mcp]" ruff mypy build
-python -m unittest discover -s tests
 python tools/check_architecture.py
-ruff check src tests tools
+ruff check src tools
 mypy
 python -m build --wheel
 ```
 
-这些检查不调用模型或搜索 API。源码包含基于 Node 的 Web 回归测试；Node.js 仅用于运行这些测试，应用本身不依赖它。
+这些检查不调用模型或搜索 API。回归测试与评测资料保留在维护者本地，不随本仓库分发。桌面构建仍保留原生应用启动验证。

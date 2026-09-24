@@ -29,7 +29,7 @@ removes system Python from PATH, launches the native entry point in an empty
 workspace, and checks Web assets/authentication, duplicate launch, a real parser
 subprocess, Tk, shutdown and restart. All provider credentials are excluded.
 
-The GitHub Desktop release workflow runs native regression and bundle checks
+The GitHub Desktop release workflow runs native bundle and source checks
 on windows-2022 and macos-14 arm64. Manual dispatch builds artifacts only. A
 matching v0.3.x tag publishes a **prerelease**, only after both jobs pass.
 
@@ -44,3 +44,5 @@ disabling Gatekeeper/SmartScreen.
 Release acceptance does not include the deferred semantic quality of research
 reports. Optional component download/installation and actual Docker workloads
 must be reported independently of the base application smoke check.
+
+Full regression suites and evaluation assets are maintained locally, outside Git tracking. The repository retains static gates and native bundle smoke checks.
