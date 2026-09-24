@@ -10,7 +10,7 @@ Web 右上角可选择简体中文或 English；切换不会清空正在填写�
 
 ## 1. 下载、打开与退出
 
-桌面版不需要安装 Python、Git、Node.js 或数据库。从 [GitHub Release](https://github.com/studyzhige-ui/Epivra/releases/tag/v0.3.0) 选择：
+桌面版不需要安装 Python、Git、Node.js 或数据库。从 [GitHub Release](https://github.com/studyzhige-ui/Epivra/releases/tag/v0.3.1) 选择：
 
 | 平台 | 操作 |
 |---|---|
@@ -102,7 +102,6 @@ Python 分析使用 Windows x64 内置沙盒。在设置中点击**准备内置 
 
 源码开发者先执行 `python tools/build_analysis_bundle.py`，构建时下载并校验
 固定版本运行时、编译器和依赖；下载桌面包的用户不需要执行此步骤。
-已发布的 0.3.0 包早于本功能，新版发行包发布后才适用上述桌面步骤。
 
 ## 5. MCP 双向接入
 

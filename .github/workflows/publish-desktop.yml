@@ -57,7 +57,7 @@ jobs:
           import hashlib, os, pathlib, subprocess, tomllib
           version = tomllib.loads(pathlib.Path("pyproject.toml").read_text())["project"]["version"]
           files = []
-          for platform, extension in [("windows-x64", "zip"), ("macos-arm64", "dmg")]:
+          for platform, extension in [("windows-x64", "zip")]:
               path = pathlib.Path("release") / f"Epivra-{version}-{platform}.{extension}"
               check = path.with_name(path.name + ".sha256")
               expected, name = check.read_text().split()

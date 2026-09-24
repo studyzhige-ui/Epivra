@@ -12,7 +12,7 @@ MCP tool names, parameters, and protocol states remain stable; descriptions use 
 
 ## 1. Download, open, and quit
 
-Desktop downloads include Python and require no Git, Node.js, or database installation. Choose a package from the [GitHub Release](https://github.com/studyzhige-ui/Epivra/releases/tag/v0.3.0):
+Desktop downloads include Python and require no Git, Node.js, or database installation. Choose a package from the [GitHub Release](https://github.com/studyzhige-ui/Epivra/releases/tag/v0.3.1):
 
 | Platform | Steps |
 |---|---|
@@ -110,7 +110,7 @@ apply; output/scratch size limits use monitoring, not hard disk quotas.
 
 Source developers first run `python tools/build_analysis_bundle.py`. This build
 downloads and verifies the pinned runtime, compiler and wheels; downloaded desktop
-users do not run it. The published 0.3.0 package predates this feature.
+users do not run it.
 
 ## 5. Bidirectional MCP
 

@@ -1,4 +1,4 @@
-name: Self-hosted fast validation
+name: Source validation
 on:
   push:
     branches: [main]
@@ -6,17 +6,21 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: self-hosted-fast-${{ github.repository }}-${{ github.ref }}
-  cancel-in-progress: false
+  group: source-validation-${{ github.repository }}-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   validate:
     if: github.ref == 'refs/heads/main'
-    runs-on: [self-hosted, Windows, X64, epivra]
+    runs-on: windows-2022
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          architecture: x64
       - name: Allocate isolated development check paths
         shell: python
         run: |
