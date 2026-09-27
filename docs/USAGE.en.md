@@ -18,7 +18,7 @@ Desktop downloads include Python and require no Git, Node.js, or database instal
 |---|---|
 | Windows 10/11 x64 | Download the Windows ZIP, extract the complete folder, and open **Epivra.exe**. |
 
-This is an unsigned desktop preview. Windows may report an unknown publisher. macOS is no longer a build or verification target. Downloads require an authorized GitHub account while the repository is private.
+This is an unsigned desktop release. Windows may report an unknown publisher. macOS is no longer a build or verification target. Downloads require an authorized GitHub account while the repository is private.
 
 
 Your browser opens automatically, showing connection settings on first launch. Opening Epivra again reuses the running workbench. Closing the browser keeps research running; use **Quit** in the Epivra control window to stop the background service. Wait for component installation to finish before quitting. Computer sleep interrupts execution.

@@ -9,7 +9,7 @@ Epivra is a local research workbench that turns a question and authorized materi
 
 ## Download and open
 
-**Desktop preview 0.3.2** — no separate Python, Git, Node.js or database installation.
+**Desktop 0.3.2** — no separate Python, Git, Node.js or database installation.
 
 | Your computer | Download |
 |---|---|
@@ -22,7 +22,7 @@ Epivra is a local research workbench that turns a question and authorized materi
 Next time, open Epivra again. Repeated launches reopen the existing workbench.
 Closing the browser keeps research running; use **Quit** in the Epivra control window to stop the background host.
 
-These preview builds have **no Windows publisher certificate**; your OS may show an unknown-developer warning.
+These builds have **no Windows publisher certificate**; your OS may show an unknown-developer warning.
 [Release notes and SHA-256](https://github.com/studyzhige-ui/Epivra/releases/tag/v0.3.2) · [User guide](docs/USAGE.en.md)
 
 This Windows x64 release includes built-in restricted Python analysis. Prepare it in Settings without Docker. OCR remains a separate optional download.

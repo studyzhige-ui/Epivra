@@ -27,6 +27,6 @@ and checks launch, authentication, duplicate launch, parser subprocesses, Tk,
 shutdown and restart, using empty data and no provider keys.
 
 GitHub builds on windows-2022. Manual dispatch builds artifacts only; matching
-v0.3.x tags publish a prerelease after checks. Artifacts remain unsigned.
+v0.3.x tags publish a release marked Latest after checks. Artifacts remain unsigned.
 Research-report quality is deferred. Full local regression suites stay outside
 Git tracking; runtime and desktop acceptance tools remain in the repository.

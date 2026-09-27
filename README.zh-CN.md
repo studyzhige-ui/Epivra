@@ -9,7 +9,7 @@ Epivra 是本地自主研究工作台，将问题与获授权的资料转化为�
 
 ## 下载并打开
 
-**桌面预览版 0.3.2**：无需安装 Python、Git、Node.js 或数据库。
+**桌面版 0.3.2**：无需安装 Python、Git、Node.js 或数据库。
 
 | 你的电脑 | 下载 |
 |---|---|
@@ -21,7 +21,7 @@ Epivra 是本地自主研究工作台，将问题与获授权的资料转化为�
 
 以后只需再次打开 Epivra。重复打开会复用已有工作台。关闭浏览器后研究继续；需要停止后台程序时，在 Epivra 控制窗口点击“退出”。
 
-当前包**未取得 Windows 发布者签名**，系统可能提示未知开发者。这是桌面预览版，不承诺无系统提示安装。[发布说明与 SHA-256](https://github.com/studyzhige-ui/Epivra/releases/tag/v0.3.2) · [详细使用说明](docs/USAGE.md)
+当前包**未取得 Windows 发布者签名**，系统可能提示未知开发者。[发布说明与 SHA-256](https://github.com/studyzhige-ui/Epivra/releases/tag/v0.3.2) · [详细使用说明](docs/USAGE.md)
 
 此版本已内置 **Windows x64 内置受限 Python 分析**，无需 Docker。OCR 仍独立按需下载。
 

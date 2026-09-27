@@ -70,8 +70,8 @@ jobs:
           pattern: desktop-*
           path: release
           merge-multiple: true
-      - name: Publish desktop preview
+      - name: Publish desktop release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-        run: gh release create "$GITHUB_REF_NAME" release/* --verify-tag --prerelease --title "Epivra $GITHUB_REF_NAME — Desktop preview" --notes-file packaging/RELEASE-NOTES.md
+        run: gh release create "$GITHUB_REF_NAME" release/* --verify-tag --latest --title "Epivra $GITHUB_REF_NAME — Desktop" --notes-file packaging/RELEASE-NOTES.md
