@@ -12,7 +12,7 @@ MCP tool names, parameters, and protocol states remain stable; descriptions use 
 
 ## 1. Download, open, and quit
 
-Desktop downloads include Python and require no Git, Node.js, or database installation. Choose a package from the [GitHub Release](https://github.com/studyzhige-ui/Epivra/releases/tag/v0.3.1):
+Desktop downloads include Python and require no Git, Node.js, or database installation. Choose a package from the [GitHub Release](https://github.com/studyzhige-ui/Epivra/releases/tag/v0.3.2):
 
 | Platform | Steps |
 |---|---|

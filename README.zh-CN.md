@@ -9,11 +9,11 @@ Epivra 是本地自主研究工作台，将问题与获授权的资料转化为�
 
 ## 下载并打开
 
-**桌面预览版 0.3.1**：无需安装 Python、Git、Node.js 或数据库。
+**桌面预览版 0.3.2**：无需安装 Python、Git、Node.js 或数据库。
 
 | 你的电脑 | 下载 |
 |---|---|
-| Windows 10/11，x64 | [下载 Windows ZIP](https://github.com/studyzhige-ui/Epivra/releases/download/v0.3.1/Epivra-0.3.1-windows-x64.zip) |
+| Windows 10/11，x64 | [下载 Windows ZIP](https://github.com/studyzhige-ui/Epivra/releases/download/v0.3.2/Epivra-0.3.2-windows-x64.zip) |
 
 1. **Windows**：完整解压 ZIP，双击其中的 **Epivra.exe**。不要在压缩包内直接运行。
 2. 浏览器会自动打开。首次进入“连接与设置”，选择供应商，填入自己的 API Key，选择模型并保存。
@@ -21,7 +21,7 @@ Epivra 是本地自主研究工作台，将问题与获授权的资料转化为�
 
 以后只需再次打开 Epivra。重复打开会复用已有工作台。关闭浏览器后研究继续；需要停止后台程序时，在 Epivra 控制窗口点击“退出”。
 
-当前包**未取得 Windows 发布者签名**，系统可能提示未知开发者。这是桌面预览版，不承诺无系统提示安装。[发布说明与 SHA-256](https://github.com/studyzhige-ui/Epivra/releases/tag/v0.3.1) · [详细使用说明](docs/USAGE.md)
+当前包**未取得 Windows 发布者签名**，系统可能提示未知开发者。这是桌面预览版，不承诺无系统提示安装。[发布说明与 SHA-256](https://github.com/studyzhige-ui/Epivra/releases/tag/v0.3.2) · [详细使用说明](docs/USAGE.md)
 
 此版本已内置 **Windows x64 内置受限 Python 分析**，无需 Docker。OCR 仍独立按需下载。
 

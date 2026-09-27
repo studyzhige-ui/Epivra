@@ -10,7 +10,7 @@ Web 右上角可选择简体中文或 English；切换不会清空正在填写�
 
 ## 1. 下载、打开与退出
 
-桌面版不需要安装 Python、Git、Node.js 或数据库。从 [GitHub Release](https://github.com/studyzhige-ui/Epivra/releases/tag/v0.3.1) 选择：
+桌面版不需要安装 Python、Git、Node.js 或数据库。从 [GitHub Release](https://github.com/studyzhige-ui/Epivra/releases/tag/v0.3.2) 选择：
 
 | 平台 | 操作 |
 |---|---|
