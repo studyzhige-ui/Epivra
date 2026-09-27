@@ -197,6 +197,7 @@ class Workspace:
             "title": source.body.get("title", ""),
             "read": {"ref": source.ref},
             "characters": len(source.body["text"]),
+            "coverage": source.body.get("coverage", "extracted_not_reviewed"),
         }
 
     def web_snapshot(self, study: str, decoded: dict, acquisition: dict) -> dict:

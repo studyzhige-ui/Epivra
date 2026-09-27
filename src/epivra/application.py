@@ -420,9 +420,17 @@ def online_service(
                 "alternatives": [name for name in names if name != provider.resource],
                 "instruction": "Try an available alternative or revise the query/URL; no evidence was obtained.",
             }
-        return (
-            workspace.web_snapshot(study, decoded, acquisition) if reading else decoded
+        if reading:
+            return workspace.web_snapshot(study, decoded, acquisition)
+        saved = (
+            workspace.web_snapshot(study, decoded, acquisition)
+            if decoded["sources"] else {"sources": [], "failures": decoded["failures"]}
         )
+        handles = {source["url"]: source for source in saved["sources"]}
+        return {**decoded, **saved, "results": [
+            {**result, **({"source": handles[result["url"]]} if result["url"] in handles else {})}
+            for result in decoded["results"]
+        ]}
 
     tools = {}
     for name, names, field, invoke, reading in (
@@ -433,7 +441,10 @@ def online_service(
             continue
         tools[name] = Tool(
             (
-                "Find source URLs across the public web. Snippets are leads, not original evidence. "
+                "Search the public web and acquire available original content in one request. "
+                "Read returned source handles with read_source locally; do not fetch the same content again. "
+                "Extracted pages and selected excerpts have explicit coverage; provider summaries and search snippets remain leads. "
+                "Use fetch_web only for absent content, necessary additional context, or fresh acquisition. "
                 "Choose queries and authoritative sites for the evidence needed; switch when results add no information. "
                 "Only tavily supports include_domains/exclude_domains and YYYY-MM-DD start_date/end_date "
                 "(publication or update date); other providers reject these fields. "

@@ -43,7 +43,7 @@ def sandbox_resources():
 def component_environment():
     allowed = {"PATH", "SYSTEMROOT", "WINDIR", "TEMP", "TMP", "TMPDIR",
                "LANG", "LC_ALL", "HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH",
-               "LOCALAPPDATA", "APPDATA"}
+               "LOCALAPPDATA", "APPDATA", "PROGRAMFILES", "PROGRAMFILES(X86)"}
     return {k: v for k, v in os.environ.items() if k.upper() in allowed}
 
 

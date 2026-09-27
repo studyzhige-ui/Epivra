@@ -737,7 +737,7 @@ class Tavily:
 
     def __init__(self, api: JsonAPI):
         self.api = api
-        self.identity = identity("tavily-v2-official-defaults", api.account)
+        self.identity = identity("tavily-v3-search-content", api.account)
 
     async def search(self, args: dict[str, Any]) -> dict:
         return await self.api.post(
@@ -746,7 +746,9 @@ class Tavily:
                 "query": args["query"],
                 "max_results": 10,
                 "include_answer": False,
-                "include_raw_content": False,
+                "include_raw_content": "markdown",
+                "search_depth": "basic",
+                "auto_parameters": False,
                 "include_usage": True,
                 **{
                     key: args[key]
@@ -809,6 +811,11 @@ class Tavily:
                     raise ValueError("invalid search text")
                 result = {"url": item["url"], "title": item.get("title", ""),
                           "snippet": item.get("content", ""), "content_type": "search_snippet"}
+                text = item.get("raw_content")
+                if text is not None and not isinstance(text, str):
+                    failures.append({"index": index, "error": "invalid_search_content"})
+                elif text and text.strip():
+                    result.update(text=text, content_type="extracted_page")
                 encode(result)
                 results.append(result)
             except (ValueError, TypeError):

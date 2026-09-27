@@ -1140,6 +1140,7 @@ function providerFields() {
   const p = config.providers.find((p) => p.id === $("provider").value);
   $("model").value = p.model;
   options("region", p.regions, p.region, {});
+  $("region-field").hidden = p.regions.length < 2;
   $("model-key").value = "";
   $("context-tokens").value = $("max-tokens").value = "";
   $("model-key-label").textContent = p.configured
@@ -1230,6 +1231,7 @@ function renderRoleModels(saved) {
         region.append(option);
       }
       region.value = spec().region;
+      region.parentElement.hidden = spec().regions.length < 2;
       model.value = spec().model;
       context.value = output.value = key.value = "";
       key.parentElement.firstChild.textContent = t(spec().configured
@@ -1308,33 +1310,49 @@ const componentPhases = {
   downloading_models: "正在下载 OCR 模型…", verifying_archive: "正在校验内置分析包…",
   extracting_runtime: "正在解包内置 Python 环境…", validating: "正在验证组件…", complete: "准备完成",
 };
+function featureError(id, message = "") {
+  $(id).textContent = message;
+  $(id).hidden = !message;
+}
 async function refreshComponents() {
   clearTimeout(componentTimer);
   try {
     const state = await api("/api/components");
-    $("documents-state").textContent = t(state.documents ? "已安装" : "未安装");
-    $("analysis-state").textContent = t(state.analysis ? "已准备" : "未准备");
     const busy = state.job.state === "running";
+    for (const component of ["documents", "analysis"]) {
+      const current = state.job.component === component;
+      $(component + "-state").textContent = t(current && busy ? "准备中" : state[component] ? "已就绪" : "未就绪");
+      $(component + "-state").title = current && busy ? t(componentPhases[state.job.phase] || "准备中") : "";
+      featureError(component + "-error", current ? state.job.error || "" : "");
+    }
     $("install-documents").disabled = busy || state.documents;
     $("install-analysis").disabled = busy;
-    $("component-status").textContent = state.job.error ||
-      t(componentPhases[state.job.phase] || "");
+    $("documents-location").textContent = state.documents_location ? t("安装位置：{0}", state.documents_location) : "";
+    $("documents-location").hidden = !state.documents_location;
     if ($("settings-dialog").open)
       componentTimer = setTimeout(refreshComponents, busy ? 2000 : 10000);
   } catch (error) {
-    $("component-status").textContent = error.message;
+    for (const component of ["documents", "analysis"]) {
+      $(component + "-state").textContent = t("暂不可用");
+      featureError(component + "-error", error.message);
+    }
   }
 }
 for (const component of ["documents", "analysis"]) {
   $("install-" + component).onclick = async () => {
-    if (component === "documents" && !confirm(t("将联网下载可选组件，可能需要数 GB 空间。安装期间请保持 Epivra 运行。继续？"))) return;
+    $("install-documents").disabled = $("install-analysis").disabled = true;
     try {
-      $("install-documents").disabled = $("install-analysis").disabled = true;
-      await api("/api/components", { component });
+      const request = {component};
+      if (component === "documents") {
+        const selected = await api("/api/pick", {kind: "folder"});
+        if (!selected.path) { await refreshComponents(); return; }
+        request.directory = selected.path;
+      }
+      await api("/api/components", request);
       await refreshComponents();
     } catch (error) {
-      $("component-status").textContent = error.message;
-      $("install-documents").disabled = $("install-analysis").disabled = false;
+      await refreshComponents();
+      featureError(component + "-error", error.message);
     }
   };
 }
@@ -1373,7 +1391,6 @@ async function openSettings() {
   );
   connectionFields();
   $("parser").value = d.parser || "auto";
-  $("docling-models").value = d.docling_models || "";
   $("analysis").checked = !!d.analysis;
   $("settings-feedback").textContent = "";
   $("mcp-options").replaceChildren();
@@ -1396,6 +1413,7 @@ async function openSettings() {
     $("settings-feedback").textContent = e.message;
   }
   $("settings-dialog").showModal();
+  document.querySelector("#settings-dialog .settings-body").scrollTop = 0;
   refreshComponents();
   if (config.providers.find((p) => p.id === $("provider").value).configured)
     fetchModels();
@@ -1487,13 +1505,10 @@ $("settings-form").onsubmit = (e) => {
       };
       delete d.context_tokens;
       delete d.max_tokens;
-      delete d.docling_models;
       if (d.model !== p.model) {
         d.context_tokens = Number($("context-tokens").value);
         d.max_tokens = Number($("max-tokens").value);
       }
-      if ($("docling-models").value.trim())
-        d.docling_models = $("docling-models").value.trim();
       let override = false;
       const credentials = new Map();
       for (const [name, value] of [

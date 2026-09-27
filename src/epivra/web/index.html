@@ -321,61 +321,44 @@
         </p>
       </div>
     </dialog>
-    <dialog id="settings-dialog">
+    <dialog id="settings-dialog" aria-labelledby="settings-title">
       <form id="settings-form">
-        <div class="dialog-heading">
-          <div>
-            <div class="eyebrow">本机默认设置</div>
-            <h2>连接与设置</h2>
+        <div class="settings-header">
+          <div class="eyebrow">本机默认设置</div>
+          <div class="dialog-heading">
+            <h2 id="settings-title">连接与设置</h2>
+            <div class="button-row settings-actions">
+              <button type="button" class="close-dialog">返回</button>
+              <button type="submit" class="primary">保存设置</button>
+            </div>
           </div>
-          <button type="button" class="icon close-dialog" aria-label="关闭设置">
-            ×
-          </button>
+          <div id="settings-feedback" role="status"></div>
         </div>
+        <div class="settings-body">
         <p class="muted">
           网页与命令行共用本机配置。以下默认设置用于新研究，密钥留空则保留已有值。
         </p>
-        <div id="settings-feedback" role="status"></div>
         <h3>研究模型</h3>
-        <div class="form-row">
-          <label>厂商<select id="provider"></select></label
-          ><label>账户地区<select id="region"></select></label>
+        <div class="form-row model-provider-key">
+          <label>厂商<select id="provider"></select></label>
+          <label>
+            <span id="model-key-label">API Key</span>
+            <input id="model-key" type="password" autocomplete="new-password"
+              placeholder="输入新密钥；不会回显已有密钥" />
+          </label>
+          <label id="region-field" hidden>API 服务区域<select id="region"></select></label>
         </div>
-        <label
-          ><span id="model-key-label">API Key</span
-          ><input
-            id="model-key"
-            type="password"
-            autocomplete="new-password"
-            placeholder="输入新密钥；不会回显已有密钥"
-        /></label>
         <div class="model-picker-heading">
-          <label for="model">选择模型</label
-          ><button type="button" id="fetch-models" class="text-button">
-            获取模型列表
-          </button>
+          <label for="model">选择模型</label>
+          <button type="button" id="fetch-models" class="text-button">获取模型列表</button>
         </div>
         <div class="model-picker">
-          <input
-            id="model"
-            required
-            role="combobox"
-            aria-autocomplete="list"
-            aria-expanded="false"
-            aria-controls="model-options"
-            autocomplete="off"
-            placeholder="输入字符筛选，或填写完整模型名称"
-          />
-          <div
-            id="model-options"
-            role="listbox"
-            aria-label="模型候选"
-            hidden
-          ></div>
+          <input id="model" required role="combobox" aria-autocomplete="list"
+            aria-expanded="false" aria-controls="model-options" autocomplete="off"
+            placeholder="输入字符筛选，或填写完整模型名称" />
+          <div id="model-options" role="listbox" aria-label="模型候选" hidden></div>
         </div>
-        <p id="model-list-status" class="muted" role="status">
-          先填写密钥，再获取模型列表。
-        </p>
+        <p id="model-list-status" class="muted" role="status">先填写密钥，再获取模型列表。</p>
         <div id="custom-capacity" class="form-row" hidden>
           <label
             >上下文容量 tokens<input
@@ -390,15 +373,17 @@
           此型号尚无完整容量预设，请按官方参数填写；列表可见不代表已验证研究工具能力。
         </p>
         <details id="role-model-settings">
-          <summary>子 Agent 模型</summary>
+          <summary>为协作 Agent 单独配置模型</summary>
           <p class="muted">默认跟随主模型；只有手动设置的角色使用独立模型。设置仅影响新建研究。</p>
           <div id="role-model-fields"></div>
         </details>
         <h3>搜索与网页读取</h3>
         <div class="form-row">
           <label>默认搜索<select id="search-provider"></select></label
-          ><label>默认网页读取<select id="reader-provider"></select></label>
+          ><label>网页正文读取服务<select id="reader-provider"></select></label>
         </div>
+        <details id="search-connection-settings">
+          <summary>配置搜索与读取服务的密钥</summary>
         <div class="form-row">
           <label>配置连接密钥<select id="connection-provider"></select></label
           ><label
@@ -410,35 +395,41 @@
               placeholder="留空不修改"
           /></label>
         </div>
-        <h3>可选功能</h3>
-        <p class="muted">文本、文本 PDF 和表格可直接研究。内置分析按需准备；OCR 需联网下载，可能需要数 GB 空间。</p>
-        <div class="form-row">
-          <button type="button" id="install-documents">安装 OCR 文档解析</button>
-          <span id="documents-state" role="status"></span>
+        </details>
+        <div class="settings-section" aria-labelledby="documents-heading">
+          <div class="settings-section-heading">
+            <h3 id="documents-heading">文档解析</h3>
+            <span id="documents-state" class="feature-status" role="status"></span>
+          </div>
+          <label class="parser-choice">解析方式<select id="parser">
+            <option value="auto">自动</option>
+            <option value="light">轻量解析</option>
+            <option value="docling">Docling 本地解析</option>
+          </select></label>
+          <details id="ocr-settings">
+            <summary>OCR 安装与配置</summary>
+            <p class="muted">文本、文本 PDF 和表格可直接使用；扫描件与图片需安装 OCR。首次安装需联网下载，可能需要数 GB 空间。</p>
+            <div class="settings-feature-controls">
+              <button type="button" id="install-documents">安装 OCR</button>
+            </div>
+            <p id="documents-location" class="muted" hidden></p>
+          </details>
+          <p id="documents-error" class="feature-error" role="alert" hidden></p>
         </div>
-        <div class="form-row">
-          <button type="button" id="install-analysis">准备 / 校验内置 Python 分析</button>
-          <span id="analysis-state" role="status"></span>
+        <div class="settings-section" aria-labelledby="analysis-heading">
+          <div class="settings-section-heading">
+            <h3 id="analysis-heading">Python 数据分析</h3>
+            <div class="feature-heading-controls">
+              <span id="analysis-state" class="feature-status" role="status"></span>
+              <label class="checkbox"><input id="analysis" type="checkbox" aria-label="启用 Python 数据分析" />启用</label>
+            </div>
+          </div>
+          <p class="muted">在内置沙盒中运行分析。首次使用需准备组件，无需安装 Docker。</p>
+          <div class="settings-feature-controls">
+            <button type="button" id="install-analysis">准备 / 校验组件</button>
+          </div>
         </div>
-        <p class="muted">分析组件随 Windows 下载包提供，准备时在本地解包和校验，无需 Docker。准备完成后勾选下方开关。</p>
-        <p id="component-status" role="status" aria-live="polite"></p>
-        <h3>资料与工具</h3>
-        <div class="form-row">
-          <label
-            >解析方式<select id="parser">
-              <option value="auto">自动</option>
-              <option value="light">轻量解析</option>
-              <option value="docling">Docling 本地解析</option>
-            </select></label
-          ><label
-            >Docling 模型文件夹<input
-              id="docling-models"
-              placeholder="留空使用已安装的 OCR 组件"
-          /></label>
-        </div>
-        <label class="checkbox"
-          ><input id="analysis" type="checkbox" />启用内置 Python 数据分析（需先准备组件）</label
-        >
+        <p id="analysis-error" class="feature-error" role="alert" hidden></p>
         <details>
           <summary>MCP 外部连接</summary>
           <p class="muted">
@@ -447,9 +438,6 @@
           </p>
           <div id="mcp-options"></div>
         </details>
-        <div class="dialog-footer">
-          <button type="button" class="close-dialog">返回</button
-          ><button type="submit" class="primary">保存设置</button>
         </div>
       </form>
     </dialog>

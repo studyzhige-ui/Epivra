@@ -105,7 +105,7 @@ class WebProvider:
 
     def __init__(self, name, api):
         self.resource, self.api = name, api
-        self.identity = identity("web-protocol-v1", name, api.account)
+        self.identity = identity("web-protocol-v2-search-content", name, api.account)
 
     def validate_search(self, args):
         filters = {"include_domains", "exclude_domains", "start_date", "end_date"}
@@ -143,17 +143,18 @@ class WebProvider:
             raw = await Tavily(self.api).search(args)
         elif name == "exa":
             raw = await self.api.post(
-                "/search", {"query": query, "type": "auto", "numResults": 10}
+                "/search", {"query": query, "type": "auto", "numResults": 10,
+                            "contents": {"text": True, "highlights": True}}
             )
         elif name == "brave":
             raw = await self.api.request(
-                "GET", "/res/v1/web/search", params={"q": query, "count": 10}
+                "GET", "/res/v1/llm/context", params={"q": query, "count": 10}
             )
         elif name == "perplexity":
-            raw = await self.api.post("/search", {"query": query, "max_results": 10})
+            raw = await self.api.post("/search", {"query": query, "max_results": 10, "search_context_size": "high"})
         elif name == "bocha":
             raw = await self.api.post(
-                "/v1/web-search", {"query": query, "count": 10, "summary": False}
+                "/v1/web-search", {"query": query, "count": 10, "summary": True}
             )
         elif name == "duckduckgo":
             raw = await self.api.request(
@@ -197,7 +198,7 @@ class WebProvider:
     def decode_search(self, raw):
         data = self._data(raw)
         if self.resource == "tavily":
-            return Tavily.decode_search(raw)
+            return self._search_sources(Tavily.decode_search(raw), raw)
         if self.resource == "duckduckgo":
             html = data.get("html", "")
             parser = _DuckResults()
@@ -206,10 +207,10 @@ class WebProvider:
             if not items and "no-results" not in html:
                 raise ValueError("DuckDuckGo unavailable or page format changed")
         elif self.resource == "brave":
-            web = data.get("web", {})
+            web = data.get("grounding")
             if not isinstance(web, dict):
-                raise ValueError("invalid Brave web results")
-            items = web.get("results", [])
+                raise ValueError("invalid Brave grounding results")
+            items = web.get("generic", [])
         elif self.resource == "bocha":
             payload = data.get("data")
             if not isinstance(payload, dict):
@@ -232,11 +233,16 @@ class WebProvider:
                 self.validate_extract({"url": url})
                 if url in seen:
                     continue
-                snippet = (
-                    item.get("snippet")
-                    or item.get("description")
-                    or "\n".join(item.get("highlights") or [])
-                )
+                excerpt = ""
+                if self.resource in {"exa", "brave"}:
+                    field = "highlights" if self.resource == "exa" else "snippets"
+                    parts = item.get(field)
+                    if parts is not None:
+                        if isinstance(parts, list) and all(isinstance(p, str) for p in parts):
+                            excerpt = "\n".join(parts)
+                        else:
+                            failures.append({"index": index, "error": "invalid_search_excerpt"})
+                snippet = item.get("snippet") or item.get("description") or excerpt
                 title = item.get("title") or item.get("name") or ""
                 if not isinstance(title, str) or not isinstance(snippet, str):
                     raise ValueError("invalid search text")
@@ -249,12 +255,55 @@ class WebProvider:
                         or item.get("datePublished")
                         or item.get("date"),
                     }
+                text, kind = None, None
+                if self.resource == "exa":
+                    text = item.get("text")
+                    kind = "extracted_page"
+                    if not text:
+                        text, kind = excerpt, "selected_excerpt"
+                elif self.resource == "brave":
+                    text, kind = excerpt, "selected_excerpt"
+                elif self.resource == "perplexity":
+                    text, kind = item.get("snippet"), "selected_excerpt"
+                if text is not None and not isinstance(text, str):
+                    failures.append({"index": index, "error": "invalid_search_content"})
+                elif text and text.strip():
+                    result.update(text=text, content_type=kind)
+                if self.resource == "bocha" and item.get("summary"):
+                    if isinstance(item["summary"], str):
+                        result.update(summary=item["summary"], summary_type="provider_summary")
+                    else:
+                        failures.append({"index": index, "error": "invalid_search_summary"})
                 encode(result)
                 seen.add(url)
                 results.append(result)
             except (ValueError, TypeError, KeyError):
                 failures.append({"index": index, "error": "invalid_search_result"})
-        return {"results": results, "provider": self.resource, "failures": failures}
+        return self._search_sources({"results": results, "failures": failures}, raw)
+
+    def _search_sources(self, decoded, raw):
+        """Normalize supplied original content; storage belongs to Workspace."""
+        sources = []
+        for result in decoded["results"]:
+            text = result.pop("text", None)
+            if text:
+                coverage = result["content_type"] + "_not_reviewed"
+                sources.append({
+                    "origin": result["url"], "title": result["title"],
+                    "text": text, "parser": self.resource + "-search-v2",
+                    "coverage": coverage, "content_type": result["content_type"],
+                    "retrieved_at": raw.get("retrieved_at"),
+                    "published_at": result.get("published_at"),
+                    "segments": [{"start": 0, "end": len(text),
+                                  "locator": {"url": result["url"]},
+                                  "status": coverage}],
+                })
+                if not result["snippet"]:
+                    result["snippet"] = text
+            if len(result["snippet"]) > 1000:
+                result["snippet"] = result["snippet"][:1000]
+                result["preview_truncated"] = True
+        return {**decoded, "sources": sources, "provider": self.resource}
 
     def decode_extract(self, raw):
         data = self._data(raw)

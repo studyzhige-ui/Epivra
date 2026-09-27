@@ -48,7 +48,7 @@ Sources, excerpts, findings, reports, and recorded usage remain in the local wor
 The Web interface switches between English and Simplified Chinese. Set the desired report language in the research request. Reports can be exported as Markdown, Word, or standalone HTML; PDF export uses the browser's print dialog.
 
 - **Model connections:** OpenAI, Claude, Gemini, Grok, DeepSeek, Qwen, Kimi, GLM, Doubao, MiniMax, Hunyuan, and ERNIE through official provider adapters. The default selection is DeepSeek / `deepseek-flash`; account availability varies.
-- **Search and reading:** Tavily, Exa, Brave, Perplexity, Bocha, a key-free DuckDuckGo fallback, and Jina reading. Network-enabled research can also use Crossref, PubMed, Europe PMC, and World Bank public data.
+- **Search and reading:** Tavily, Exa, Brave, Perplexity, Bocha, a key-free DuckDuckGo fallback, and Jina reading. Network-enabled research can also use Crossref, PubMed, Europe PMC, and World Bank public data. Search can acquire available page text or relevant original passages in the same request, then read and cite them locally. Additional page retrieval is used when content is insufficient. Bocha summaries remain discovery aids. Paid generated summaries and premium search upgrades are not enabled by default.
 - **Materials:** text, CSV/TSV, text PDFs, and spreadsheets; the optional documents extra adds Docling parsing and OCR. Sources are accessed within the selected permissions.
 - **Analysis:** Python calculations, statistics and charts in the built-in Windows sandbox. OS-enforced restrictions cover network, file access, processes, memory and CPU. Timeouts and monitored output/scratch limits also apply.
 - **External MCP:** explicitly permitted tools and resources can be used by research assistants. Local-material mode disables built-in web research but may still use selected external MCP services.
@@ -59,7 +59,7 @@ Provider calls may incur charges. Epivra does not impose a total research time, 
 
 Open **Optional features** in Connections & settings:
 
-- **OCR document parsing:** choose Install and wait for dependencies and models to download and validate. This enables scans, images and complex documents. Downloads can require several GB. Keep Epivra running; new studies use the prepared component automatically.
+- **OCR document parsing:** choose Install, select a location in the system folder picker, and wait for dependencies and models to download and validate. The component is installed under `Epivra-OCR` in the chosen folder; its location is remembered and shown in Settings. This enables scans, images and complex documents. Downloads can require several GB. Keep Epivra running; new studies use the prepared component automatically.
 - **Built-in Python analysis:** choose Prepare built-in Python analysis, wait for local extraction and verification, then enable it. The Windows download includes Python, NumPy, pandas, SciPy, statsmodels, scikit-learn and chart/Excel/Parquet support. No Docker or separate Python installation is needed.
 
 Enable either, both or neither. Settings show preparation progress and errors.

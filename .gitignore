@@ -50,3 +50,6 @@ analysis-settings.json
 /test/
 /tests/
 /tools/dev_check.py
+
+# Private institution connector; excluded from public releases.
+/connectors/bupt-library/

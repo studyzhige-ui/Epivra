@@ -26,7 +26,18 @@ DOCUMENT_ID = f"documents-v1-py{sys.version_info.major}{sys.version_info.minor}"
 
 
 def documents(root):
-    path = Path(root) / ".epivra-components" / DOCUMENT_ID
+    base = Path(root) / ".epivra-components"
+    location = base / "documents-location.json"
+    if location.exists():
+        try:
+            selected = json.loads(location.read_text(encoding="utf-8"))["path"]
+            if not isinstance(selected, str) or not Path(selected).is_absolute():
+                return None
+            path = Path(selected) / DOCUMENT_ID
+        except (OSError, ValueError, KeyError, TypeError):
+            return None
+    else:
+        path = base / DOCUMENT_ID
     if (path / "ready.json").is_file() and (path / "packages/docling").is_dir() and (path / "models").is_dir():
         return path
     return None
@@ -92,8 +103,10 @@ class Components:
     def status(self):
         with self.lock:
             job = dict(self.job)
+        installed = documents(self.root)
         return {
-            "documents": bool(documents(self.root)),
+            "documents": bool(installed),
+            "documents_location": str(installed) if installed else job.get("directory"),
             "analysis": analysis_ready(self.root),
             "job": job,
         }
@@ -104,9 +117,17 @@ class Components:
                 raise ValueError("Component setup is running. Wait for it to finish before quitting.")
             self.closing = True
 
-    def start(self, component):
+    def start(self, component, directory=None):
         if component not in {"documents", "analysis"}:
             raise ValueError("unknown optional component")
+        destination = None
+        if directory is not None:
+            if component != "documents" or not isinstance(directory, str) or not directory.strip():
+                raise ValueError("Choose an OCR installation folder.")
+            selected = Path(directory)
+            if not selected.is_absolute() or not selected.is_dir():
+                raise ValueError("Choose an existing absolute installation folder.")
+            destination = selected.resolve() / "Epivra-OCR"
         with self.lock:
             if self.closing:
                 raise ValueError("Epivra is shutting down.")
@@ -114,7 +135,9 @@ class Components:
                 raise ValueError("Component setup is already running.")
             self.busy = True
             self.job = {"state": "running", "component": component, "phase": "preparing", "error": None}
-        threading.Thread(target=self._install, args=(component,), daemon=True).start()
+            if component == "documents":
+                self.job["directory"] = str((destination or self.root / ".epivra-components") / DOCUMENT_ID)
+        threading.Thread(target=self._install, args=(component, destination), daemon=True).start()
         return self.status()
 
     def phase(self, name):
@@ -134,9 +157,9 @@ class Components:
             raise RuntimeError("Setup command failed. See .epivra-components/setup.log in the data folder.")
 
     def _documents(self, base, log):
-        if documents(self.root):
-            return
         target = base / DOCUMENT_ID
+        if (target / "ready.json").is_file() and (target / "packages/docling").is_dir() and (target / "models").is_dir():
+            return
         if target.exists():
             raise RuntimeError("An incomplete component directory exists; see the data folder before retrying.")
         with tempfile.TemporaryDirectory(prefix="documents-install-", dir=base) as folder:
@@ -253,7 +276,7 @@ class Components:
             pointer.write_text(json.dumps({"identity": identity}), encoding="utf-8")
             os.replace(pointer, generations / "current.json")
 
-    def _install(self, component):
+    def _install(self, component, destination=None):
         base = self.root / ".epivra-components"
         handle = None
         try:
@@ -269,7 +292,18 @@ class Components:
                 shutil.rmtree(stage)
             with (base / "setup.log").open("wb") as log:
                 if component == "documents":
-                    self._documents(base, log)
+                    selected = destination or base
+                    selected.mkdir(parents=True, exist_ok=True)
+                    protect(selected)
+                    external_lock = exclusive_lock(selected / "setup.lock") if selected != base else None
+                    try:
+                        self._documents(selected, log)
+                        pointer = base / "documents-location.tmp"
+                        pointer.write_text(json.dumps({"path": str(selected)}), encoding="utf-8")
+                        os.replace(pointer, base / "documents-location.json")
+                    finally:
+                        if external_lock:
+                            external_lock.close()
                 else:
                     self._analysis(base, log)
             with self.lock:

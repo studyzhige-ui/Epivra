@@ -76,6 +76,11 @@ def validate(name, config):
     if type(timeout) not in {int, float} or not 0 < timeout < float("inf"):
         raise ValueError("MCP timeout must be finite and positive")
     for grant in config.get("tools", {}).values():
+        if isinstance(grant, dict) and grant.get("result_contract") not in (
+            None,
+            "knowledge-v1",
+        ):
+            raise ValueError("unsupported MCP result contract")
         if not isinstance(grant, dict) or type(grant.get("write")) is not bool:
             raise ValueError("each MCP tool needs an explicit write true/false grant")
         if (
@@ -140,7 +145,10 @@ async def connection(config, root):
             if config.get("token_env")
             else {}
         )
-        async with httpx2.AsyncClient(headers=headers, follow_redirects=False) as http:
+        async with httpx2.AsyncClient(
+            headers=headers, follow_redirects=False, timeout=config.get("timeout", 120),
+            trust_env=urlsplit(config["url"]).hostname not in {"localhost", "127.0.0.1", "::1"},
+        ) as http:
             async with Client(
                 streamable_http_client(config["url"], http_client=http),
                 read_timeout_seconds=config.get("timeout", 120),

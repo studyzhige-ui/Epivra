@@ -413,10 +413,10 @@ class Handler(BaseHTTPRequestHandler):
                 raise WebError(tr("请求应为对象。"))
             app = self.server.app
             if path == "/api/components":
-                if set(data) != {"component"}:
+                if "component" not in data or set(data) - {"component", "directory"}:
                     raise WebError(tr("参数或配置无效，请检查后重试。"))
                 try:
-                    self.reply(app.components.start(data["component"]))
+                    self.reply(app.components.start(data["component"], data.get("directory")))
                 except ValueError as exc:
                     raise WebError(str(exc), 409) from None
                 return

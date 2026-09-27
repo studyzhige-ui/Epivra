@@ -5,6 +5,7 @@ from pathlib import Path
 
 from .domain import bounded_json, identity
 from .harness import Tool, object_schema
+from .knowledge import decode as decode_knowledge
 from .mcp_client import MCPConnection, alias
 from .workspace import Workspace
 
@@ -46,7 +47,14 @@ def connect_tools(store, study, policy):
             async def received(args, receive, c=connection, d=definition, r=resource):
                 return await c.invoke(d, args, r, receive=receive)
 
-            def observe(raw, acquisition, name=server, d=definition, r=resource):
+            def observe(
+                raw,
+                acquisition,
+                name=server,
+                d=definition,
+                r=resource,
+                contract=grant.get("result_contract"),
+            ):
                 if raw.get("isError"):
                     return {
                         "error": "mcp_tool_error",
@@ -63,6 +71,29 @@ def connect_tools(store, study, policy):
                         "error": "mcp_result_format_or_interaction_unsupported",
                         "original_operation": acquisition["operation"],
                     }
+                if contract == "knowledge-v1":
+                    try:
+                        if d.get("outputSchema"):
+                            from jsonschema.validators import validator_for
+                            from referencing import Registry
+
+                            validator_for(d["outputSchema"])(
+                                d["outputSchema"], registry=Registry()
+                            ).validate(raw.get("structuredContent"))
+                        decoded = decode_knowledge(raw.get("structuredContent"), name)
+                    except Exception:
+                        return {
+                            "error": "knowledge_result_invalid",
+                            "original_operation": acquisition["operation"],
+                        }
+                    if "sources" not in decoded:
+                        return decoded
+                    result = workspace.web_snapshot(study, decoded, acquisition)
+                    for info, source in zip(result["sources"], decoded["sources"]):
+                        info["coverage"] = source["coverage"]
+                        info["document_id"] = source["document_id"]
+                        info["coverage_basis"] = source["coverage_basis"]
+                    return result
                 result = workspace.mcp_snapshot(study, name, raw, acquisition)
                 if not r and d.get("outputSchema"):
                     from jsonschema.validators import validator_for

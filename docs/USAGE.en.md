@@ -226,3 +226,12 @@ New retrieval results, sources or research handoffs must be considered before an
 After this research-contract upgrade, earlier studies remain readable and exportable; start a new study for execution. Finish existing work and restart an already running service to load the updated code.
 
 Context is managed against the selected model window for each role, reserving its configured output allowance. Reads fit the remaining capacity of the complete request instead of fixed 48,000-character context or 12,000-character result ceilings. Explicit smaller read limits are honored. Window checks retain the adapters’ local estimates and reported usage calibration; they neither fill every request nor guarantee exact use of every advertised token.
+
+
+## Search content and external knowledge
+
+When search returns original content, Epivra saves a local source snapshot and reuses it. A separate page read is needed only for missing context, absent content or a deliberate refresh. Provider summaries remain leads rather than original evidence.
+
+Settings keep provider and API key together and model selection on its own row. Save and Back remain visible while scrolling. OCR setup asks for a directory and remembers it.
+
+External knowledge remains optional standard MCP. The public application bundles no institution directory, authentication flow or database-specific plugin. Ordinary MCP tools need no format changes. Connectors returning traceable documents may opt into `result_contract: "knowledge-v1"`; this is an Epivra result mapping, not an MCP protocol requirement. See `SCHEMA` in `src/epivra/knowledge.py` for document fields and coverage levels. Other MCP tools retain ordinary result handling.

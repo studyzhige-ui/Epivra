@@ -46,7 +46,7 @@ Epivra 是本地自主研究工作台，将问题与获授权的资料转化为�
 Web 界面可切换简体中文与英文。报告语言请在研究需求中指定。报告可导出为 Markdown、Word 或独立 HTML；PDF 通过浏览器打印对话框导出。
 
 - **模型连接：**通过官方供应商适配器连接 OpenAI、Claude、Gemini、Grok、DeepSeek、Qwen、Kimi、GLM、Doubao、MiniMax、Hunyuan 和 ERNIE。默认选择 DeepSeek / `deepseek-flash`，实际可用性取决于账户。
-- **搜索与阅读：**支持 Tavily、Exa、Brave、Perplexity、Bocha、无需密钥的 DuckDuckGo 回退和 Jina 阅读。允许联网的研究还可使用 Crossref、PubMed、Europe PMC 和 World Bank 公共数据。
+- **搜索与阅读：**支持 Tavily、Exa、Brave、Perplexity、Bocha、无需密钥的 DuckDuckGo 回退和 Jina 阅读。允许联网的研究还可使用 Crossref、PubMed、Europe PMC 和 World Bank 公共数据。 搜索可同时取得服务返回的正文或相关原文片段，并在本地按需读取、形成引用；仅在内容不足时补充网页读取。博查摘要用于筛选资料，不冒充完整原文。默认不启用另收费的生成式摘要或高级搜索。
 - **资料：**支持文本、CSV/TSV、文本 PDF 和电子表格；可选的文档扩展提供 Docling 解析与 OCR。资料访问遵守所选授权范围。
 - **分析：**Python 计算、统计与绘图在 Windows 内置沙盒运行，保留操作系统级禁网、文件权限、进程/内存/CPU 限制与超时。输出和临时文件大小采用监控限制，并非硬磁盘配额。
 - **外部 MCP：**研究助手可使用明确授权的工具和资源。仅本地资料模式关闭内建网络研究，但仍可使用所选外部 MCP 服务。
@@ -57,7 +57,7 @@ Web 界面可切换简体中文与英文。报告语言请在研究需求中指�
 
 打开“连接与设置”中的“可选功能”：
 
-- **OCR 文档解析**：点击安装，等待依赖与模型下载、验证完成。适用于扫描件、图片和复杂文档。下载可能需要数 GB；安装期间保持 Epivra 运行。完成后新研究自动使用组件，无需手填模型路径。
+- **OCR 文档解析**：点击安装，在系统文件夹选择窗口中选择位置，再等待依赖与模型下载、验证完成。组件存入所选目录的 `Epivra-OCR` 子目录，位置自动记住并在设置中显示。适用于扫描件、图片和复杂文档。下载可能需要数 GB；安装期间保持 Epivra 运行。完成后新研究自动使用组件，无需手填模型路径。
 - **内置 Python 分析**：点击“准备内置 Python 分析”，等待本地解包与校验，然后勾选启用。新版 Windows 包随附 Python、NumPy、pandas、SciPy、statsmodels、scikit-learn，以及绘图、Excel/Parquet 支持。无需 Docker 或自行安装 Python。
 
 两项可以任意组合；分析环境已随安装包提供，OCR 仅在安装时下载。准备进度和失败原因显示在设置中。

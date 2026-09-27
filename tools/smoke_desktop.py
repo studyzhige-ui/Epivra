@@ -42,7 +42,7 @@ def smoke(package):
         sentinel = root / "keep.txt"
         sentinel.write_text("preserve upgrades", encoding="utf-8")
         allowed = {"SYSTEMROOT", "WINDIR", "TEMP", "TMP", "TMPDIR", "HOME", "USERPROFILE",
-                   "HOMEDRIVE", "HOMEPATH", "LOCALAPPDATA", "APPDATA", "LANG"}
+                   "HOMEDRIVE", "HOMEPATH", "LOCALAPPDATA", "APPDATA", "LANG", "PROGRAMFILES", "PROGRAMFILES(X86)"}
         env = {k: v for k, v in os.environ.items() if k.upper() in allowed}
         env["PATH"] = os.path.join(env.get("SYSTEMROOT", "C:/Windows"), "System32") if windows else "/usr/bin:/bin"
         env["PYTHONNOUSERSITE"] = "1"

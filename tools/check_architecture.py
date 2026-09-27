@@ -41,6 +41,7 @@ LAYERS = (
                 "sandbox_windows",
                 "native_analysis",
                 "mcp_client",
+                "knowledge",
             }
         ),
     ),
@@ -86,7 +87,8 @@ ALLOWED = {
         "web_providers",
     },
     "mcp_client": {"domain", "local_security"},
-    "mcp_tools": {"domain", "harness", "workspace", "mcp_client"},
+    "knowledge": set(),
+    "mcp_tools": {"domain", "harness", "workspace", "mcp_client", "knowledge"},
     "mcp_server": {"host", "locale"},
     "cli": {
         "report_export",
