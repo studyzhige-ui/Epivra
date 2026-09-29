@@ -8,9 +8,10 @@ All records are immutable; replacing a judgment is an explicit compare-and-swap.
 from __future__ import annotations
 
 from .domain import Conflict, NotAllowed, identity
+from .evidence import selection
 
 RESEARCH_KINDS = frozenset(
-    {"finding", "research_conflict", "writing_basis", "question_assessment"}
+    {"finding", "research_conflict", "writing_basis", "question_assessment", "evidence_relation"}
 )
 STATUSES = ("source_statement", "observation", "inference", "prediction")
 DISPOSITIONS = (
@@ -322,7 +323,7 @@ class ResearchLedger:
             yield item
             if item.kind == "finding":
                 pending.extend(item.body["sources"])
-            elif item.kind == "observation":
+            elif item.kind in {"observation", "source_acquisition"}:
                 receipt = item.body.get("research_receipt", {})
                 pending.extend(receipt.get("sources", []))
                 if receipt.get("reused_from"):
@@ -425,7 +426,7 @@ class ResearchLedger:
                     for item in self._public_dependencies(study, check["refs"]):
                         outcome = (
                             item.body.get("research_receipt", {}).get("outcome")
-                            if item.kind == "observation"
+                            if item.kind in {"observation", "source_acquisition"}
                             else None
                         )
                         failed_analysis = item.kind == "source" and item.body.get(
@@ -613,6 +614,7 @@ class ResearchLedger:
                 "rationale": rationale,
                 "limitations": [c["limitation"] for c in coverage if c["limitation"]],
                 "conflicts": [c.ref for c in conflicts],
+                "relations": [r.ref for r in self.relations(study, direction)],
                 "sources": sources,
                 "status": "agent_assessed_not_host_certified",
                 "considered_findings": [
@@ -631,12 +633,60 @@ class ResearchLedger:
                     work,
                     direction,
                     *body["assessments"],
+                    *body["relations"],
                     *chosen,
                     *sources,
                     *(c.ref for c in conflicts),
                     *((replaces,) if replaces else ()),
                 ),
             )
+
+    def record_relation(self, study, work, epoch, *, judgment, relation, disclosures,
+                        reason, replaces=None, _operation=None):
+        if relation not in {"same_observation", "partial_dependence", "independent", "unknown"} or not reason.strip():
+            raise ValueError("evidence relation requires a disposition and source-grounded reason")
+        with self.store.transaction():
+            actor, direction = self._scope(study, work, epoch)
+            if actor.body["role"] != "lead":
+                raise NotAllowed("only the owner adopts evidence relations")
+            request = identity(judgment, relation, disclosures, reason, replaces)
+            replay = self._receipt(study, "evidence_relation", _operation, request)
+            if replay:
+                return replay
+            judged = self.store.get(study, judgment)
+            if judged.kind != "evidence_judgment" or judged.body["direction"] != direction:
+                raise ValueError("expected a screening judgment in this direction")
+            state = judged.body["state"]
+            if not all(k in state for k in ("finding", "left", "right")):
+                raise ValueError("ranking scores cannot establish evidence relations")
+            finding = self._current(study, state["finding"], "finding", direction)
+            pair = sorted(f'{state[k]["ref"]}:{state[k]["offset"]}:{state[k]["end"]}' for k in ("left", "right"))
+            if pair[0] == pair[1]:
+                raise ValueError("identical source windows already have exact identity")
+            if not set(finding.body["sources"]) & {state[k]["ref"] for k in ("left", "right")}:
+                raise ValueError("relation must include existing support for the finding")
+            prior = [r for r in self.current(study, "evidence_relation", direction)
+                     if r.body["finding"] == finding.ref and r.body["pair"] == pair]
+            if (prior[-1].ref if prior else None) != replaces:
+                raise Conflict("replace the current relation for this finding and window pair")
+            originals = [selection(self.store, study, value) for value in disclosures]
+            if relation != "unknown" and not originals:
+                raise ValueError("provenance judgments require original disclosure selections; otherwise use unknown")
+            body = {"direction": direction, "producer": work, "finding": finding.ref,
+                    "pair": pair, "relation": relation, "reason": reason,
+                    "disclosures": list(disclosures), "judgment": judgment,
+                    "operation": _operation, "request_hash": request}
+            if replaces:
+                body["replaces"] = replaces
+            return self.store._put(study, "evidence_relation", body,
+                (work, direction, finding.ref, judgment, *[w["ref"] for w in originals],
+                 *((replaces,) if replaces else ())))
+
+    def relations(self, study, direction=None):
+        direction = direction or self.store.control(study).direction
+        findings = {f.ref for f in self.current(study, "finding", direction)}
+        return [r for r in self.current(study, "evidence_relation", direction)
+                if r.body["finding"] in findings]
 
     def current_basis(self, study, direction=None):
         entries = self.current(study, "writing_basis", direction)
@@ -645,6 +695,8 @@ class ResearchLedger:
     def require_basis(self, study, ref, direction=None):
         direction = direction or self.store.control(study).direction
         basis = self._current(study, ref, "writing_basis", direction)
+        if set(basis.body.get("relations", [])) != {r.ref for r in self.relations(study, direction)}:
+            raise Conflict("evidence relations changed; reassess the writing basis")
         if set(basis.body["considered_findings"]) != {
             f.ref for f in self.current(study, "finding", direction)
         }:
@@ -728,6 +780,10 @@ class ResearchLedger:
                     "stale": self.conflict_stale(study, a, direction),
                 }
                 for a in self.current(study, "research_conflict", direction)
+            ],
+            "relations": [
+                {"ref": r.ref, **r.body}
+                for r in self.relations(study, direction)
             ],
             "basis": None if not basis else {"ref": basis.ref, "stale": stale},
         }

@@ -12,6 +12,7 @@ from typing import Any
 
 from .analysis import filename
 from .domain import Artifact, NotAllowed
+from .evidence import markdown_segments
 from .materials import MAX_INPUT_BYTES, SUPPORTED_SUFFIXES, parse, parse_isolated
 from .storage import Store
 
@@ -223,6 +224,8 @@ class Workspace:
             for item in decoded["sources"]:
                 if not isinstance(item["text"], str) or not item["text"].strip():
                     raise ValueError("web source requires readable extracted text")
+                if not any(s.get("locator", {}).get("label") for s in item.get("segments", [])):
+                    item = {**item, "segments": markdown_segments(item["text"], item["origin"], item["coverage"])}
                 source = self.store._put(
                     study,
                     "source",

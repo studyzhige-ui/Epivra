@@ -69,6 +69,8 @@ def smoke(package):
                         settings = json.load(response)
                     assert settings["root"] == str(root.resolve())
                     assert not any(p["configured"] for p in settings["providers"])
+                    assert "local_embeddings" not in settings
+                    assert "readers" not in settings
                     return record
                 except (OSError, ValueError):
                     time.sleep(0.2)
@@ -94,6 +96,11 @@ def smoke(package):
             assert duplicate.wait(timeout=20) == 0
             assert json.loads(pointer.read_text())["token"] == record["token"]
             # This exercises an actual second parser process, not just an import.
+            subprocess.run([str(python), "-I", "-c",
+                            "from epivra.direct_reader import extract_html; "
+                            "assert extract_html(b'<main><h1>Title</h1><p>Original.</p></main>', 'https://example.com')[0] == '# Title\\n\\nOriginal.'; "
+                            "print('installed reader and release capabilities OK')"],
+                           cwd=base, env=env, check=True, timeout=30)
             subprocess.run([str(python), "-I", "-c",
                             "import asyncio; from epivra.materials import parse_isolated; "
                             "r=asyncio.run(parse_isolated('sample.txt',b'hello desktop')); "

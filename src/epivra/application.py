@@ -363,8 +363,10 @@ def online_service(
         "search_providers", ["tavily"] if policy.get("network") else []
     )
     readers = policy.get(
-        "reader_providers", ["tavily"] if policy.get("network") else []
+        "reader_providers", ["http", "jina"] if policy.get("network") else []
     )
+    if policy.get("evidence_provider") == "jev" and not keys.get("TYPESAFE_API_KEY", "").strip():
+        raise ValueError("TYPESAFE_API_KEY required")
     # Check every model and credential before allocating any clients.
     for settings in (policy, *policy.get("role_models", {}).values()):
         provider, *_ = model_settings(settings)
@@ -373,6 +375,11 @@ def online_service(
     providers = {
         name: connect(name, keys) for name in dict.fromkeys([*searches, *readers])
     }
+    if "jina" in providers and not keys.get("JINA_API_KEY", "").strip():
+        from .scheduling import Scheduler
+
+        scheduler = scheduler or Scheduler(history=store.admissions())
+        scheduler.constrain("jina", 3.0)
     model, model_api = create_model(policy, keys)
     role_models, role_apis = {}, []
     for role, settings in policy.get("role_models", {}).items():
@@ -387,8 +394,10 @@ def online_service(
 
     def schema(field, names):
         value = object_schema({field: STRING})
-        value["properties"]["provider"] = {"type": "string", "enum": names}
+        if field != "url" or names[0] != "http":
+            value["properties"]["provider"] = {"type": "string", "enum": names}
         value["properties"]["force_refresh"] = {"type": "boolean"}
+        value["properties"]["goal"] = {**STRING, "description": "Current evidence question, including necessary scope or version. Defaults to the search query or current work question."}
         if field == "query" and "tavily" in names:
             value["properties"].update(
                 {
@@ -405,6 +414,15 @@ def online_service(
 
     async def extract(args):
         return await select(args, readers).extract(args)
+
+    def authorization(request):
+        name = request["provider"]
+        if name == "http":
+            from .domain import identity
+
+            return identity(providers[name].api.authorization_identity,
+                            providers["jina"].api.authorization_identity)
+        return providers[name].api.authorization_identity
 
     def observe(raw, acquisition, names, reading=False):
         provider = providers[raw["provider"]]
@@ -442,7 +460,7 @@ def online_service(
         tools[name] = Tool(
             (
                 "Search the public web and acquire available original content in one request. "
-                "Read returned source handles with read_source locally; do not fetch the same content again. "
+                "Returns question-relevant original windows and source handles together; use read_source to expand omitted text locally. "
                 "Extracted pages and selected excerpts have explicit coverage; provider summaries and search snippets remain leads. "
                 "Use fetch_web only for absent content, necessary additional context, or fresh acquisition. "
                 "Choose queries and authoritative sites for the evidence needed; switch when results add no information. "
@@ -451,11 +469,12 @@ def online_service(
                 if not reading
                 else "Read a public URL into a citable source; identical successful reads reuse this direction's snapshot unless force_refresh; refresh when newly acquired data is required. "
             )
-            + "Choose provider only when needed; default: "
-            + names[0],
+            + ("Direct HTTP extraction falls back to Jina when usable text is unavailable."
+               if reading and names[0] == "http"
+               else "Choose provider only when needed; default: " + names[0]),
             schema(field, names),
             invoke,
-            identity="web-selection-v1:"
+            identity="web-selection-v2:"
             + ":".join(providers[n].identity for n in names),
             permission="network",
             roles=("lead", "investigator", "synthesizer", "writer", "reviewer"),
@@ -475,11 +494,9 @@ def online_service(
                 and raw.get("http_status") in {401, 432, 433}
                 else None
             ),
-            research_fields=tuple(schema(field, names)["properties"]),
+            research_fields=tuple(key for key in schema(field, names)["properties"] if key != "goal"),
             cache_research=True,
-            research_authorization=lambda request: providers[
-                request["provider"]
-            ].api.authorization_identity,
+            research_authorization=authorization,
         )
     public_clients = []
     if policy.get("network") and policy.get("public_sources"):
@@ -552,9 +569,14 @@ def online_service(
 
         mcp_tools, mcp_connections = connect_tools(store, study, policy)
         tools.update(mcp_tools)
-    harness = Harness(store, model, tools, scheduler=scheduler, role_models=role_models)
+    from .jev import connect as connect_evidence
+
+    evidence = connect_evidence(keys) if policy.get("evidence_provider") == "jev" else None
+    harness = Harness(store, model, tools, scheduler=scheduler, role_models=role_models,
+                      evidence_provider=evidence)
     return ResearchService(store, harness), [
         model_api,
+        *([evidence.api] if evidence else []),
         *role_apis,
         *mcp_connections,
         *public_clients,

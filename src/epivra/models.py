@@ -132,6 +132,8 @@ ROLE_MODEL_FIELDS = {
 
 
 def freeze_model_settings(policy):
+    if policy.get("evidence_provider", "bm25") not in {"bm25", "jev"}:
+        raise ValueError("evidence_provider must be bm25 or jev")
     overrides = policy.get("role_models", {})
     if not isinstance(overrides, dict) or overrides.keys() - set(SUBAGENT_ROLES):
         raise ValueError("invalid subagent roles")
@@ -145,11 +147,13 @@ def freeze_model_settings(policy):
             or not settings.get("model")
         ):
             raise ValueError("role model requires explicit provider and model settings")
-        frozen_roles[role] = freeze_model_settings(settings)
+        frozen_roles[role] = {key: value for key, value in freeze_model_settings(settings).items()
+                              if key in ROLE_MODEL_FIELDS}
     provider, model, context, output, _ = model_settings(policy)
     preset = provider.default_model
     return {
         **policy,
+        "evidence_provider": policy.get("evidence_provider", "bm25"),
         **({"role_models": frozen_roles} if "role_models" in policy else {}),
         "provider": provider.id,
         "model": model,

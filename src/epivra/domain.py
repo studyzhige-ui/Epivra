@@ -23,6 +23,10 @@ class NotAllowed(ValueError):
 class WorkInterrupted(Exception):
     """A persistent child control superseded this execution attempt."""
 
+    def __init__(self, step: str):
+        super().__init__("work execution was interrupted")
+        self.step = step
+
 
 class RuntimeMismatch(NotAllowed):
     """An archived research protocol cannot resume under different semantics."""

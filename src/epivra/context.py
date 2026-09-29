@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from copy import deepcopy
 from typing import Any
 
 from .domain import Artifact, ContextCapacity, encode
+from .evidence import delivered
 
 
 def page(items: list, offset: int, limit: int, capacity: int) -> dict:
@@ -170,10 +172,12 @@ def source_ranges(source: Artifact, observations: list[Artifact]) -> list[list[i
         result = body.get("result", {})
         if not isinstance(result, dict):
             continue
-        if body.get("tool") == "read_source" and result.get("ref") == source.ref:
-            start, end = result["offset"], result["end"]
-            if 0 <= start < end <= len(source.body["text"]):
-                ranges.append([start, end])
+        if delivered(result):
+            for part in delivered(result):
+                start, end = part["offset"], part["end"]
+                if part["ref"] == source.ref and 0 <= start < end <= len(source.body["text"]):
+                    if part["text"] == source.body["text"][start:end]:
+                        ranges.append([start, end])
         elif body.get("tool") == "read_artifact" and result.get("body") == source.body:
             ranges.append([0, len(source.body["text"])])
     merged = []
@@ -183,6 +187,35 @@ def source_ranges(source: Artifact, observations: list[Artifact]) -> list[list[i
         else:
             merged.append([start, end])
     return merged
+
+
+def deduplicate_originals(request, protected=()):
+    """Project repeated exact originals only when their text remains in this request."""
+    result = deepcopy(request)
+    entries = sorted(result["context"], key=lambda entry: entry["ref"] in protected, reverse=True)
+    seen = {}
+    for entry in entries:
+        body = entry.get("body", {})
+        for part in delivered(body.get("result", {})):
+            key = (part["ref"], part["offset"], part["end"], part["text"])
+            if key in seen and entry["ref"] not in protected:
+                compact = {key: value for key, value in part.items() if key != "text"}
+                compact["text_from"] = seen[key]
+                if len(encode(compact)) < len(encode(part)):
+                    part.clear()
+                    part.update(compact)
+                    continue
+            seen[key] = entry["ref"]
+    for entry in entries:
+        body = entry.get("body", {})
+        if entry["kind"] != "note" or entry["ref"] in protected or not isinstance(body.get("quote"), str):
+            continue
+        start, quote = body.get("offset"), body["quote"]
+        key = (body.get("source"), start, start + len(quote), quote) if type(start) is int else None
+        if key in seen and len(quote) > len(seen[key]) + 20:
+            body["quote_from"] = seen[key]
+            del body["quote"]
+    return result
 
 
 def assemble(

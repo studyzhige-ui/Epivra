@@ -378,12 +378,13 @@
           <div id="role-model-fields"></div>
         </details>
         <h3>搜索与网页读取</h3>
+        <p class="muted">网页正文按需自动读取，无需单独配置。</p>
         <div class="form-row">
-          <label>默认搜索<select id="search-provider"></select></label
-          ><label>网页正文读取服务<select id="reader-provider"></select></label>
+          <label>默认搜索<select id="search-provider"></select></label>
+          <label>资料检索与筛查<select id="evidence-provider"><option value="bm25">本地 BM25 检索</option><option value="jev">Jev 语义检索与证据筛查</option></select></label>
         </div>
         <details id="search-connection-settings">
-          <summary>配置搜索与读取服务的密钥</summary>
+          <summary>配置搜索与资料筛查服务的密钥</summary>
         <div class="form-row">
           <label>配置连接密钥<select id="connection-provider"></select></label
           ><label

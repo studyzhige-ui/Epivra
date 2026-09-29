@@ -20,6 +20,7 @@ from .domain import (
     OwnershipError,
     RuntimeMismatch,
     UnknownOutcome,
+    WorkInterrupted,
     encode,
     identity,
 )
@@ -336,7 +337,8 @@ class Store:
             "AND json_extract(body,'$.research_receipt') IS NOT NULL ORDER BY seq", (study, direction)):
             receipt = json.loads(row["receipt"])
             if receipt.get("input"):
-                found[receipt.get("reused_from") or row["ref"]] = "observation"
+                original = receipt.get("reused_from") if receipt.get("outcome") in {"ok", "empty"} else None
+                found[original or row["ref"]] = "observation"
             found.update((ref, "source") for ref in receipt.get("sources", []))
         for row in self.db.execute(
             "SELECT r.ref FROM artifacts r JOIN artifacts w ON w.ref=json_extract(r.body,'$.producer') "
@@ -348,12 +350,26 @@ class Store:
 
     def reusable_research_result(self, study, direction, request_key):
         row = self.db.execute(
-            "SELECT * FROM artifacts WHERE study=? AND kind='observation' "
+            "SELECT * FROM artifacts WHERE study=? AND kind IN ('observation','source_acquisition') "
             "AND json_extract(body,'$.direction')=? "
             "AND json_extract(body,'$.research_receipt.request_key')=? "
             "AND json_extract(body,'$.research_receipt.outcome') IN ('ok','empty') "
             "ORDER BY seq DESC LIMIT 1", (study, direction, request_key)).fetchone()
         return self._artifact(row) if row else None
+
+    def settled_research_operations(self, study, direction, request_key):
+        """Recover normalization after interruption without reissuing paid work."""
+        import json
+
+        rows = self.db.execute(
+            "SELECT id,work,result,json_extract(admission,'$.step') AS step "
+            "FROM operations WHERE study=? AND direction=? AND status='succeeded' "
+            "AND json_extract(admission,'$.research_key')=? "
+            "AND json_extract(admission,'$.step') IS NOT NULL ORDER BY rowid DESC",
+            (study, direction, request_key),
+        ).fetchall()
+        return [({"operation": row["id"], "work": row["work"], "step": row["step"]},
+                 json.loads(row["result"])) for row in rows]
 
     def catalog_index(self, study):
         rows = self.db.execute(
@@ -543,7 +559,7 @@ class Store:
                 "direction",
                 {
                     "request": request,
-                    "runtime": "continuous-research-v4",
+                    "runtime": "continuous-research-v7",
                     "policy": policy,
                 },
             )
@@ -740,7 +756,7 @@ class Store:
             return result
 
     def require_runtime(self, study: str, direction: str) -> None:
-        if self.get(study, direction).body.get("runtime") != "continuous-research-v4":
+        if self.get(study, direction).body.get("runtime") != "continuous-research-v7":
             raise RuntimeMismatch(
                 "Archived research runtime: read-only audit; start a new study"
             )
@@ -928,6 +944,17 @@ class Store:
             raise NotAllowed("work has been cancelled by its owner")
         return item
 
+
+    def require_execution(self, study, work, epoch, step):
+        self.require_work(study, work, epoch)
+        generation = self.work_generation(study, work)
+        if generation is None:
+            return
+        request = self.get(study, step).body["request"]
+        if self.work_interrupted(study, work) or request.get("work_generation") != generation:
+            if any(op["work"] == work for op in self.unsettled(study)):
+                raise UnknownOutcome("interrupted work retains an unknown paid operation")
+            raise WorkInterrupted(step)
 
     def watch(self, study):
         """The Host event loop owns Store; notifications follow committed writes."""

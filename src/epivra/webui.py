@@ -23,9 +23,10 @@ from .model_discovery import DiscoveryError, discover
 from .models import freeze_model_settings
 from .platform_paths import python_executable
 from .report_export import word_report
-from .web_providers import CONNECTIONS, READERS, SEARCH
+from .web_providers import CONNECTIONS, SEARCH
 
 DEFAULT_FIELDS = {
+    "evidence_provider",
     "provider",
     "model",
     "role_models",
@@ -33,7 +34,6 @@ DEFAULT_FIELDS = {
     "context_tokens",
     "max_tokens",
     "search_provider",
-    "reader_provider",
     "parser",
     "docling_models",
     "parse_timeout",
@@ -153,10 +153,10 @@ class App:
                     "credential": value[1],
                     "configured": bool(value[1] and value[1] in keys),
                 }
-                for name, value in CONNECTIONS.items()
+                for name, value in {**CONNECTIONS, "typesafe": ("https://api.typesafe.ai", "TYPESAFE_API_KEY")}.items()
+                if name != "jina"
             ],
             "search": list(SEARCH),
-            "readers": list(READERS),
         }
 
     def discover_models(self, data):
@@ -182,9 +182,8 @@ class App:
         freeze_model_settings(data)
         if data.get("parser", "auto") not in {"auto", "light", "docling"}:
             raise WebError(tr("未知解析器。"))
-        for key, choices in (("search_provider", SEARCH), ("reader_provider", READERS)):
-            if key in data and data[key] not in choices:
-                raise WebError(tr("未知搜索或网页读取连接。"))
+        if "search_provider" in data and data["search_provider"] not in SEARCH:
+            raise WebError(tr("未知搜索连接。"))
         if "analysis" in data and type(data["analysis"]) is not bool:
             raise WebError(tr("分析设置应为开关。"))
         names = data.get("mcp_servers", [])

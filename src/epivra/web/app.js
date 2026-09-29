@@ -1383,7 +1383,7 @@ async function openSettings() {
         ? "tavily"
         : "duckduckgo"),
   );
-  options("reader-provider", config.readers, d.reader_provider || "jina");
+  $("evidence-provider").value = d.evidence_provider || "bm25";
   options(
     "connection-provider",
     config.connections.map((c) => c.id),
@@ -1493,7 +1493,7 @@ $("settings-form").onsubmit = (e) => {
         role_models: selectedRoleModels(),
         region: $("region").value,
         search_provider: $("search-provider").value,
-        reader_provider: $("reader-provider").value,
+        evidence_provider: $("evidence-provider").value,
         parser: $("parser").value,
         analysis: $("analysis").checked,
         mcp_servers: mcpLoaded

@@ -2,7 +2,7 @@
 
 """
 
-PROMPT_VERSION = "research-sufficiency-20260922"
+PROMPT_VERSION = "evidence-access-20260929"
 
 TOOLS = {
     'read_context': '读取当前工作的完整目录页：section取navigation中的目录名，offset从0或next_offset继续，limit为期望条目数。目录仅是导航，details_omitted项用原ref读取全文；不会读取其他工作的私有窗口。新增记录在目录末尾，状态随当前事实更新。',
@@ -27,7 +27,10 @@ TOOLS = {
     'discover_local': '列出用户授权根目录中的文件，返回 catalog 引用；只发现清单，不阅读正文。root 必须来自任务授权。',
     'read_catalog': '分页读取 discover_local 返回的 catalog；ref 不能使用目录路径或 source 引用。source_ref 是此清单已保存的正文快照。',
     'snapshot_local': '从 catalog 引用与其中的相对 path 保存 source 快照；目录已有 source_ref 时直接阅读即可。',
-    'find_artifacts': '按 kind 和 query 检索正文、引用及父引用；query 为空列出该类，after=0 从头分页。引用前缀可检索完整引用；work 可查委托，source 返回当前工作的已读区间。',
+    'find_artifacts': '按 kind 和 query 精确查找记录；query 为空列出该类，after=0 从头分页。source 返回已读区间；按问题查原文用 search_sources。',
+    'search_sources': '在明确指定的 sources 原文中查询问题 query，返回已排序的准确原文和 selection，可直接引用，无须形式性重复读取。续读仅传 query_ref 和 next_offset 作为 offset，不会重新评分。排名不是完整性或证据质量证明；必要时 read_source 扩大上下文。',
+    'screen_evidence': '按 finding 定向比较 left/right 原文区间（source_ref:start:end），返回支持关系、重叠及明确披露的数据谱系候选。仅在关系影响研究时使用，不逐URL强制筛查。模型评分不代表已读原文或已确认独立性。',
+    'record_evidence_relation': '负责人采纳指定 judgment 的主张级证据关系；非 unknown 必须给出 disclosures 原文区间与 reason。文字相似不能证明同源，出处未知保留 unknown。更新同一主张与区间对须 replaces 当前关系。关系不传递，不删除来源，不自动增加独立支持数量。',
     'read_source': '按source或精确摘录note引用读取原始正文；note沿已绑定来源定位摘录位置，source默认从头读取一页。常规顺序阅读请省略limit，让宿主返回当前上下文允许的安全大页，并按next_offset继续；只有定点核查时才主动给较小limit。selections是本页原文片段的可选身份，可直接用于record_evidence，避免重抄引文。URL须先获取正文，不能冒充source引用。返回范围不代表已理解。',
     'read_artifact': '读取研究记录正文及直接关联入口；ref必须是返回过的完整引用，不能传名称、路径或引用前缀。大记录直接返回canonical-json第一页与next_offset，后续用read_artifact_range。',
     'read_artifact_range': '按字符范围读取记录的 canonical-json；offset=0从头读取。常规顺序阅读省略limit使用宿主安全大页并按next_offset继续，只有定点核查才给较小limit。阅读来源正文优先用read_source。',

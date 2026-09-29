@@ -153,6 +153,7 @@ def credentials(path: Path) -> dict[str, str]:
         "PERPLEXITY_API_KEY",
         "BOCHA_API_KEY",
         "JINA_API_KEY",
+        "TYPESAFE_API_KEY",
     }
     result = {}
     for line in (
@@ -254,7 +255,7 @@ class JsonAPI:
         request_id = response.headers.get("x-request-id", response.headers.get("request-id", ""))
         if re.fullmatch(r"(?:req_)?[a-zA-Z0-9-]{8,100}", request_id) and not request_id.startswith("sk-"):
             result["request_id"] = request_id
-        if response.status_code == 429:
+        if response.status_code in {429, 529}:
             try:
                 seconds = float(response.headers.get("retry-after", ""))
                 if math.isfinite(seconds) and seconds >= 0:

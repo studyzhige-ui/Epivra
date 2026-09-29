@@ -33,13 +33,6 @@ def docker_executable():
     return next((str(p) for p in paths if p.is_file()), "docker")
 
 
-def sandbox_resources():
-    bundled = Path(sys.prefix) / "epivra-resources/sandbox"
-    if bundled.is_dir():
-        return bundled
-    return Path(__file__).resolve().parents[2] / "sandbox"
-
-
 def component_environment():
     allowed = {"PATH", "SYSTEMROOT", "WINDIR", "TEMP", "TMP", "TMPDIR",
                "LANG", "LC_ALL", "HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH",

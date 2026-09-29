@@ -3,7 +3,7 @@
 import asyncio
 
 from .analysis import DockerSandbox
-from .domain import Conflict, NotAllowed
+from .domain import Conflict, NotAllowed, WorkInterrupted
 from .native_analysis import NativeSandbox
 from .scheduling import Scheduler
 from .storage import Store
@@ -26,7 +26,6 @@ class AnalysisRuntime:
         if not config or not self.store.control(study).approved:
             raise NotAllowed("analysis is not enabled for this work")
         sandbox = self.native if config.get("backend") == "native" else self.sandbox
-        generation = self.store.work_generation(study, work.ref)
         inputs = {item["name"]: item["ref"] for item in args["inputs"]}
         if len(inputs) != len(args["inputs"]):
             raise ValueError("duplicate input names")
@@ -74,17 +73,16 @@ class AnalysisRuntime:
         folder = self.workspace.stage_analysis(job, files)
 
         def guard():
-            self.store.require_work(study, work.ref, epoch)
-            if self.store.work_interrupted(study, work.ref) or generation != self.store.work_generation(study, work.ref):
-                raise NotAllowed("analysis interrupted by its owner")
+            self.store.require_execution(study, work.ref, epoch, step)
 
         try:
             async with self.scheduler.slot("analysis", guard):
                 result = await sandbox.run(job.ref, folder, config, fresh, guard)
+            guard()
             saved = self.workspace.save_analysis(
                 study, job, result, config["output_mb"] * 1024 * 1024
             )
-        except (asyncio.CancelledError, Conflict, NotAllowed):
+        except (asyncio.CancelledError, Conflict, NotAllowed, WorkInterrupted):
             # Cancellation is a known local outcome; preserve it before reaping.
             self.workspace.save_analysis(
                 study,

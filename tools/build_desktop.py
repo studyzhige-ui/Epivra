@@ -58,7 +58,15 @@ def build(output, runtime_archive=None, analysis_bundle=None, wheelhouse=None):
         shutil.copytree(work / "extracted/python", runtime, symlinks=True)
         python = runtime / "python.exe"
         wheels = work / "wheels"
-        run(sys.executable, "-m", "build", "--wheel", "--outdir", wheels, ROOT)
+        source = work / "source"
+        source.mkdir()
+        shutil.copytree(ROOT / "src/epivra", source / "src/epivra",
+                        ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+        for pattern in ("pyproject.toml", "README.md", "LICENSE*", "COPYING*", "NOTICE*"):
+            for item in ROOT.glob(pattern):
+                if item.is_file():
+                    shutil.copy2(item, source / item.name)
+        run(sys.executable, "-m", "build", "--wheel", "--outdir", wheels, source)
         wheel = next(wheels.glob("epivra-*.whl"))
         run(python, "-I", "-m", "ensurepip", "--upgrade")
         install = [python, "-I", "-m", "pip", "--isolated", "--disable-pip-version-check",

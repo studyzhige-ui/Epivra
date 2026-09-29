@@ -13,7 +13,12 @@ from .web_providers import CONNECTIONS
 
 def load(root):
     path = root / ".epivra/cli-settings.json"
-    return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    values = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    values.pop("reader_provider", None)
+    values.pop("embedding_model_path", None)
+    if values.get("evidence_provider") == "memory":
+        values["evidence_provider"] = "bm25"
+    return values
 
 
 def write(path, text):
@@ -47,6 +52,7 @@ def save_key(root, name, value):
     allowed = {spec.credential_env for spec in OFFICIAL_PROVIDERS.values()} | {
         v[1] for v in CONNECTIONS.values()
     }
+    allowed.add("TYPESAFE_API_KEY")
     if name not in allowed or not value or any(c in value for c in "\r\n\x00\"'"):
         raise ValueError("invalid credential")
     path = root / ".env"

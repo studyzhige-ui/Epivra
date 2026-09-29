@@ -13,7 +13,7 @@ from .locale import LANGUAGES, configure, set_language, tr
 from .model_catalog import OFFICIAL_PROVIDERS
 from .report_export import markdown_report
 from .terminal import Terminal
-from .web_providers import CONNECTIONS, READERS, SEARCH
+from .web_providers import CONNECTIONS, SEARCH
 
 LABELS = {
     "openai": "OpenAI",
@@ -118,6 +118,7 @@ class Workbench:
                 [
                     ("model", tr("研究模型")),
                     ("search", tr("搜索与网页读取")),
+                    ("evidence", tr("资料检索与筛查")),
                     ("parser", tr("本地解析")),
                     ("analysis", tr("数据分析沙箱")),
                     ("mcp", tr("MCP 外部连接")),
@@ -191,7 +192,7 @@ class Workbench:
                 defaults.update(update)
             elif choice == "search":
                 provider = await self.ui.choose(
-                    tr("配置连接"), [(n, n) for n in CONNECTIONS]
+                    tr("配置连接"), [(n, n) for n in SEARCH]
                 )
                 if provider is None:
                     continue
@@ -208,8 +209,18 @@ class Workbench:
                     cli_settings.save_key(self.root, CONNECTIONS[provider][1], key)
                 if provider in SEARCH:
                     defaults["search_provider"] = provider
-                if provider in READERS:
-                    defaults["reader_provider"] = provider
+            elif choice == "evidence":
+                providers = [("bm25", "BM25"), ("jev", "Jev / TypeSafe")]
+                selected = await self.ui.choose(tr("资料检索与筛查"), providers)
+                if not selected:
+                    continue
+                if selected == "jev" and "TYPESAFE_API_KEY" not in keys:
+                    self.ui.show(tr("Jev 会将选定原文发送至 TypeSafe，包括本地资料。"))
+                    key = await self.ui.text("TYPESAFE_API_KEY", secret=True)
+                    if not key:
+                        continue
+                    cli_settings.save_key(self.root, "TYPESAFE_API_KEY", key)
+                defaults["evidence_provider"] = selected
             elif choice == "mcp":
                 names = (await self.call("mcp_connections"))["servers"]
                 if not names:

@@ -8,6 +8,7 @@ import re
 import time
 from collections.abc import Awaitable, Callable
 from contextlib import nullcontext
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Protocol
@@ -15,7 +16,14 @@ from typing import Any, Protocol
 from .analysis_runtime import AnalysisRuntime
 from .calculation import calculate
 from .citations import render as render_citations
-from .context import assemble, fit_provider, fit_read_result, page, source_ranges
+from .context import (
+    assemble,
+    deduplicate_originals,
+    fit_provider,
+    fit_read_result,
+    page,
+    source_ranges,
+)
 from .domain import (
     Artifact,
     Call,
@@ -24,13 +32,14 @@ from .domain import (
     RecoveryExhausted,
     RepeatedFailure,
     Reply,
-    UnknownOutcome,
     WorkInterrupted,
     bounded_json,
     encode,
     identity,
     input_capacity,
 )
+from .evidence import delivered, window
+from .evidence_runtime import EvidenceRuntime
 from .prompts import PROMPT_VERSION, ROLES, ROUTE_PROMPT, TOOLS, WRITING_GUIDES
 from .research import DISPOSITIONS, RESEARCH_KINDS, STATUSES, ResearchLedger
 from .review import report_metrics, text_metrics, units
@@ -39,7 +48,7 @@ from .storage import Store
 from .workspace import Workspace
 from .writing import WritingWorkspace
 
-READ_TOOLS = frozenset({"read_source", "read_artifact", "read_artifact_range", "read_draft", "read_report"})
+READ_TOOLS = frozenset({"read_source", "search_sources", "read_artifact", "read_artifact_range", "read_draft", "read_report"})
 
 
 class Model(Protocol):
@@ -99,7 +108,7 @@ class Tool:
 def object_schema(properties: dict[str, Any]) -> dict[str, Any]:
     return {
         "type": "object",
-        "properties": properties,
+        "properties": deepcopy(properties),
         "required": list(properties),
         "additionalProperties": False,
     }
@@ -497,9 +506,28 @@ BUILTINS["read_context"][1]["properties"]["section"]["enum"].extend(
         "research_inputs",
         "research_findings",
         "research_conflicts",
+        "evidence_relations",
     ]
 )
 
+
+BUILTINS.update({
+    "search_sources": ("all", {**object_schema({
+        "query": STRING, "sources": REFERENCES, "query_ref": STRING,
+        "offset": {"type": "integer", "minimum": 0,
+                   "description": "Character offset in the frozen selected-text stream. Continue with query_ref and the returned next_offset."},
+        "limit": {"type": "integer", "minimum": 1,
+                  "description": "Maximum original-text characters, NOT number of results or chunks. Omit for a page fitted to available context. A non-null next_offset means selected text remains unread."},
+    }), "required": []}),
+    "screen_evidence": ("all", object_schema({"finding": STRING, "left": STRING, "right": STRING})),
+    "record_evidence_relation": ("lead", {**object_schema({
+        "judgment": STRING, "relation": {"type": "string", "enum": ["same_observation", "partial_dependence", "independent", "unknown"]},
+        "disclosures": {"type": "array", "items": STRING}, "reason": STRING, "replaces": STRING,
+    }), "required": ["judgment", "relation", "disclosures", "reason"]}),
+})
+BUILTINS["find_artifacts"][1]["properties"]["kind"]["enum"].extend(
+    ["evidence_query", "evidence_judgment"]
+)
 
 for _name in ("read_source", "read_artifact_range", "read_report"):
     _page = BUILTINS[_name][1]
@@ -592,6 +620,7 @@ class Harness:
         scheduler: Scheduler | None = None,
         sandbox=None,
         role_models: dict[str, Model] | None = None,
+        evidence_provider=None,
     ):
         self.store, self.model = store, model
         self.role_models = dict(role_models or {})
@@ -599,6 +628,7 @@ class Harness:
         self.tools = tools or {}
         self.workspace = Workspace(store)
         self.research = ResearchLedger(store)
+        self.evidence = EvidenceRuntime(store, evidence_provider, self.scheduler)
         self.writing = WritingWorkspace(store)
         self.analysis = AnalysisRuntime(store, self.scheduler, sandbox)
         if set(self.tools) & set(BUILTINS):
@@ -652,6 +682,8 @@ class Harness:
                 "description": TOOLS["finish_work"],
                 "parameters": BUILTINS["finish_work"][1],
             }
+        if policy.get("evidence_provider") != "jev":
+            result.pop("screen_evidence", None)
         if not policy.get("analysis"):
             result.pop("run_analysis", None)
         if role == "lead":
@@ -800,20 +832,24 @@ class Harness:
             if ref in replacements:
                 pending.append(replacements[ref])
             if item.kind not in {
-                "work_result", "finding", "research_conflict", "writing_basis", "question_assessment", "note", "report"
+                "work_result", "finding", "research_conflict", "writing_basis", "question_assessment", "evidence_relation", "note", "report"
             }:
                 continue
-            for key in ("refs", "support", "sources", "findings", "evidence", "assessments"):
+            for key in ("refs", "support", "sources", "findings", "evidence", "assessments", "relations"):
                 values = item.body.get(key, [])
                 if isinstance(values, list):
                     pending.extend(
                         value for value in values
                         if isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value)
                     )
+            if item.kind == "evidence_relation":
+                pending.append(item.body["finding"])
             if item.kind == "question_assessment":
                 pending.extend(ref for check in item.body["checks"] for ref in check["refs"])
             if item.kind == "report" and item.body.get("basis"):
                 pending.append(item.body["basis"])
+        visited.update(r.ref for r in self.research.relations(study, work.body["direction"])
+                       if r.body["finding"] in visited)
         return visited
 
     def _assemble_request(
@@ -934,8 +970,11 @@ class Harness:
             if knowledge["basis"]
             else None
         )
+        bound_relations = []
         if basis_ref and not focused:
             basis_item = self.store.get(study, basis_ref)
+            bound_relations = [self.store.get(study, ref) for ref in basis_item.body.get("relations", [])]
+            candidates.extend(bound_relations)
             candidates.append(basis_item)
             candidates.extend(
                 self.store.get(study, ref) for ref in [*basis_item.body["findings"], *basis_item.body.get("assessments", [])]
@@ -950,7 +989,7 @@ class Harness:
             candidates.extend(
                 item for ref in related
                 if (item := self.store.get(study, ref)).kind
-                in {"finding", "research_conflict", "question_assessment", "note", "work_result"}
+                in {"finding", "research_conflict", "question_assessment", "evidence_relation", "note", "work_result"}
             )
         candidates.extend(
             self.store.get(study, ref)
@@ -966,6 +1005,7 @@ class Harness:
                 "research_conflict",
                 "writing_basis",
                 "question_assessment",
+                "evidence_relation",
             }
             and not (
                 work.body["role"] == "reviewer"
@@ -1006,6 +1046,8 @@ class Harness:
             research_inputs=knowledge["pending_inputs"],
             research_findings=knowledge["findings"],
             research_conflicts=knowledge["conflicts"],
+            evidence_relations=([{"ref": item.ref, **item.body} for item in bound_relations]
+                                if work.body["role"] == "reviewer" else knowledge["relations"]),
         )
         if work.body["role"] == "reviewer":
             directories["review_inputs"] = mandatory["review_progress"].pop("inputs")
@@ -1044,7 +1086,7 @@ class Harness:
         pending = [
             a for a in (self.store.related(study, "observation", steps[-1].ref) if steps else [])
             if a.body.get("step") == steps[-1].ref
-            and a.body.get("tool") in READ_TOOLS
+            and (a.body.get("tool") in READ_TOOLS or delivered(a.body.get("result")))
             and "error" not in a.body.get("result", {})
         ]
         candidates.extend(pending)
@@ -1066,7 +1108,7 @@ class Harness:
             # Do not inject unrelated conclusions into a clean helper context.
             # read_context(section=...) above still returns the complete global
             # directory with its real cursor; no hidden retrieval restrictions.
-            if focused and key in {"research_findings", "research_conflicts"}:
+            if focused and key in {"research_findings", "research_conflicts", "evidence_relations"}:
                 continue
             first = (
                 page(items, 0, 20, allocation)
@@ -1110,6 +1152,7 @@ class Harness:
         prepare = getattr(model, "prepare", None)
         if prepare:
             request = fit_provider(request, prepare, priority_refs=priority_refs)
+        request = deduplicate_originals(request, priority_refs | {item["ref"] for item in directories["inputs"]})
         if prepare and prepare_wire:
             previous = None
             steps = self._steps(study, "step", work.ref, limit=1)
@@ -1167,7 +1210,7 @@ class Harness:
                     # Persisted wall-clock deadline survives process restart. Short
                     # cooperative waits also fence pause/steer before another send.
                     while retry.body["not_before"] > time.time():
-                        self._execution_guard(study, work, epoch, step)
+                        self.store.require_execution(study, work, epoch, step)
                         await asyncio.sleep(
                             min(0.25, retry.body["not_before"] - time.time())
                         )
@@ -1181,13 +1224,13 @@ class Harness:
                     )
                     async with self.scheduler.slot(
                         resource,
-                        lambda: self._execution_guard(study, work, epoch, step),
+                        lambda: self.store.require_execution(study, work, epoch, step),
                         tokens,
                     ) as admitted:
                         runtime = getattr(self, "agent_runtime", None)
-                        slot = runtime.turn(study, work, lambda: self._execution_guard(study, work, epoch, step)) if runtime and request_step else nullcontext()
+                        slot = runtime.turn(study, work, lambda: self.store.require_execution(study, work, epoch, step)) if runtime and request_step else nullcontext()
                         async with slot:
-                            self._execution_guard(study, work, epoch, step)
+                            self.store.require_execution(study, work, epoch, step)
                             raw = self.store.admit(
                                 study,
                                 work,
@@ -1203,7 +1246,7 @@ class Harness:
                                     "model": getattr(model, "model", None)
                                     if request_step
                                     else None,
-                                    **({"research_key": research_key} if research_key else {}),
+                                    **({"research_key": research_key, "step": step} if research_key else {}),
                                 },
                             )
                             if raw is None:
@@ -1231,7 +1274,7 @@ class Harness:
                 ):
                     delay = 0
                 if delay is None:
-                    self._execution_guard(study, work, epoch, step)
+                    self.store.require_execution(study, work, epoch, step)
                     return raw
                 if not math.isfinite(delay) or delay < 0:
                     raise ValueError("invalid provider retry delay")
@@ -1262,7 +1305,7 @@ class Harness:
                     (work, step),
                 )
                 self.scheduler.defer(resource, retry.body["not_before"])
-                self._execution_guard(study, work, epoch, step)
+                self.store.require_execution(study, work, epoch, step)
                 key = next_key
 
     def _steps(self, study: str, kind: str, work: str, *, limit=None) -> list[Artifact]:
@@ -1334,23 +1377,11 @@ class Harness:
     def finished(self, study: str, work: str) -> bool:
         return bool(self._steps(study, "work_result", work))
 
-    def _execution_guard(self, study, work, epoch, step):
-        self.store.require_work(study, work, epoch)
-        generation = self.store.work_generation(study, work)
-        if generation is None:
-            return
-        request = self.store.get(study, step).body["request"]
-        if (self.store.work_interrupted(study, work)
-                or request.get("work_generation") != generation):
-            if any(op["work"] == work for op in self.store.unsettled(study)):
-                raise UnknownOutcome("interrupted work retains an unknown paid operation")
-            self.store.put(study, "step_done", {"step": step, "failure": None, "discarded": True}, (work, step))
-            raise WorkInterrupted()
-
     async def step(self, study: str, work_ref: str) -> str:
         try:
             return await self._step(study, work_ref)
-        except WorkInterrupted:
+        except WorkInterrupted as exc:
+            self.store.put(study, "step_done", {"step": exc.step, "failure": None, "discarded": True}, (work_ref, exc.step))
             return "waiting" if self.store.work_interrupted(study, work_ref) else "continue"
 
     async def _step(self, study: str, work_ref: str) -> str:
@@ -1396,7 +1427,7 @@ class Harness:
                     },
                     (work_ref,),
                 )
-            self._execution_guard(study, work_ref, control.epoch, step.ref)
+            self.store.require_execution(study, work_ref, control.epoch, step.ref)
             operation = identity("model", work_ref, step.ref)
             if step.body["request"]["provider"] != model.identity:
                 raise NotAllowed("pending work requires its original model binding")
@@ -1436,7 +1467,7 @@ class Harness:
                 request_step=step.ref,
             )
             # Always save the external result; only then check the admission fence.
-            self._execution_guard(study, work_ref, control.epoch, step.ref)
+            self.store.require_execution(study, work_ref, control.epoch, step.ref)
             try:
                 decode = getattr(model, "decode", None)
                 reply = Reply.from_json(decode(raw) if decode else raw)
@@ -1463,7 +1494,7 @@ class Harness:
             prefetched: set[int] = set()
             prefetch_errors = {}
             for index, call in enumerate(reply.calls):
-                self._execution_guard(study, work_ref, control.epoch, step.ref)
+                self.store.require_execution(study, work_ref, control.epoch, step.ref)
                 if index not in prefetched:
                     batch = []
                     for j in range(
@@ -1536,7 +1567,7 @@ class Harness:
                                     study,
                                     call.arguments["catalog"],
                                     call.arguments["path"],
-                                    guard=lambda: self.store.require_work(study, work_ref, control.epoch),
+                                    guard=lambda: self.store.require_execution(study, work_ref, control.epoch, step.ref),
                                 )
                                 result = {
                                     "ref": source.ref,
@@ -1548,13 +1579,19 @@ class Harness:
                             elif call.name == "discover_local":
                                 catalog = await self.workspace.discover_async(
                                     study, call.arguments["root"],
-                                    guard=lambda: self.store.require_work(study, work_ref, control.epoch),
+                                    guard=lambda: self.store.require_execution(study, work_ref, control.epoch, step.ref),
                                 )
                                 result = {
                                     "ref": catalog.ref,
                                     "kind": "catalog",
                                     "count": len(catalog.body["entries"]),
                                 }
+                            elif call.name in {"search_sources", "screen_evidence"}:
+                                result = await self.evidence.run(
+                                    study, work, control.epoch, step.ref, index, call,
+                                    self._invoke, input_capacity(model),
+                                    self._read_fits(study, work, step.ref, index, call),
+                                )
                             elif call.name == "run_analysis":
                                 result = await self.analysis.run(
                                     study,
@@ -1576,26 +1613,22 @@ class Harness:
                         except ValueError as exc:
                             result = {"error": str(exc)}
                     else:
-                        envelope = await self._external(
-                            study, work_ref, control.epoch, step.ref, index, call
-                        )
-                        observe = self.tools[call.name].observe
-                        operation = identity("tool", step.ref, index)
-                        retry = self._attempt(study, operation)
-                        acquisition = {
-                            "work": work_ref,
-                            "step": step.ref,
-                            "operation": retry.body["next"] if retry else operation,
-                        }
-                        try:
-                            result = (
-                                envelope["value"] if envelope.get("research_reuse") else observe(envelope["value"], acquisition)
-                                if observe
-                                else envelope
-                            )
-                            encode(result)
-                        except ValueError:
-                            result = {"error": "invalid_external_result", "instruction": "Saved provider response is unusable; use another source or revise the request."}
+                        result, envelope = await self._acquired(study, work_ref, control.epoch, step.ref, index, call)
+                        if call.name == "web_search" and not result.get("sources") and result.get("results"):
+                            result = await self._read_lead(study, work, control.epoch, step.ref, index, call, result, schema)
+                if not invalid and call.name == "record_finding" and "error" not in result and self.evidence.provider:
+                    try:
+                        result = {**result, "relation_candidates": await self.evidence.candidates(
+                            study, work, control.epoch, step.ref, index, result["ref"], self._invoke)}
+                    except ValueError as exc:
+                        result = {**result, "screening_error": str(exc)}
+                if not invalid and (call.name not in BUILTINS or call.name == "snapshot_local") and "error" not in result:
+                    result = await self.evidence.deliver(
+                        study, work, control.epoch, step.ref, index, result,
+                        call.arguments.get("goal") or call.arguments.get("query") or work.body["task"],
+                        self._invoke, input_capacity(model),
+                        self._read_fits(study, work, step.ref, index, call),
+                    )
                 self.store.observation(
                     study,
                     work_ref,
@@ -1664,12 +1697,14 @@ class Harness:
 
     def _research_receipt(self, study, work, call, result, reused=None, request_key=None):
         tool = self.tools.get(call.name)
-        local = call.name in {"read_source", "snapshot_local", "run_analysis"}
+        local = call.name in {"read_source", "search_sources", "snapshot_local", "run_analysis"}
         if not local and tool is None:
             return {}
         sources = []
         candidates = [result.get("ref"), result.get("source"), result.get("log")]
-        candidates.extend(x.get("ref") for x in result.get("sources", []) if isinstance(x, dict))
+        candidates.extend(x.get("ref") for x in
+                          (delivered(result) if call.name == "search_sources" else result.get("sources", []))
+                          if isinstance(x, dict))
         candidates.extend(x.get("ref") for x in result.get("files", []) if isinstance(x, dict))
         for ref in candidates:
             if isinstance(ref, str):
@@ -1681,31 +1716,114 @@ class Harness:
                     sources.append(ref)
                 elif item.kind == "analysis_result":
                     sources.extend([item.body["log"], *(x["ref"] for x in item.body["files"])])
-        failures = bool(result.get("failures") or result.get("error") or (call.name == "run_analysis" and result.get("status") != "succeeded"))
+        failures = bool(result.get("failures") or result.get("error") or result.get("selection_error") or result.get("acquisition_status") in {"failed", "partial"} or (call.name == "run_analysis" and result.get("status") != "succeeded"))
         entries = result.get("results", result.get("records", result.get("ids", sources)))
         if call.name == "run_analysis" and failures:
             entries = result.get("files", [])
         outcome = "partial" if failures and entries else "blocked" if failures else "ok" if entries else "empty"
         if tool and not tool.research_fields and not failures:
             outcome = "unclassified"
-        request = self._research_request(call) if tool else {k: call.arguments[k] for k in ("ref", "catalog", "path", "offset", "limit") if k in call.arguments}
+        request = self._research_request(call) if tool else {k: call.arguments[k] for k in ("ref", "catalog", "path", "offset", "limit", "query", "query_ref", "sources") if k in call.arguments}
         receipt = {"input": call.name == "run_analysis" or bool(tool and ("query" in tool.research_fields or not tool.research_fields or not sources)) or failures, "outcome": outcome,
-                   "material": "text_range" if call.name == "read_source" else "data" if result.get("content_type") == "structured_data" else "metadata",
+                   "material": "text_range" if delivered(result) else "data" if result.get("content_type") == "structured_data" else "metadata",
                    "sources": list(dict.fromkeys(sources)), "request": request,
                    "refreshed": call.arguments.get("force_refresh") is True,
-                   "binding": tool.binding if tool else "local-v4"}
+                   "binding": tool.binding if tool else "local-v7"}
         if tool:
             receipt["request_key"] = request_key or tool.research_key(request)
         if reused:
             receipt["reused_from"] = reused
+        receipt["delivered_ranges"] = [{key: part[key] for key in ("ref", "offset", "end")}
+                                       for part in delivered(result)]
         return receipt
+
+    async def _acquired(self, study, work, epoch, step, index, call):
+        envelope = await self._external(study, work, epoch, step, index, call)
+        observe = self.tools[call.name].observe
+        operation = identity("tool", step, index)
+        retry = self._attempt(study, operation)
+        acquisition = {"work": work, "step": step, "operation": retry.body["next"] if retry else operation}
+        try:
+            result = (envelope["value"] if envelope.get("research_reuse") else observe(envelope["value"], acquisition)
+                      if observe else envelope)
+            encode(result)
+        except ValueError:
+            result = {"error": "invalid_external_result", "instruction": "Saved provider response is unusable; use another source or revise the request."}
+        tool = self.tools[call.name]
+        if (call.name == "fetch_web" and tool.resource == "http"
+                and call.arguments.get("provider", "http") == "http"
+                and not result.get("sources") and not envelope.get("research_reuse")
+                and envelope["value"].get("fallback_allowed", True)):
+            fallback, fallback_envelope = await self._acquired(
+                study, work, epoch, step, f"{index}:jina",
+                Call(call.name, {**call.arguments, "provider": "jina"}))
+            result = {**fallback, "reader_attempts": [
+                {"provider": "http", "operation": acquisition["operation"],
+                 "failures": result.get("failures", []), "error": result.get("error")},
+                {"provider": "jina", "ref": fallback_envelope.get("acquisition_ref"),
+                 "failures": fallback.get("failures", []), "error": fallback.get("error")}],
+                "acquisition_status": "ok" if fallback.get("sources") else "failed"}
+        if self.tools[call.name].cache_research:
+            producer = self.store.get(study, work)
+            with self.store.transaction():
+                self.store.require_work(study, work, epoch)
+                receipt = self.store._put(study, "source_acquisition", {
+                    "direction": producer.body["direction"], "result": result,
+                    "research_receipt": self._research_receipt(study, producer, call, result,
+                        envelope.get("research_reuse"), envelope.get("research_key")),
+                }, (work, step))
+            envelope = {**envelope, "acquisition_ref": receipt.ref}
+        return result, envelope
+
+    async def _read_lead(self, study, work, epoch, step, index, call, result, schema):
+        if "fetch_web" not in schema:
+            return {**result, "acquisition_status": "unavailable", "acquisition_scope": "Leads only: no authorized reader is available."}
+        attempts = []
+        for position, candidate in enumerate(result["results"]):
+            if not candidate.get("url"):
+                continue
+            request = Call("fetch_web", {"url": candidate["url"],
+                          "goal": call.arguments.get("goal") or call.arguments["query"],
+                          **({"force_refresh": True} if call.arguments.get("force_refresh") else {})})
+            self.store.require_execution(study, work.ref, epoch, step)
+            try:
+                self._validate_call(request, schema)
+            except ValueError as exc:
+                attempts.append({"url": candidate["url"], "error": str(exc), "status": "not_requested"})
+                continue
+            acquired, envelope = await self._acquired(study, work.ref, epoch, step,
+                                              f"{index}:lead:{position}", request)
+            attempts.append({"ref": envelope.get("acquisition_ref"), "url": candidate["url"], "sources": acquired.get("sources", []),
+                             "failures": acquired.get("failures", []), "error": acquired.get("error")})
+            if acquired.get("sources"):
+                return {**result, "sources": acquired["sources"], "reader_attempts": attempts,
+                        "acquisition_status": "partial" if any(row.get("error") or row.get("failures") for row in attempts) else "ok",
+                        "acquisition_scope": "First readable candidate in supplier order; other leads remain available for further research."}
+        return {**result, "reader_attempts": attempts, "acquisition_status": "failed",
+                "acquisition_scope": "No readable original obtained; revise sources or reader."}
 
     async def _external(self, study, work, epoch, step, index, call):
         tool = self.tools[call.name]
         request_key = tool.research_key(self._research_request(call))
         if tool.cache_research and not call.arguments.get("force_refresh") and self.store.operation_status(study, identity("tool", step, index)) is None:
-            direction = self.store.get(study, work).body["direction"]
+            producer = self.store.get(study, work)
+            direction = producer.body["direction"]
             old = self.store.reusable_research_result(study, direction, request_key)
+            if old is None and tool.observe:
+                self.store.require_execution(study, work, epoch, step)
+                for acquisition, raw in self.store.settled_research_operations(study, direction, request_key):
+                    try:
+                        result = tool.observe(raw["value"], acquisition)
+                        encode(result)
+                        receipt = self._research_receipt(study, producer, call, result, request_key=request_key)
+                        if receipt["outcome"] not in {"ok", "empty"}:
+                            continue
+                        old = self.store.put(study, "source_acquisition", {
+                            "direction": direction, "result": result, "research_receipt": receipt,
+                        }, (acquisition["work"], acquisition["step"]))
+                    except (ValueError, KeyError, TypeError):
+                        continue
+                    break
             if old:
                 receipt = old.body["research_receipt"]
                 return {"value": old.body["result"], "research_reuse": receipt.get("reused_from") or old.ref, "research_key": request_key}
@@ -1862,7 +1980,7 @@ class Harness:
     def _builtin(
         self, study: str, work: Artifact, epoch: int, step: str, index: int, call: Call
     ) -> Any:
-        self._execution_guard(study, work.ref, epoch, step)
+        self.store.require_execution(study, work.ref, epoch, step)
         if call.name in {"finish_work", "submit_review"} and self.store.work_messages(study, work.ref):
             received = self.store.received_messages(study, work.ref) | {
                 m["ref"] for m in self.store.get(study, step).body["request"].get("inbox", [])}
@@ -1905,6 +2023,10 @@ class Harness:
                 offset=args["offset"],
                 limit=args["limit"],
             )
+        if call.name == "record_evidence_relation":
+            item = self.research.record_relation(study, work.ref, epoch,
+                _operation=identity(step, index, call.name), **args)
+            return {"ref": item.ref, "kind": item.kind, "body": item.body}
         if call.name == "assess_questions":
             items = self.research.assess_questions(study, work.ref, epoch,
                 _operation=identity(step, index, call.name), **args)
@@ -2164,38 +2286,7 @@ class Harness:
             limit = min(limit, capacity)
 
             def source_page(count):
-                end = offset + count
-                selections = []
-                for match in re.finditer(
-                    r"\S[^\n]*(?:\n(?!\s*\n)[^\n]+)*", text[offset:end]
-                ):
-                    start, stop = offset + match.start(), offset + match.end()
-                    selections.append(
-                        {
-                            "selection": f"{source.ref}:{start}:{stop}",
-                            "preview": text[start:stop][:100],
-                        }
-                    )
-                return {
-                    "ref": source.ref,
-                    "kind": "source",
-                    "offset": offset,
-                    "end": end,
-                    "total": len(text),
-                    "next_offset": end if end < len(text) else None,
-                    "selections": selections,
-                    "text": text[offset:end],
-                    "origin": source.body.get("origin"),
-                    "coverage": source.body.get("coverage"),
-                    "analysis": source.body.get("analysis"),
-                    "execution_status": source.body.get("execution_status"),
-                    "issues": source.body.get("issues", []),
-                    "segments": [
-                        seg
-                        for seg in source.body.get("segments", [])
-                        if seg["start"] < end and seg["end"] > offset
-                    ],
-                }
+                return window(source, offset, offset + count)
 
             return fit_read_result(
                 source_page,
@@ -2235,14 +2326,13 @@ class Harness:
                 issued = any(
                     selected == item.get("selection")
                     for observation in self._steps(study, "observation", work.ref)
-                    if observation.body.get("tool") == "read_source"
-                    and isinstance(observation.body.get("result"), dict)
-                    for item in observation.body.get("result", {}).get("selections", [])
+                    for part in delivered(observation.body.get("result"))
+                    for item in part.get("selections", [])
                     if isinstance(item, dict)
                 )
                 if not issued:
                     raise ValueError(
-                        "selection must come from this work's read_source result"
+                        "selection must come from this work's original-text delivery"
                     )
                 source_ref, start_text, end_text = selected.split(":")
                 source = self.store.get(study, source_ref)

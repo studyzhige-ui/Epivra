@@ -32,7 +32,7 @@ from .presentation import (
 from .scheduling import Scheduler
 from .storage import Store
 from .usage import summarize
-from .web_providers import CONNECTIONS, READERS, SEARCH
+from .web_providers import CONNECTIONS, SEARCH
 from .workspace import Workspace
 
 
@@ -238,11 +238,15 @@ class Host:
                         "context_tokens",
                         "max_tokens",
                         "role_models",
+                        "evidence_provider",
                     )
                     if request.get(name) is not None
                 },
             }
             policy = freeze_model_settings(policy)
+            if policy.get("evidence_provider") == "jev":
+                if not credentials(self.root / ".env").get("TYPESAFE_API_KEY", "").strip():
+                    raise ValueError("TYPESAFE_API_KEY required for Jev evidence processing")
             if request.get("mcp_servers"):
                 from .mcp_client import freeze
 
@@ -263,21 +267,17 @@ class Host:
                     for n in SEARCH
                     if n == "duckduckgo" or keys.get(CONNECTIONS[n][1])
                 ]
-                readable = [
-                    n for n in READERS if n == "jina" or keys.get(CONNECTIONS[n][1])
-                ]
                 primary = request.get("search_provider") or (
                     "tavily" if "tavily" in available else "duckduckgo"
                 )
-                reader = request.get("reader_provider") or "jina"
-                if primary not in available or reader not in readable:
+                if primary not in available:
                     raise ValueError(
-                        "selected search/reader provider requires its credential"
+                        "selected search provider requires its credential"
                     )
                 policy.update(
                     public_sources=True,
                     search_providers=[primary, *[n for n in available if n != primary]],
-                    reader_providers=[reader, *[n for n in readable if n != reader]],
+                    reader_providers=["http", "jina"],
                 )
             else:
                 policy.update(search_providers=[], reader_providers=[])
@@ -710,7 +710,6 @@ def main():
     create.add_argument("--context-tokens", type=int)
     create.add_argument("--max-tokens", type=int)
     create.add_argument("--search-provider", choices=SEARCH)
-    create.add_argument("--reader-provider", choices=READERS)
     create.add_argument(
         "--parser", choices=("auto", "light", "docling"), default="auto"
     )
@@ -797,7 +796,6 @@ def main():
                         "context_tokens",
                         "max_tokens",
                         "search_provider",
-                        "reader_provider",
                         "parser",
                         "docling_models",
                         "parse_timeout",

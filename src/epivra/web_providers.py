@@ -27,7 +27,6 @@ CONNECTIONS = {
     "jina": ("https://r.jina.ai", "JINA_API_KEY", "Authorization", "Bearer "),
 }
 SEARCH = ("tavily", "exa", "brave", "perplexity", "bocha", "duckduckgo")
-READERS = ("jina", "tavily", "exa")
 
 
 class TavilyKeyPool(JsonAPI):
@@ -269,6 +268,15 @@ class WebProvider:
                     failures.append({"index": index, "error": "invalid_search_content"})
                 elif text and text.strip():
                     result.update(text=text, content_type=kind)
+                    if kind == "selected_excerpt" and self.resource in {"exa", "brave"}:
+                        offset, segments = 0, []
+                        for part in parts:
+                            end = offset + len(part)
+                            segments.append({"start": offset, "end": end,
+                                             "locator": {"url": url, "label": "excerpt", "discontinuous": True},
+                                             "status": "selected_excerpt_not_reviewed"})
+                            offset = end + 1
+                        result["segments"] = segments
                 if self.resource == "bocha" and item.get("summary"):
                     if isinstance(item["summary"], str):
                         result.update(summary=item["summary"], summary_type="provider_summary")
@@ -294,7 +302,7 @@ class WebProvider:
                     "coverage": coverage, "content_type": result["content_type"],
                     "retrieved_at": raw.get("retrieved_at"),
                     "published_at": result.get("published_at"),
-                    "segments": [{"start": 0, "end": len(text),
+                    "segments": result.pop("segments", None) or [{"start": 0, "end": len(text),
                                   "locator": {"url": result["url"]},
                                   "status": coverage}],
                 })
@@ -360,6 +368,10 @@ class WebProvider:
 
 
 def connect(name, keys, client=None):
+    if name == "http":
+        from .direct_reader import DirectReader
+
+        return DirectReader()
     origin, key_name, header, prefix = CONNECTIONS[name]
     key = keys.get(key_name, "")
     if name not in {"jina", "duckduckgo"} and not key:
