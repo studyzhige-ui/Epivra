@@ -27,23 +27,38 @@ class ResearchService:
         self.errors: dict[str, str] = {}
         self.work_errors: dict[str, str] = {}
         self.repeated_failures: set[str] = set()
+        self.entered_epochs: dict[str, int] = {}
 
     def start(self, study: str) -> None:
         running = self.tasks.get(study)
         if running and not running.done():
             return
+        self.tasks[study] = asyncio.create_task(self.run(study))
+
+    def _enter_epoch(self, study: str, epoch: int) -> None:
+        """Apply accepted control once, after older executions have settled.
+
+        Runtime scheduling errors are disposable; durable operation outcomes,
+        recovery guards, and research evidence remain owned by Store/Harness.
+        A quick resume must have the same semantics as a newly started driver.
+        """
+        if self.entered_epochs.get(study) == epoch:
+            return
         self.errors.pop(study, None)
         for work in self.store.list(study, "work"):
             self.work_errors.pop(work.ref, None)
             self.repeated_failures.discard(work.ref)
-        self.tasks[study] = asyncio.create_task(self.run(study))
+        self.entered_epochs[study] = epoch
 
     async def run(self, study: str) -> None:
         while True:
-            control_ref = self.store.control(study).ref
+            control = self.store.control(study)
+            if control.paused or control.cancelled:
+                return
+            self._enter_epoch(study, control.epoch)
+            control_ref = control.ref
             try:
                 await self._drive(study)
-                return
             except Conflict:
                 c = self.store.control(study)
                 if c.paused or c.cancelled:
@@ -51,7 +66,13 @@ class ResearchService:
                 if c.ref == control_ref:
                     self.errors[study] = "Conflict"
                     return
-                await asyncio.sleep(0)
+            # _drive also absorbs ordinary provider/work failures. A control
+            # command accepted while that older turn was settling still owns
+            # the next epoch, regardless of how the old drive exited.
+            c = self.store.control(study)
+            if c.paused or c.cancelled or c.ref == control_ref:
+                return
+            await asyncio.sleep(0)
 
     async def _drive(self, study: str) -> None:
         active: dict[str, asyncio.Task] = {}

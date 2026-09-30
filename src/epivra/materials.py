@@ -7,6 +7,7 @@ import csv
 import io
 import json
 import os
+import stat
 import subprocess
 import sys
 import weakref
@@ -25,6 +26,33 @@ MAX_INPUT_BYTES = 256 * 1024 * 1024
 MAX_OUTPUT_BYTES = 64 * 1024 * 1024
 MAX_ELEMENTS = 1_000_000
 _parse_slots = weakref.WeakKeyDictionary()
+
+
+def read_file(path: Path, *, maximum: int | None = None) -> bytes:
+    """Acquire regular bytes within both parser and caller transport capacity."""
+    if maximum is not None and (type(maximum) is not int or maximum < 0):
+        raise ValueError("input byte limit must be a nonnegative integer")
+    limit = MAX_INPUT_BYTES if maximum is None else min(maximum, MAX_INPUT_BYTES)
+    # Nonblocking open lets us reject a FIFO even if the path is replaced after
+    # the picker/host checked it. It has no effect on ordinary regular files.
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NONBLOCK", 0)
+    descriptor = os.open(path, flags)
+    try:
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode):
+            raise ValueError("selected path is not a file")
+        if before.st_size > limit:
+            raise ValueError("material exceeds input byte limit")
+        with os.fdopen(descriptor, "rb", closefd=False) as stream:
+            raw = stream.read(limit + 1)
+        after = os.fstat(descriptor)
+        if len(raw) > limit or after.st_size > limit:
+            raise ValueError("material exceeds input byte limit")
+        if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
+            raise ValueError("source changed while reading")
+        return raw
+    finally:
+        os.close(descriptor)
 
 
 def _bounded(result):

@@ -166,6 +166,44 @@ else:
             assert result["status"] == "succeeded", result
             assert any(item["name"] == "scratch-limit.txt" for item in result["files"]), result
         passed.append("scratch-monitor-limit")
+        # Small bounded probes: named NTFS streams must not bypass the byte
+        # monitor, including streams attached to directories. Never fill disk.
+        stream_results = {}
+        probes = [(area, kind, 1) for area in ("outputs", "scratch")
+                  for kind in ("file", "directory", "nested-file", "nested-directory")]
+        probes.append(("scratch", "directory", 0))  # Final scan after a fast exit.
+        for area, kind, delay in probes:
+            name = f"named-stream-{area}-{kind}" + ("-fast-exit" if delay == 0 else "")
+            code = f"""
+import os,time
+from pathlib import Path
+base = OUTPUT_DIR if {area!r} == 'outputs' else Path(os.environ['TMPDIR'])
+if {kind!r}.startswith('nested-'):
+    base = base / 'nested'
+    base.mkdir()
+target = base / 'stream-probe' if {kind!r}.endswith('file') else base
+try:
+    if {kind!r}.endswith('file'): target.write_bytes(b'')
+    Path(str(target) + ':epivra-probe').write_bytes(b'x' * (2 * 1024 * 1024))
+except OSError:
+    (OUTPUT_DIR/'stream-blocked.txt').write_text('blocked')
+else:
+    time.sleep({delay})
+"""
+            try:
+                result = await run(name, code, output_mb=1)
+            except ValueError as error:
+                assert str(error) in {
+                    "Analysis scratch/output limit exceeded",
+                    "Analysis scratch/output contains an alternate data stream",
+                }, error
+                stream_results[name] = str(error)
+            else:
+                blocked = any(item["name"] == "stream-blocked.txt" for item in result["files"])
+                stream_results[name] = "write-denied" if blocked else "UNMONITORED: " + result["status"]
+        print("Named stream accounting: " + json.dumps(stream_results), file=sys.stderr, flush=True)
+        assert all("UNMONITORED" not in value for value in stream_results.values()), stream_results
+        passed.extend(stream_results)
         source = root / "source-cancel"
         source.mkdir()
         (source / "analysis.py").write_text("(OUTPUT_DIR/'started').write_text('ready')\nwhile True: pass", encoding="utf-8")

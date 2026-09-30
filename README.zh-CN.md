@@ -9,11 +9,11 @@ Epivra 是本地自主研究工作台，将问题与获授权的资料转化为�
 
 ## 下载并打开
 
-**桌面版 0.3.4**：无需安装 Python、Git、Node.js 或数据库。
+**桌面版 0.3.5**：无需安装 Python、Git、Node.js 或数据库。
 
 | 你的电脑 | 下载 |
 |---|---|
-| Windows 10/11，x64 | [下载 Windows ZIP](https://github.com/studyzhige-ui/Epivra/releases/download/v0.3.4/Epivra-0.3.4-windows-x64.zip) |
+| Windows 10/11，x64 | [下载 Windows ZIP](https://github.com/studyzhige-ui/Epivra/releases/download/v0.3.5/Epivra-0.3.5-windows-x64.zip) |
 
 1. **Windows**：完整解压 ZIP，双击其中的 **Epivra.exe**。不要在压缩包内直接运行。
 2. 浏览器会自动打开。首次进入“连接与设置”，选择供应商，填入自己的 API Key，选择模型并保存。
@@ -21,7 +21,7 @@ Epivra 是本地自主研究工作台，将问题与获授权的资料转化为�
 
 以后只需再次打开 Epivra。重复打开会复用已有工作台。关闭浏览器后研究继续；需要停止后台程序时，在 Epivra 控制窗口点击“退出”。
 
-当前包**未取得 Windows 发布者签名**，系统可能提示未知开发者。[发布说明与 SHA-256](https://github.com/studyzhige-ui/Epivra/releases/tag/v0.3.4) · [详细使用说明](docs/USAGE.md)
+当前包**未取得 Windows 发布者签名**，系统可能提示未知开发者。[发布说明与 SHA-256](https://github.com/studyzhige-ui/Epivra/releases/tag/v0.3.5) · [详细使用说明](docs/USAGE.md)
 
 Windows x64 版本包含受限 Python 分析，可在设置中准备并启用，无需 Docker。OCR 仍独立按需下载。
 
@@ -99,12 +99,9 @@ python -m venv .venv
 
 ```powershell
 python -m pip install -e ".[mcp]" ruff mypy build
-python tools/check_architecture.py
-ruff check src tools
-mypy
-python -m build --wheel
+python tools/check_source.py --wheel-dir dist
 ```
 
-这些检查不调用模型或搜索 API。回归测试与评测资料保留在维护者本地，不随本仓库分发。桌面构建仍保留原生应用启动验证。
+前端检查需要 Node.js 22+。公开的离线行为回归会在 PR、main 和桌面构建中执行，不调用模型或搜索 API；私有质量评测资料仍保留在本地。桌面构建保留原生应用启动验证。参见[职责边界与验证说明](docs/DEVELOPMENT.md)。
 
 源码开发者如需数据分析，先运行 `.venv/Scripts/python.exe tools/build_analysis_bundle.py`，再在设置中准备。构建下载固定版本工具链与依赖；桌面包用户无需执行。

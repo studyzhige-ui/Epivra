@@ -89,7 +89,7 @@ class Workbench:
 
     async def call(self, action, **fields):
         result = await self.send(self.root, {"action": action, **fields})
-        if result.get("error") and action not in {"status"}:
+        if host.response_failed(action, result):
             messages = {
                 "Conflict": tr("状态已变化，请刷新并重新确认。"),
                 "ValueError": tr("操作未完成，请检查配置、路径或当前研究状态。"),

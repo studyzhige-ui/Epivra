@@ -572,5 +572,14 @@
   "暂不可用": "Unavailable",
   "安装位置：{0}": "Installed at: {0}",
   "文本、文本 PDF 和表格可直接使用；扫描件与图片需安装 OCR。首次安装需联网下载，可能需要数 GB 空间。": "Text, text PDFs and spreadsheets work out of the box; scans and images require OCR. Initial setup needs an internet download and may use several GB.",
-  "启用 Python 数据分析": "Enable Python data analysis"
+  "启用 Python 数据分析": "Enable Python data analysis",
+  "请先在“补充资料”中导入或移除待处理文件，再继续研究。": "Import or remove the pending files in Add materials before resuming the study.",
+  "重试待处理文件": "Retry pending files",
+  "正在读取设置…": "Loading settings…",
+  "研究已保留，未完成的文件留在当前页面的“补充资料”中；请在关闭页面前重试导入。": "The study is saved. Unfinished files remain in this page’s Add materials dialog; retry their import before closing the page.",
+  "研究已保留，请查看当前状态后决定是否继续。": "The study is saved. Check its current status before deciding whether to resume.",
+  "待处理文件保留在当前页面，关闭页面前请完成导入。": "Pending files are retained on this page. Finish importing them before closing the page.",
+  "资料检索与筛查": "Evidence retrieval and screening",
+  "。可暂停后检查连接设置，更新密钥后重新载入。": ". You can pause to check connection settings, update credentials, then reload.",
+  "Jev 会将选定原文发送至 TypeSafe，包括本地资料。": "Jev sends selected original text, including local materials, to TypeSafe."
 }

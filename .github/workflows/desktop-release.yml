@@ -1,6 +1,8 @@
 name: Desktop release
-run-name: Desktop ${{ inputs.source_ref || github.ref_name }}
+run-name: Desktop ${{ inputs.source_ref || github.head_ref || github.ref_name }}
 on:
+  pull_request:
+    branches: [main]
   workflow_dispatch:
     inputs:
       source_ref:
@@ -20,6 +22,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   build:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     outputs:
       sha: ${{ steps.source.outputs.sha }}
     strategy:
@@ -35,11 +38,14 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
-          ref: ${{ inputs.source_ref || github.ref }}
+          ref: ${{ inputs.source_ref || github.event.pull_request.head.sha || github.ref }}
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
           architecture: ${{ matrix.architecture }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
       - name: Install build tools
         run: python -m pip install -e ".[mcp]" build ruff mypy resvg-py pillow
       - name: Record source and validate tag
@@ -54,12 +60,8 @@ jobs:
               with open("pyproject.toml", "rb") as f:
                   version = tomllib.load(f)["project"]["version"]
               assert os.environ["GITHUB_REF_NAME"] == "v" + version
-      - name: Architecture
-        run: python tools/check_architecture.py
-      - name: Lint
-        run: python -m ruff check src tools
-      - name: Types
-        run: python -m mypy
+      - name: Validate source and offline behavior
+        run: python tools/check_source.py
       - name: Build and verify built-in analysis
         run: python tools/build_analysis_bundle.py
       - name: Build and validate relocated native application
@@ -73,7 +75,7 @@ jobs:
           if-no-files-found: error
           retention-days: 14
   publish:
-    if: startsWith(github.ref, 'refs/tags/') || inputs.publish
+    if: (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) || (github.event_name == 'workflow_dispatch' && inputs.publish)
     needs: build
     runs-on: ubuntu-latest
     permissions:
@@ -125,7 +127,18 @@ jobs:
           existing = api("releases/tags/" + tag)
           assert existing is None or tagged is not None, "Existing release has no source tag"
           if existing:
-              subprocess.run(["gh", "release", "upload", tag, str(path), str(check), "--clobber", "--repo", repo], check=True)
+              assets = {item["name"]: item for item in existing.get("assets", [])}
+              pending = []
+              for artifact in (path, check):
+                  with artifact.open("rb") as stream:
+                      digest = "sha256:" + hashlib.file_digest(stream, "sha256").hexdigest()
+                  asset = assets.get(artifact.name)
+                  if asset is not None:
+                      assert asset.get("state") == "uploaded" and asset.get("digest") == digest, "Existing release asset differs; use a new version, never overwrite"
+                  else:
+                      pending.append(str(artifact))
+              if pending:
+                  subprocess.run(["gh", "release", "upload", tag, *pending, "--repo", repo], check=True)
               subprocess.run(["gh", "release", "edit", tag, "--latest", "--draft=false", "--prerelease=false", "--repo", repo], check=True)
           else:
               subprocess.run(["gh", "release", "create", tag, str(path), str(check), "--target", sha, "--latest", "--repo", repo,

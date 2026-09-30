@@ -9,11 +9,11 @@ Epivra is a local research workbench that turns a question and authorized materi
 
 ## Download and open
 
-**Desktop 0.3.4** — no separate Python, Git, Node.js or database installation.
+**Desktop 0.3.5** — no separate Python, Git, Node.js or database installation.
 
 | Your computer | Download |
 |---|---|
-| Windows 10/11, x64 | [Download Windows ZIP](https://github.com/studyzhige-ui/Epivra/releases/download/v0.3.4/Epivra-0.3.4-windows-x64.zip) |
+| Windows 10/11, x64 | [Download Windows ZIP](https://github.com/studyzhige-ui/Epivra/releases/download/v0.3.5/Epivra-0.3.5-windows-x64.zip) |
 
 1. **Windows:** extract the entire ZIP and double-click **Epivra.exe**.
 2. Your browser opens automatically. On first launch, choose a provider, enter your own API key, select a model and save.
@@ -23,7 +23,7 @@ Next time, open Epivra again. Repeated launches reopen the existing workbench.
 Closing the browser keeps research running; use **Quit** in the Epivra control window to stop the background host.
 
 These builds have **no Windows publisher certificate**; your OS may show an unknown-developer warning.
-[Release notes and SHA-256](https://github.com/studyzhige-ui/Epivra/releases/tag/v0.3.4) · [User guide](docs/USAGE.en.md)
+[Release notes and SHA-256](https://github.com/studyzhige-ui/Epivra/releases/tag/v0.3.5) · [User guide](docs/USAGE.en.md)
 
 This Windows x64 release includes built-in restricted Python analysis. Prepare it in Settings without Docker. OCR remains a separate optional download.
 
@@ -101,12 +101,9 @@ See the [user guide](docs/USAGE.en.md) for configuration, materials, MCP, backup
 
 ```powershell
 python -m pip install -e ".[mcp]" ruff mypy build
-python tools/check_architecture.py
-ruff check src tools
-mypy
-python -m build --wheel
+python tools/check_source.py --wheel-dir dist
 ```
 
-These checks run without model or search API calls. Regression suites and evaluation materials are maintained locally and are not included in this repository. Desktop builds retain native application smoke checks.
+Requires Node.js 22+ for frontend checks. The public offline regression suite runs on pull requests, main, and desktop builds without model or search API calls. Private quality evaluations remain local. Desktop builds retain native application smoke checks. See [architecture and validation](docs/DEVELOPMENT.md).
 
 For analysis from source, first run `.venv/Scripts/python.exe tools/build_analysis_bundle.py`, then prepare the component in Settings. This developer build downloads pinned inputs and verifies the sandbox. Desktop users do not run it.

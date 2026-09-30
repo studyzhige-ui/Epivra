@@ -1,5 +1,6 @@
 name: Source validation
 on:
+  pull_request:
   push:
     branches: [main]
   workflow_dispatch:
@@ -10,17 +11,20 @@ concurrency:
   cancel-in-progress: true
 jobs:
   validate:
-    if: github.ref == 'refs/heads/main'
     runs-on: windows-2022
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.ref }}
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
           architecture: x64
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
       - name: Allocate isolated development check paths
         shell: python
         run: |
@@ -46,17 +50,40 @@ jobs:
           import os, subprocess
           from pathlib import Path
           p = os.environ['DEV_CHECK_PYTHON']
-          commands = [
-              [p, 'tools/check_architecture.py'],
-              [p, '-m', 'ruff', 'check', 'src', 'tools'],
-              [p, '-m', 'mypy'],
-              [p, '-m', 'build', '--wheel', '--outdir', str(Path(os.environ['DEV_CHECK_ROOT']) / 'wheels')],
-          ]
-          for command in commands:
-              subprocess.run(command, check=True)
+          subprocess.run([p, 'tools/check_source.py', '--wheel-dir', str(Path(os.environ['DEV_CHECK_ROOT']) / 'wheels')], check=True)
       - name: Remove only this validation environment
         if: always() && env.DEV_CHECK_ROOT != ''
         shell: python
         run: |
           import os, shutil
           shutil.rmtree(os.environ['DEV_CHECK_ROOT'], ignore_errors=True)
+
+  browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.ref }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Configure isolated browser paths
+        run: |
+          echo "NODE_PATH=$RUNNER_TEMP/epivra-browser/node_modules" >> "$GITHUB_ENV"
+          echo "PLAYWRIGHT_BROWSERS_PATH=$RUNNER_TEMP/epivra-browsers" >> "$GITHUB_ENV"
+          echo "EPIVRA_BROWSER_ARTIFACTS=$RUNNER_TEMP/epivra-browser-artifacts" >> "$GITHUB_ENV"
+      - name: Install pinned browser test tools outside the checkout
+        run: |
+          npm install --prefix "$RUNNER_TEMP/epivra-browser" --no-save --package-lock=false playwright@1.62.1
+          node "$RUNNER_TEMP/epivra-browser/node_modules/playwright/cli.js" install --with-deps chromium
+      - name: Verify native browser lifecycles with offline API fixtures
+        run: node tests/browser/lifecycle-smoke.cjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: browser-lifecycle
+          path: ${{ runner.temp }}/epivra-browser-artifacts/*.png
+          if-no-files-found: ignore
+          retention-days: 14

@@ -11,7 +11,7 @@ from mcp.server import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
-from .host import send
+from .host import response_failed, send
 from .locale import LANGUAGES, configure, tr
 
 
@@ -28,7 +28,7 @@ def build(root, allow_approval=False, sender=send, language="zh-CN"):
 
     async def call(action, **fields):
         result = await sender(root, {"action": action, **fields})
-        if result.get("error") and action != "status":
+        if response_failed(action, result):
             raise ToolError(text("研究宿主拒绝请求：") + result["error"])
         return result
 

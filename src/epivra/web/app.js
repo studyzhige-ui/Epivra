@@ -89,6 +89,24 @@ let materials = [],
   mutating = false,
   listSerial = 0,
   statusSerial = 0;
+// Drafts and dialogs own their asynchronous work; Host still owns research state.
+const pendingMaterials = new Map();
+let settingsSession = null, configSerial = 0;
+function settingsCurrent(session, phase) {
+  return settingsSession === session && $("settings-dialog").open
+    && (!phase || session.phase === phase);
+}
+function lockInputs(root) {
+  const controls = Array.from(root.querySelectorAll("input, select, textarea, button"))
+    .filter(input => !input.classList.contains("close-dialog"));
+  const disabled = controls.map(input => input.disabled);
+  controls.forEach(input => { input.disabled = true; });
+  root.setAttribute("aria-busy", "true");
+  return () => {
+    controls.forEach((input, index) => { input.disabled = disabled[index]; });
+    root.removeAttribute("aria-busy");
+  };
+}
 
 function node(tag, text, className) {
   const el = document.createElement(tag);
@@ -130,6 +148,11 @@ const call = (action, fields = {}) =>
   api("/api/command", { action, ...fields });
 const studyActions = new Set(["approve", "plan-approve", "pause-resume", "steer", "cancel", "delete-study", "supplement", "reload-keys"]);
 function renderActions() {
+  for (const input of $("create-form").querySelectorAll("input, select, textarea, button"))
+    input.disabled = mutating;
+  $("create-form").setAttribute("aria-busy", String(mutating));
+  $("open-settings").disabled = mutating;
+  if (supplement) renderPendingMaterials();
   for (const id of studyActions) {
     const button = $(id);
     if (button) button.disabled = mutating || !active || !status?.control;
@@ -721,7 +744,9 @@ function renderMaterials() {
       ),
     );
     remove.type = "button";
+    remove.disabled = mutating;
     remove.onclick = () => {
+      if (mutating) return;
       materials.splice(i, 1);
       renderMaterials();
     };
@@ -768,6 +793,7 @@ for (const kind of ["file", "folder"])
       if (result.path) addMaterial({ kind, path: result.path });
     });
 $("add-path").onclick = () => {
+  if (mutating) return;
   const path = $("material-path").value.trim().replace(/^"|"$/g, "");
   if (path) {
     addMaterial({ kind: $("path-kind").value, path });
@@ -780,8 +806,9 @@ $("upload-files").onchange = (e) => {
 };
 $("create-form").onsubmit = (e) => {
   e.preventDefault();
-  act($("create-button"), async () => {
-    const request = $("request").value.trim(),
+  return act($("create-button"), async () => {
+    const draftRequest = $("request").value,
+      request = draftRequest.trim(),
       scope = $("scope").value;
     const chosen = scope === "web" ? [] : [...materials];
     if (!request) throw new Error(t("请填写研究需求。"));
@@ -807,27 +834,32 @@ $("create-form").onsubmit = (e) => {
           .map((m) => m.path),
       });
       id = created.study;
+      // Transfer ownership once create is acknowledged. Late picker events or
+      // programmatic changes belong to the next draft and must not be erased.
+      pendingMaterials.set(id, chosen.filter((m) => m.kind === "file"));
+      materials = materials.filter(item => !chosen.includes(item));
+      renderMaterials();
+      if ($("request").value === draftRequest) $("request").value = "";
       const s = await call("status", { study: id });
-      for (const item of chosen.filter((m) => m.kind === "file")) {
+      for (const item of [...pendingMaterials.get(id)]) {
         $("creation-hint").textContent =
           t("正在导入 ") + (item.path || item.file.name);
         const result = await importMaterial(id, s.control, item);
+        removePendingMaterial(id, item);
         if (result.issues?.length) notice(importResult(result));
       }
       await control(id, s.control, "resume");
-      materials = [];
-      renderMaterials();
-      $("request").value = "";
+      pendingMaterials.delete(id);
       await openStudy(id);
     } catch (error) {
       if (id) {
-        await openStudy(id);
-        throw new Error(
-          t("研究已保留，请查看当前状态。若资料未全部导入，请在暂停草稿中补充后继续。") +
-            error.message,
-        );
+        await openStudy(id).catch(() => {});
+        const recovery = pendingMaterials.get(id)?.length
+          ? t("研究已保留，未完成的文件留在当前页面的“补充资料”中；请在关闭页面前重试导入。")
+          : t("研究已保留，请查看当前状态后决定是否继续。");
+        throw new Error(recovery + error.message);
       }
-      await refreshList();
+      await refreshList().catch(() => {});
       throw error;
     } finally {
       $("creation-hint").textContent = t("生成策略会使用模型额度");
@@ -858,7 +890,11 @@ for (const button of document.querySelectorAll("[data-tab]"))
   button.onclick = () => selectTab(button.dataset.tab);
 $("open-help").onclick = () => $("help-dialog").showModal();
 for (const button of document.querySelectorAll(".close-dialog"))
-  button.onclick = () => button.closest("dialog").close();
+  button.onclick = () => {
+    const dialog = button.closest("dialog");
+    if (dialog.id === "settings-dialog") dismissSettings();
+    dialog.close();
+  };
 $("approve").onclick = () => {
   if (!status?.plans?.length || mutating) return;
   const plan = status.plans.at(-1);
@@ -916,6 +952,8 @@ $("pause-resume").onclick = () =>
   act($("pause-resume"), async () => {
     const id = active,
       s = status;
+    if (s.paused && pendingMaterials.get(id)?.length)
+      throw new Error(t("请先在“补充资料”中导入或移除待处理文件，再继续研究。"));
     await control(id, s.control, s.paused ? "resume" : "pause");
     await afterControl(id);
   });
@@ -954,6 +992,7 @@ $("delete-study").onclick = () =>
     if (!confirm(t("删除将终止此研究并永久清除其报告、资料副本和过程记录。用户原文件、已导出文件及其他研究不受影响。已提交的外部调用可能仍产生费用。确认删除？"))) return;
     try {
       await call("delete", {study: id, expected, confirmed: true});
+      pendingMaterials.delete(id);
     } catch (error) {
       if (active === id) await refreshStudy(true).catch(() => {});
       throw error;
@@ -997,52 +1036,113 @@ $("download-report").onclick = () => act($("download-report"), async () => {
   }
 });
 let supplement = null;
+function removePendingMaterial(id, item) {
+  const remaining = (pendingMaterials.get(id) || []).filter(value => value !== item);
+  if (remaining.length) pendingMaterials.set(id, remaining);
+  else pendingMaterials.delete(id);
+}
+function renderPendingMaterials() {
+  const items = pendingMaterials.get(supplement?.id) || [];
+  $("pending-materials").replaceChildren();
+  for (const item of items) {
+    const row = node("li"), remove = node("button", t("移除"), "text-button");
+    remove.type = "button";
+    remove.disabled = mutating;
+    const id = supplement.id;
+    remove.onclick = () => {
+      if (mutating) return;
+      removePendingMaterial(id, item);
+      renderPendingMaterials();
+    };
+    row.append(node("span", item.path || item.file.name), remove);
+    $("pending-materials").append(row);
+  }
+  $("pending-materials-hint").hidden = !items.length;
+  $("retry-materials").hidden = !items.length;
+  $("retry-materials").disabled = mutating;
+}
 $("supplement").onclick = () => {
   if (!active || !status?.control || mutating) return;
   supplement = { id: active, expected: status.control };
   $("supplement-feedback").textContent = "";
+  renderPendingMaterials();
   $("supplement-dialog").showModal();
 };
-async function supplementFiles(items) {
-  const selected = supplement;
+async function supplementFiles(items, selected = supplement) {
+  if (!selected) return;
+  const queued = pendingMaterials.get(selected.id) || [];
   for (const item of items) {
-    const result = await importMaterial(selected.id, selected.expected, item);
-    $("supplement-feedback").textContent += importResult(result) + "\n";
+    if (!queued.some(old => item.file ? old.file === item.file : old.path === item.path))
+      queued.push(item);
   }
-  await afterControl(selected.id);
+  pendingMaterials.set(selected.id, queued);
+  renderPendingMaterials();
+  try {
+    for (const item of [...queued]) {
+      const result = await importMaterial(selected.id, selected.expected, item);
+      removePendingMaterial(selected.id, item);
+      if (supplement === selected && $("supplement-dialog").open) {
+        $("supplement-feedback").textContent += importResult(result) + "\n";
+        renderPendingMaterials();
+      }
+    }
+  } finally {
+    // A status failure must not replace the original import failure.
+    await afterControl(selected.id).catch(() => {});
+  }
 }
+$("retry-materials").onclick = () =>
+  act($("retry-materials"), () => supplementFiles([]), "supplement-feedback");
 $("supplement-native").onclick = () =>
   act(
     $("supplement-native"),
     async () => {
+      const selected = supplement;
       const result = await api("/api/pick", { kind: "file" });
-      if (result.path) await supplementFiles([{ path: result.path }]);
+      // A picker started for this study never targets a later dialog.
+      if (result.path) await supplementFiles([{ path: result.path }], selected);
     },
     "supplement-feedback",
   );
 $("supplement-import").onclick = () =>
   act(
     $("supplement-import"),
-    () =>
-      supplementFiles([
-        { path: $("supplement-path").value.trim().replace(/^"|"$/g, "") },
-      ]),
+    () => supplementFiles([
+      { path: $("supplement-path").value.trim().replace(/^"|"$/g, "") },
+    ]),
     "supplement-feedback",
   );
 $("supplement-upload").onchange = (e) => {
   const items = Array.from(e.target.files, (file) => ({ file }));
   e.target.value = "";
-  act(null, () => supplementFiles(items), "supplement-feedback");
+  // A file chooser can finish after another operation has started. Retain the
+  // files for this study even when act() cannot start another import yet.
+  const selected = supplement;
+  if (!selected) return;
+  if (mutating) {
+    pendingMaterials.set(selected.id, [...(pendingMaterials.get(selected.id) || []), ...items]);
+    renderPendingMaterials();
+  } else act(null, () => supplementFiles(items, selected), "supplement-feedback");
 };
 
-async function loadConfig() {
-  config = await api("/api/settings");
-  $("text-encoding").value = config.defaults.text_encoding || "utf-8-sig";
+async function loadConfig(current = () => true) {
+  const serial = ++configSerial;
+  const next = await api("/api/settings");
+  if (!current()) return;
+  // A superseded reader may still finish boot/open using the last accepted
+  // config. It must neither overwrite newer facts nor leave its editor loading.
+  if (serial !== configSerial && config) return config;
+  const prior = config;
+  config = next;
+  // Refreshing defaults must not replace an in-progress draft's encoding.
+  if (!prior || (!mutating && $("text-encoding").value === (prior.defaults.text_encoding || "utf-8-sig")))
+    $("text-encoding").value = config.defaults.text_encoding || "utf-8-sig";
   const p = config.providers.find(
     (p) => p.id === (config.defaults.provider || "deepseek"),
   );
   $("model-summary").textContent =
     `${labels[p.id]} / ${config.defaults.model || p.model}${p.configured ? "" : t(" · 未配置密钥")}`;
+  return config;
 }
 let modelCandidates = [],
   modelListSerial = 0,
@@ -1097,6 +1197,8 @@ function renderModels(showAll = false) {
   $("model").setAttribute("aria-expanded", "true");
 }
 async function fetchModels() {
+  const session = settingsSession;
+  if (!session || !settingsCurrent(session, "editing")) return;
   const serial = ++modelListSerial;
   modelCandidates = [];
   closeModels();
@@ -1108,16 +1210,16 @@ async function fetchModels() {
       region: $("region").value,
       key: $("model-key").value.trim(),
     });
-    if (serial !== modelListSerial || !$("settings-dialog").open) return;
+    if (serial !== modelListSerial || !settingsCurrent(session, "editing")) return;
     modelCandidates = result.models;
     $("model-list-status").textContent =
       t("{0} {1} 个模型。{2}", result.source === "account" ? t("接口返回") : t("本地预设"), result.models.length, result.message);
     if (document.activeElement === $("model")) renderModels();
   } catch (error) {
-    if (serial === modelListSerial)
+    if (serial === modelListSerial && settingsCurrent(session, "editing"))
       $("model-list-status").textContent = error.message;
   } finally {
-    if (serial === modelListSerial) $("fetch-models").disabled = false;
+    if (serial === modelListSerial && settingsCurrent(session, "editing")) $("fetch-models").disabled = false;
   }
 }
 function capacityFields() {
@@ -1163,6 +1265,7 @@ function connectionFields() {
 const subagentRoles = {investigator: "调查", synthesizer: "冲突核实", writer: "写作", reviewer: "编辑核查"};
 let roleModelEditors = [];
 function renderRoleModels(saved) {
+  const session = settingsSession;
   $("role-model-fields").replaceChildren();
   roleModelEditors = Object.entries(subagentRoles).map(([role, title]) => {
     const box = node("fieldset"), legend = node("legend", t(title));
@@ -1266,13 +1369,14 @@ function renderRoleModels(saved) {
       updateCapacity();
     };
     fetchButton.onclick = async () => {
+      if (!settingsCurrent(session, "editing")) return;
       const current = ++serial;
       fetchButton.disabled = true;
       status.textContent = t("正在获取模型列表…");
       try {
         const result = await api("/api/models", {provider: provider.value,
           region: region.value, key: key.value.trim()});
-        if (current !== serial || !box.isConnected) return;
+        if (current !== serial || !box.isConnected || !settingsCurrent(session, "editing")) return;
         candidates = result.models;
         list.replaceChildren(...candidates.map(m => {
           const option = node("option"); option.value = m.id; return option;
@@ -1280,14 +1384,14 @@ function renderRoleModels(saved) {
         status.textContent = t("{0} {1} 个模型。{2}", result.source === "account"
           ? t("接口返回") : t("本地预设"), candidates.length, result.message);
       } catch (error) {
-        if (current === serial) status.textContent = error.message;
+        if (current === serial && settingsCurrent(session, "editing")) status.textContent = error.message;
       } finally {
-        if (current === serial) fetchButton.disabled = false;
+        if (current === serial && settingsCurrent(session, "editing")) fetchButton.disabled = false;
       }
     };
     box.append(legend, toggle, fields);
     $("role-model-fields").append(box);
-    return {role, enabled, controls, spec};
+    return {role, enabled, controls, spec, invalidate};
   });
 }
 function selectedRoleModels() {
@@ -1304,7 +1408,7 @@ function selectedRoleModels() {
   }
   return result;
 }
-let componentTimer;
+let componentTimer, componentSerial = 0;
 const componentPhases = {
   preparing: "正在准备…", downloading_packages: "正在下载 OCR 依赖…",
   downloading_models: "正在下载 OCR 模型…", verifying_archive: "正在校验内置分析包…",
@@ -1314,10 +1418,13 @@ function featureError(id, message = "") {
   $(id).textContent = message;
   $(id).hidden = !message;
 }
-async function refreshComponents() {
+async function refreshComponents(session = settingsSession) {
+  if (!session || !settingsCurrent(session, "editing")) return;
+  const serial = ++componentSerial;
   clearTimeout(componentTimer);
   try {
     const state = await api("/api/components");
+    if (serial !== componentSerial || !settingsCurrent(session, "editing")) return;
     const busy = state.job.state === "running";
     for (const component of ["documents", "analysis"]) {
       const current = state.job.component === component;
@@ -1330,8 +1437,9 @@ async function refreshComponents() {
     $("documents-location").textContent = state.documents_location ? t("安装位置：{0}", state.documents_location) : "";
     $("documents-location").hidden = !state.documents_location;
     if ($("settings-dialog").open)
-      componentTimer = setTimeout(refreshComponents, busy ? 2000 : 10000);
+      componentTimer = setTimeout(() => refreshComponents(session), busy ? 2000 : 10000);
   } catch (error) {
+    if (serial !== componentSerial || !settingsCurrent(session, "editing")) return;
     for (const component of ["documents", "analysis"]) {
       $(component + "-state").textContent = t("暂不可用");
       featureError(component + "-error", error.message);
@@ -1339,84 +1447,116 @@ async function refreshComponents() {
   }
 }
 for (const component of ["documents", "analysis"]) {
-  $("install-" + component).onclick = async () => {
+  $("install-" + component).onclick = () => act(null, async () => {
+    const session = settingsSession;
+    if (!session || !settingsCurrent(session, "editing")) return;
     $("install-documents").disabled = $("install-analysis").disabled = true;
     try {
       const request = {component};
       if (component === "documents") {
         const selected = await api("/api/pick", {kind: "folder"});
-        if (!selected.path) { await refreshComponents(); return; }
+        if (!settingsCurrent(session, "editing")) return;
+        if (!selected.path) { await refreshComponents(session); return; }
         request.directory = selected.path;
       }
       await api("/api/components", request);
-      await refreshComponents();
+      await refreshComponents(session);
     } catch (error) {
-      await refreshComponents();
-      featureError(component + "-error", error.message);
+      await refreshComponents(session);
+      if (settingsCurrent(session, "editing")) featureError(component + "-error", error.message);
     }
-  };
+  });
 }
-$("settings-dialog").addEventListener("close", () => clearTimeout(componentTimer));
+function dismissSettings() {
+  settingsSession = null;
+  componentSerial++;
+  clearTimeout(componentTimer);
+  invalidateModels();
+}
+$("settings-dialog").addEventListener("cancel", dismissSettings);
+$("settings-dialog").addEventListener("close", () => {
+  // Native close events are queued; a previous close must not invalidate a
+  // session that was already reopened before that event was delivered.
+  if (!$("settings-dialog").open) dismissSettings();
+});
 
 async function openSettings() {
-  if (mutating) return;
-  await loadConfig();
-  const d = config.defaults;
-  options(
-    "provider",
-    config.providers.map((p) => p.id),
-    d.provider || "deepseek",
-  );
-  providerFields();
-  $("model").value = d.model || $("model").value;
-  if (d.region) $("region").value = d.region;
-  $("context-tokens").value = d.context_tokens || "";
-  $("max-tokens").value = d.max_tokens || "";
-  capacityFields();
-  $("role-model-settings").open = false;
-  renderRoleModels(d.role_models || {});
-  options(
-    "search-provider",
-    config.search,
-    d.search_provider ||
-      (config.connections.find((c) => c.id === "tavily")?.configured
-        ? "tavily"
-        : "duckduckgo"),
-  );
-  $("evidence-provider").value = d.evidence_provider || "bm25";
-  options(
-    "connection-provider",
-    config.connections.map((c) => c.id),
-    d.search_provider || "tavily",
-  );
-  connectionFields();
-  $("parser").value = d.parser || "auto";
-  $("analysis").checked = !!d.analysis;
-  $("settings-feedback").textContent = "";
-  $("mcp-options").replaceChildren();
-  mcpLoaded = false;
-  try {
-    const { servers } = await call("mcp_connections");
-    mcpLoaded = true;
-    for (const name of servers) {
-      const label = node("label", undefined, "checkbox"),
-        input = node("input");
-      input.type = "checkbox";
-      input.value = name;
-      input.checked = !!d.mcp_servers?.includes(name);
-      label.append(input, document.createTextNode(name));
-      $("mcp-options").append(label);
-    }
-    if (!servers.length)
-      $("mcp-options").append(node("p", t("尚未配置 MCP 连接。"), "muted"));
-  } catch (e) {
-    $("settings-feedback").textContent = e.message;
-  }
+  if (mutating || settingsSession || $("settings-dialog").open) return;
+  const session = {phase: "loading"};
+  settingsSession = session;
+  const body = document.querySelector("#settings-dialog .settings-body");
+  body.hidden = true;
+  const save = $("settings-form").querySelector("button[type=submit]");
+  save.disabled = true;
+  $("settings-feedback").textContent = t("正在读取设置…");
   $("settings-dialog").showModal();
-  document.querySelector("#settings-dialog .settings-body").scrollTop = 0;
-  refreshComponents();
-  if (config.providers.find((p) => p.id === $("provider").value).configured)
-    fetchModels();
+  try {
+    const loaded = await loadConfig(() => settingsCurrent(session));
+    if (!loaded || !settingsCurrent(session)) return;
+    const d = loaded.defaults;
+    options(
+      "provider",
+      config.providers.map((p) => p.id),
+      d.provider || "deepseek",
+    );
+    providerFields();
+    $("model").value = d.model || $("model").value;
+    if (d.region) $("region").value = d.region;
+    $("context-tokens").value = d.context_tokens || "";
+    $("max-tokens").value = d.max_tokens || "";
+    capacityFields();
+    $("role-model-settings").open = false;
+    renderRoleModels(d.role_models || {});
+    options(
+      "search-provider",
+      config.search,
+      d.search_provider ||
+        (config.connections.find((c) => c.id === "tavily")?.configured
+          ? "tavily"
+          : "duckduckgo"),
+    );
+    $("evidence-provider").value = d.evidence_provider || "bm25";
+    options(
+      "connection-provider",
+      config.connections.map((c) => c.id),
+      d.search_provider || "tavily",
+    );
+    connectionFields();
+    $("parser").value = d.parser || "auto";
+    $("analysis").checked = !!d.analysis;
+    $("settings-feedback").textContent = "";
+    $("mcp-options").replaceChildren();
+    mcpLoaded = false;
+    try {
+      const { servers } = await call("mcp_connections");
+      if (!settingsCurrent(session)) return;
+      mcpLoaded = true;
+      for (const name of servers) {
+        const label = node("label", undefined, "checkbox"),
+          input = node("input");
+        input.type = "checkbox";
+        input.value = name;
+        input.checked = !!d.mcp_servers?.includes(name);
+        label.append(input, document.createTextNode(name));
+        $("mcp-options").append(label);
+      }
+      if (!servers.length)
+        $("mcp-options").append(node("p", t("尚未配置 MCP 连接。"), "muted"));
+    } catch (e) {
+      if (!settingsCurrent(session)) return;
+      $("settings-feedback").textContent = e.message;
+    }
+    if (!settingsCurrent(session)) return;
+    session.phase = "editing";
+    body.hidden = false;
+    body.scrollTop = 0;
+    save.disabled = false;
+    refreshComponents(session);
+    if (config.providers.find((p) => p.id === $("provider").value).configured)
+      fetchModels();
+  } catch (error) {
+    if (settingsCurrent(session)) $("settings-feedback").textContent = error.message;
+  }
 }
 $("open-settings").onclick = $("change-model").onclick = () =>
   openSettings().catch((e) => notice(e.message));
@@ -1478,76 +1618,96 @@ $("model").onkeydown = (e) => {
     else closeModels();
   }
 };
-$("settings-dialog").addEventListener("close", invalidateModels);
 $("connection-provider").onchange = connectionFields;
 $("settings-form").onsubmit = (e) => {
   e.preventDefault();
-  act(
+  const session = settingsSession;
+  if (!session || !settingsCurrent(session, "editing")) return;
+  return act(
     e.submitter,
     async () => {
-      const p = config.providers.find((p) => p.id === $("provider").value);
-      const d = {
-        ...config.defaults,
-        provider: p.id,
-        model: $("model").value.trim(),
-        role_models: selectedRoleModels(),
-        region: $("region").value,
-        search_provider: $("search-provider").value,
-        evidence_provider: $("evidence-provider").value,
-        parser: $("parser").value,
-        analysis: $("analysis").checked,
-        mcp_servers: mcpLoaded
-          ? Array.from(
-              $("mcp-options").querySelectorAll("input:checked"),
-              (el) => el.value,
-            )
-          : config.defaults.mcp_servers || [],
-      };
-      delete d.context_tokens;
-      delete d.max_tokens;
-      if (d.model !== p.model) {
-        d.context_tokens = Number($("context-tokens").value);
-        d.max_tokens = Number($("max-tokens").value);
-      }
-      let override = false;
-      const credentials = new Map();
-      for (const [name, value] of [
-        [p.credential, $("model-key").value.trim()],
-        ...roleModelEditors.filter(e => e.enabled.checked).map(e =>
-          [e.spec().credential, e.controls.key.value.trim()]),
-        [
-          config.connections.find(
-            (c) => c.id === $("connection-provider").value,
-          ).credential,
-          $("connection-key").value.trim(),
-        ],
-      ]) {
-        if (!name || !value) continue;
-        if (credentials.has(name) && credentials.get(name) !== value)
-          throw new Error(t("同一厂商填写了不同的 API Key，请统一后保存。"));
-        credentials.set(name, value);
-      }
-      for (const [name, value] of credentials) {
-          override =
-            (await api("/api/key", { name, value })).environment_override ||
-            override;
-      }
-      // Credentials and defaults have distinct persistence; partial saves are explicit.
-      $("model-key").value = $("connection-key").value = "";
-      for (const editor of roleModelEditors) editor.controls.key.value = "";
+      session.phase = "saving";
+      invalidateModels();
+      for (const editor of roleModelEditors) editor.invalidate();
+      componentSerial++;
+      clearTimeout(componentTimer);
+      const unlock = lockInputs($("settings-form"));
       try {
-        await api("/api/settings", d);
-      } catch (e) {
-        throw new Error(t("默认设置未保存；本次已提交的密钥已保存。") + e.message);
+        const p = config.providers.find((p) => p.id === $("provider").value);
+        const d = {
+          ...config.defaults,
+          provider: p.id,
+          model: $("model").value.trim(),
+          role_models: selectedRoleModels(),
+          region: $("region").value,
+          search_provider: $("search-provider").value,
+          evidence_provider: $("evidence-provider").value,
+          parser: $("parser").value,
+          analysis: $("analysis").checked,
+          mcp_servers: mcpLoaded
+            ? Array.from(
+                $("mcp-options").querySelectorAll("input:checked"),
+                (el) => el.value,
+              )
+            : config.defaults.mcp_servers || [],
+        };
+        delete d.context_tokens;
+        delete d.max_tokens;
+        if (d.model !== p.model) {
+          d.context_tokens = Number($("context-tokens").value);
+          d.max_tokens = Number($("max-tokens").value);
+        }
+        let override = false;
+        const credentials = new Map();
+        for (const [name, value] of [
+          [p.credential, $("model-key").value.trim()],
+          ...roleModelEditors.filter(e => e.enabled.checked).map(e =>
+            [e.spec().credential, e.controls.key.value.trim()]),
+          [
+            config.connections.find(
+              (c) => c.id === $("connection-provider").value,
+            ).credential,
+            $("connection-key").value.trim(),
+          ],
+        ]) {
+          if (!name || !value) continue;
+          if (credentials.has(name) && credentials.get(name) !== value)
+            throw new Error(t("同一厂商填写了不同的 API Key，请统一后保存。"));
+          credentials.set(name, value);
+        }
+        for (const [name, value] of credentials) {
+            override =
+              (await api("/api/key", { name, value })).environment_override ||
+              override;
+        }
+        // Credentials and defaults have distinct persistence; partial saves are explicit.
+        $("model-key").value = $("connection-key").value = "";
+        for (const editor of roleModelEditors) editor.controls.key.value = "";
+        try {
+          await api("/api/settings", d);
+        } catch (e) {
+          throw new Error(t("默认设置未保存；本次已提交的密钥已保存。") + e.message);
+        }
+        await loadConfig();
+        if (settingsCurrent(session)) {
+          dismissSettings();
+          $("settings-dialog").close();
+        }
+        notice(
+          t("设置已保存，仅用于新研究。没有发起付费连通测试。") +
+            (override ? t(" 当前进程环境变量优先于文件中的密钥。") : ""),
+        );
+      } catch (error) {
+        if (settingsCurrent(session)) $("settings-feedback").textContent = error.message;
+        throw error;
+      } finally {
+        unlock();
+        if (settingsCurrent(session)) {
+          session.phase = "editing";
+          refreshComponents(session);
+        }
       }
-      await loadConfig();
-      $("settings-dialog").close();
-      notice(
-        t("设置已保存，仅用于新研究。没有发起付费连通测试。") +
-          (override ? t(" 当前进程环境变量优先于文件中的密钥。") : ""),
-      );
     },
-    "settings-feedback",
   );
 };
 async function poll() {

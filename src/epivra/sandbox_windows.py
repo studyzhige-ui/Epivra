@@ -66,6 +66,35 @@ def checked(value):
     return value
 
 
+class StreamData(c.Structure):
+    _fields_ = [("size", c.c_longlong), ("name", w.WCHAR * (260 + 36))]
+
+
+def reject_named_streams(path):
+    """Scratch/output accepts ordinary bytes, not hidden NTFS data streams."""
+    first = api(kernel, "FindFirstStreamW", [w.LPCWSTR, w.DWORD, P, w.DWORD], w.HANDLE)
+    next_stream = api(kernel, "FindNextStreamW", [w.HANDLE, P])
+    close = api(kernel, "FindClose", [w.HANDLE])
+    data = StreamData()
+    handle = first(str(path), 0, c.byref(data), 0)
+    if handle == c.c_void_p(-1).value:
+        error = c.get_last_error()
+        if error in {38, 87}:  # No streams, or filesystem does not support streams.
+            return
+        raise c.WinError(error)
+    try:
+        while True:
+            if data.name != "::$DATA":
+                raise ValueError("Analysis scratch/output contains an alternate data stream")
+            if not next_stream(handle, c.byref(data)):
+                error = c.get_last_error()
+                if error != 38:  # An incomplete enumeration is not a clean result.
+                    raise c.WinError(error)
+                return
+    finally:
+        close(handle)
+
+
 class WindowsProcess:
     """One LPAC SID and a non-inherited kill-on-close Job per execution."""
     def __init__(self, command, readonly, writable, cwd, env, config, moniker):

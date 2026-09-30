@@ -5,6 +5,7 @@ import json
 import os
 import re
 from contextlib import asynccontextmanager
+from copy import deepcopy
 from urllib.parse import urlsplit
 
 from .domain import identity
@@ -228,7 +229,31 @@ async def borrowed(client):
     yield client
 
 
-async def execute(root, config, definition, args, resource=False, client=None):
+async def prepare(config, definition, args, resource, client):
+    """Validate discovery before a caller reserves quota or admits a send."""
+    from mcp import types
+
+    if resource:
+        if args["uri"] not in config.get("resources", []):
+            raise ValueError("resource URI not authorized")
+        return types.ReadResourceRequest(
+            params=types.ReadResourceRequestParams(uri=args["uri"])
+        )
+    tools = await pages(client.list_tools, "tools")
+    current = next(
+        (tool.model_dump(mode="json", by_alias=True, exclude_none=True)
+         for tool in tools if tool.name == definition["name"]), None
+    )
+    if current != definition:
+        raise ValueError(
+            "MCP tool definition changed; create a newly authorized research configuration"
+        )
+    return types.CallToolRequest(
+        params=types.CallToolRequestParams(name=definition["name"], arguments=args)
+    )
+
+
+async def execute(root, config, definition, args, resource=False, client=None, prepared=None):
     from mcp import types
     from mcp.shared.exceptions import MCPError
     from pydantic import TypeAdapter
@@ -240,33 +265,10 @@ async def execute(root, config, definition, args, resource=False, client=None):
             async with (
                 borrowed(client) if client is not None else connection(config, root)
             ) as client:
-                if resource:
-                    if args["uri"] not in config.get("resources", []):
-                        raise ValueError("resource URI not authorized")
-                    sent = True
-                    request = types.ReadResourceRequest(
-                        params=types.ReadResourceRequestParams(uri=args["uri"])
-                    )
-                else:
-                    tools = await pages(client.list_tools, "tools")
-                    current = next(
-                        (
-                            t.model_dump(mode="json", by_alias=True, exclude_none=True)
-                            for t in tools
-                            if t.name == definition["name"]
-                        ),
-                        None,
-                    )
-                    if current != definition:
-                        raise ValueError(
-                            "MCP tool definition changed; create a newly authorized research configuration"
-                        )
-                    sent = True
-                    request = types.CallToolRequest(
-                        params=types.CallToolRequestParams(
-                            name=definition["name"], arguments=args
-                        )
-                    )
+                request = prepared if prepared is not None else await prepare(
+                    config, definition, args, resource, client
+                )
+                sent = True
                 # The SDK's convenience call validates outputSchema before returning.
                 # Receive the protocol result unchanged so the ledger saves it first.
                 try:
@@ -301,68 +303,119 @@ async def execute(root, config, definition, args, resource=False, client=None):
 
 
 class MCPConnection:
-    """One session owner task per research/connection; preserves stateful tool sessions."""
+    """Own session lifetime; lend a prepared exclusive turn before admission.
+
+    SDK context entry/exit stays in one owner task. Calls execute in the task
+    holding the turn, without a second queue between admission and dispatch.
+    """
 
     credential_env = None
 
     def __init__(self, root, config):
         self.root, self.config = root, config
-        self.queue = asyncio.Queue()
+        self.lock = asyncio.Lock()
         self.task = None
+        self.ready = None
+        self.closed = False
+        self.resetting = False
+        self.generation = 0
+        self.prepared = {}
 
-    async def invoke(self, definition, args, resource=False, *, receive=None):
-        future = asyncio.get_running_loop().create_future()
-        self.queue.put_nowait((future, definition, args, resource, receive))
-        if self.task is None or self.task.done():
-            self.task = asyncio.create_task(self.run())
-        return await future
-
-    async def run(self):
-        active = None
+    async def _owner(self, ready):
         try:
             async with connection(self.config, self.root) as client:
-                while True:
-                    active, definition, args, resource, receive = await self.queue.get()
-                    if active.cancelled():
-                        active = None
-                        continue
-                    try:
-                        value = await execute(
-                            self.root, self.config, definition, args, resource, client
-                        )
-                        if receive is not None:
-                            receive(value)
-                    except Exception as exc:
-                        if not active.done():
-                            active.set_exception(exc)
-                        active = None
-                        return  # A lost session is never silently retried.
-                    if not active.done():
-                        active.set_result(value)
-                    active = None
+                ready.set_result(client)
+                await asyncio.Future()  # The owner is closed explicitly.
         except Exception:
-            pass  # No request was dispatched if connection setup failed.
+            pass  # No operation has been admitted during connection setup.
         finally:
-            if active is not None and not active.done():
-                active.set_exception(
-                    RuntimeError("MCP session interrupted; outcome unknown")
-                )
-            while not self.queue.empty():
-                future, *_ = self.queue.get_nowait()
-                if not future.done():
-                    future.set_result(
-                        {
-                            "isError": True,
-                            "content": [
-                                {
-                                    "type": "text",
-                                    "text": "MCP session unavailable; request not sent",
-                                }
-                            ],
-                        }
-                    )
+            if not ready.done():
+                ready.set_result(None)
 
-    async def close(self):
+    def _session(self):
+        if self.task is None or self.task.done():
+            self.ready = asyncio.get_running_loop().create_future()
+            self.task = asyncio.create_task(self._owner(self.ready))
+        return self.ready
+
+    @staticmethod
+    async def _checked(future, check):
+        while not future.done():
+            check()
+            await asyncio.wait({future}, timeout=0.25)
+        check()
+        return future.result()
+
+    @asynccontextmanager
+    async def turn(self, definition, args, resource=False, *, check):
+        """Wait/discover cooperatively, with no quota or durable operation yet."""
+        owner = asyncio.current_task()
+        generation = self.generation
+        if owner in self.prepared:
+            raise RuntimeError("MCP turn is already held by this task")
+
+        def allowed():
+            check()
+            if self.closed or self.resetting or generation != self.generation:
+                raise ValueError("MCP connection is closed; request not sent")
+
+        acquiring = asyncio.create_task(self.lock.acquire())
+        preparation = None
+        try:
+            await self._checked(acquiring, allowed)
+            async with asyncio.timeout(self.config.get("timeout", 120)):
+                client = await self._checked(self._session(), allowed)
+                if client is None:
+                    raise ValueError("MCP session unavailable; request not sent")
+                preparation = asyncio.create_task(
+                    prepare(self.config, definition, args, resource, client)
+                )
+                request = await self._checked(preparation, allowed)
+            self.prepared[owner] = (client, request, deepcopy((definition, args, resource)))
+            yield
+        finally:
+            self.prepared.pop(owner, None)
+            cleanup = []
+            if preparation is not None and not preparation.done():
+                preparation.cancel()
+                cleanup.append(preparation)
+            if not acquiring.done():
+                acquiring.cancel()
+                cleanup.append(acquiring)
+            if not acquiring.cancelled() and acquiring.done() and acquiring.result():
+                self.lock.release()
+            if cleanup:
+                await asyncio.gather(*cleanup, return_exceptions=True)
+
+    async def invoke(self, definition, args, resource=False, *, receive=None):
+        held = self.prepared.get(asyncio.current_task())
+        if held is None or held[2] != (definition, args, resource):
+            raise ValueError("MCP invocation requires its exact prepared turn")
+        client, request, _ = held
+        value = await execute(
+            self.root, self.config, definition, args, resource, client, prepared=request
+        )
+        if receive is not None:
+            receive(value)
+        return value
+
+    async def _stop(self):
         if self.task:
             self.task.cancel()
             await asyncio.gather(self.task, return_exceptions=True)
+
+    async def reset(self):
+        """Reload credentials in a fresh session; invalidate older waiters."""
+        if self.closed:
+            raise ValueError("MCP connection is closed")
+        self.generation += 1
+        self.resetting = True
+        try:
+            await self._stop()
+        finally:
+            self.resetting = False
+
+    async def close(self):
+        self.closed = True
+        self.generation += 1
+        await self._stop()

@@ -1,10 +1,16 @@
-"""Shared provider capacity; admission remains the Harness's responsibility."""
+"""Joint, cancellable send capacity; durable admission belongs to the Harness.
+
+Waiting never spends a rate allowance or holds a provider slot. A caller may
+also require an execution turn; readiness is rechecked after that queue drains,
+and the allowance is committed only when both resources are available.
+"""
 
 from __future__ import annotations
 
 import asyncio
 import time
-from contextlib import asynccontextmanager
+from collections import deque
+from contextlib import asynccontextmanager, nullcontext
 
 
 class Scheduler:
@@ -19,17 +25,21 @@ class Scheduler:
                 raise ValueError("expected concurrency/rpm/tpm limits")
             if any(type(v) is not int or v < 1 for v in rule.values()):
                 raise ValueError("limits must be positive integers")
-        self.history = {}
+        self.history: dict[str, list[tuple[float, int]]] = {}
         for event in history:
-            if event["at"] > self.clock() - 60:
+            # Older versions reserved before waiting for an Agent turn. Restore
+            # the actual send time when known, or conservatively the admission.
+            at = event.get("timing", {}).get("invoked_at", event["at"])
+            if at > self.clock() - 60:
                 self.history.setdefault(event["resource"], []).append(
-                    (event["at"], event["tokens"])
+                    (at, event["tokens"])
                 )
-        self.semaphores = {}
-        self.deadlines = {}
-        self.active = {}
-        self.waiting = {}
-        self.spacing = {}
+        self.deadlines: dict[str, float] = {}
+        self.active: dict[str, int] = {}
+        self.waiting: dict[str, int] = {}
+        self.spacing: dict[str, float] = {}
+        self.queues: dict[str, deque[object]] = {}
+        self.changed: dict[str, asyncio.Event] = {}
 
     def constrain(self, resource, interval):
         """Public service spacing, shared by every work using this scheduler."""
@@ -39,7 +49,7 @@ class Scheduler:
         self.spacing[resource] = max(self.spacing.get(resource, 0), interval)
 
     def snapshot(self):
-        resources = self.semaphores.keys() | self.deadlines.keys()
+        resources = self.active.keys() | self.waiting.keys() | self.deadlines.keys()
         return {
             key: {
                 "capacity": self.limits.get(key, {}).get("concurrency", self.capacity),
@@ -80,41 +90,70 @@ class Scheduler:
         return delay
 
     @asynccontextmanager
-    async def slot(self, resource: str, check, tokens=0):
-        semaphore = self.semaphores.setdefault(
-            resource,
-            asyncio.Semaphore(
-                self.limits.get(resource, {}).get("concurrency", self.capacity)
-            ),
-        )
-        acquired = False
+    async def slot(self, resource: str, check, tokens=0, *, turn=None):
+        """Commit a send allowance immediately before yielding to the caller.
+
+        ``turn`` is a fresh async-context factory, not an already-held lease.
+        If provider readiness changes while acquiring it, release it and wait
+        again. No scarce resource is held while waiting for another resource.
+        Checks fence every waiting phase; cancellation only withdraws unsent
+        work. Once yielded, the caller owns settlement of an admitted request.
+        """
+        capacity = self.limits.get(resource, {}).get("concurrency", self.capacity)
+        admitted = False
+        ticket = object()
+        queue = self.queues.setdefault(resource, deque())
+        changed = self.changed.setdefault(resource, asyncio.Event())
+        queued = False
         self.waiting[resource] = self.waiting.get(resource, 0) + 1
         try:
-            while not acquired:
-                check()
-                try:
-                    await asyncio.wait_for(semaphore.acquire(), timeout=0.25)
-                    acquired = True
-                except TimeoutError:
-                    pass
             while True:
                 check()
+                if not queued:
+                    queue.append(ticket)
+                    queued = True
+                    changed.set()
                 delay = self.rate_delay(resource, tokens)
-                if delay <= 0:
-                    break
-                await asyncio.sleep(min(0.25, delay))
-            check()
-        except BaseException:
-            if acquired:
-                semaphore.release()
-            raise
+                if (queue[0] is not ticket or delay > 0
+                        or self.active.get(resource, 0) >= capacity):
+                    # Tickets stop new/fast requests barging ahead of existing
+                    # provider waiters. Release notifications wake them promptly;
+                    # timeout checks still fence control and rolling-rate expiry.
+                    changed.clear()
+                    try:
+                        async with asyncio.timeout(
+                            min(0.25, delay) if delay > 0 else 0.25
+                        ):
+                            await changed.wait()
+                    except TimeoutError:
+                        pass
+                    continue
+                # A turn wait must not reserve provider capacity or block its
+                # queue. If readiness is lost, rejoin after releasing the turn.
+                queue.popleft()
+                queued = False
+                changed.set()
+                async with turn() if turn else nullcontext():
+                    check()
+                    if (self.active.get(resource, 0) >= capacity
+                            or self.rate_delay(resource, tokens) > 0):
+                        continue
+                    # This event loop owns the scheduler: no suspension between
+                    # the last check and claiming both concurrency and rate.
+                    at = self.clock()
+                    self.active[resource] = self.active.get(resource, 0) + 1
+                    self.history.setdefault(resource, []).append((at, tokens))
+                    self.waiting[resource] -= 1
+                    admitted = True
+                    try:
+                        yield at
+                    finally:
+                        self.active[resource] -= 1
+                        changed.set()
+                    return
         finally:
-            self.waiting[resource] -= 1
-        self.active[resource] = self.active.get(resource, 0) + 1
-        try:
-            admitted = self.clock()
-            self.history.setdefault(resource, []).append((admitted, tokens))
-            yield admitted
-        finally:
-            self.active[resource] -= 1
-            semaphore.release()
+            if queued:
+                queue.remove(ticket)
+                changed.set()
+            if not admitted:
+                self.waiting[resource] -= 1

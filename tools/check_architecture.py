@@ -107,6 +107,7 @@ ALLOWED = {
     "terminal": {"locale"},
     "cli_settings": {"adapters", "local_security", "model_catalog", "web_providers", "platform_paths"},
     "host": {
+        "materials",
         "native_analysis",
         "agent_runtime",
         "components",
