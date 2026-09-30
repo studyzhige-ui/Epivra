@@ -2,18 +2,21 @@
 
 import base64
 import gzip
+import io
+import json
 import os
+import sys
 import tempfile
 import unittest
 import zlib
-from contextlib import closing
+from contextlib import closing, redirect_stdout
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import httpx
 
-from epivra import direct_reader, materials
+from epivra import direct_reader, host, materials
 from epivra.adapters import JsonAPI, decoded_response
 from epivra.domain import Call
 from epivra.harness import Harness, Tool
@@ -304,6 +307,118 @@ class HostImportTests(unittest.IsolatedAsyncioTestCase):
                 "data": base64.b64encode(raw).decode(),
             })
         self.assertEqual(self.host.store.get("study", result["source"]).body["text"], raw.decode())
+
+
+class CLIInputTests(unittest.TestCase):
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.root = Path(folder.name)
+        self.path = self.root / "input.txt"
+
+    def invoke(self, *arguments):
+        sent = AsyncMock(return_value={"ok": True})
+        output = io.StringIO()
+        with (
+            patch.object(sys, "argv", ["epivra", "--root", str(self.root), *arguments]),
+            patch.object(host, "send", sent), redirect_stdout(output),
+        ):
+            try:
+                host.main()
+            except SystemExit as exc:
+                self.assertEqual(exc.code, 1)
+        return sent, json.loads(output.getvalue())
+
+    def upload(self):
+        return self.invoke("upload", "study", str(self.path), "--expected", "control")
+
+    def test_cli_upload_accepts_normal_and_exact_ipc_capacity(self):
+        for raw in (b"normal", b"x" * host.UPLOAD_INPUT_BYTES):
+            with self.subTest(length=len(raw)):
+                self.path.write_bytes(raw)
+                with patch.object(Path, "read_bytes", side_effect=AssertionError("unbounded read")):
+                    sent, result = self.upload()
+                self.assertEqual(result, {"ok": True})
+                request = sent.call_args.args[1]
+                self.assertEqual(base64.b64decode(request["data"]), raw)
+                self.assertEqual(request["name"], self.path.name)
+
+    def test_cli_upload_rejects_sparse_oversize_before_read_or_send(self):
+        with self.path.open("wb") as stream:
+            stream.truncate(4 * 1024**3)
+        with (
+            patch.object(Path, "read_bytes", side_effect=AssertionError("unbounded read")),
+            patch.object(materials.os, "fdopen") as fdopen,
+        ):
+            sent, result = self.upload()
+        self.assertEqual(result, {"error": "ValueError"})
+        fdopen.assert_not_called()
+        sent.assert_not_called()
+
+    def test_cli_growth_uses_transport_limit_plus_one(self):
+        self.path.write_bytes(b"small")
+        fstat, fdopen = os.fstat, os.fdopen
+        reads, stats = [], []
+
+        def growing_stat(descriptor):
+            before = fstat(descriptor)
+            stats.append(before)
+            if len(stats) == 1:
+                with self.path.open("ab") as stream:
+                    stream.write(b"x" * 32)
+            return before
+
+        def tracked_open(*args, **kwargs):
+            stream = fdopen(*args, **kwargs)
+            read = stream.read
+
+            def tracked_read(size):
+                reads.append(size)
+                return read(size)
+
+            stream.read = tracked_read
+            return stream
+
+        with (
+            patch.object(host, "UPLOAD_INPUT_BYTES", 16),
+            patch.object(materials.os, "fstat", side_effect=growing_stat),
+            patch.object(materials.os, "fdopen", side_effect=tracked_open),
+        ):
+            sent, result = self.upload()
+        self.assertEqual(result, {"error": "ValueError"})
+        self.assertEqual(reads, [17])
+        sent.assert_not_called()
+
+    def test_cli_reconciliation_file_is_also_bounded(self):
+        arguments = ["reconcile", "study", "operation", "--expected", "control",
+                     "--receipt-id", "receipt", "--evidence", "offline receipt",
+                     "--response-file", str(self.path)]
+        self.path.write_text('{"text":"已收到"}', encoding="utf-8")
+        sent, result = self.invoke(*arguments)
+        self.assertEqual(result, {"ok": True})
+        self.assertEqual(sent.call_args.args[1]["result"], {"text": "已收到"})
+        with self.path.open("wb") as stream:
+            stream.truncate(host.IPC_REQUEST_BYTES + 1)
+        with patch.object(materials.os, "fdopen") as fdopen:
+            sent, result = self.invoke(*arguments)
+        self.assertEqual(result, {"error": "ValueError"})
+        fdopen.assert_not_called()
+        sent.assert_not_called()
+
+
+class IPCRequestTests(unittest.IsolatedAsyncioTestCase):
+    async def test_encoded_request_is_capped_before_connecting(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / ".epivra").mkdir()
+            (root / ".epivra/host.json").write_text('{"port":1,"token":"fake"}')
+            with (
+                patch.object(host, "IPC_REQUEST_BYTES", 100),
+                patch.object(host.asyncio, "open_connection", new_callable=AsyncMock) as connect,
+            ):
+                with self.assertRaisesRegex(ValueError, "request exceeds host IPC limit"):
+                    await host.send(root, {"action": "reconcile", "result": "中" * 30})
+            connect.assert_not_awaited()
 
 
 if __name__ == "__main__":

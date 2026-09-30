@@ -28,8 +28,11 @@ MAX_ELEMENTS = 1_000_000
 _parse_slots = weakref.WeakKeyDictionary()
 
 
-def read_file(path: Path) -> bytes:
-    """Acquire a regular local material within the parser's input capacity."""
+def read_file(path: Path, *, maximum: int | None = None) -> bytes:
+    """Acquire regular bytes within both parser and caller transport capacity."""
+    if maximum is not None and (type(maximum) is not int or maximum < 0):
+        raise ValueError("input byte limit must be a nonnegative integer")
+    limit = MAX_INPUT_BYTES if maximum is None else min(maximum, MAX_INPUT_BYTES)
     # Nonblocking open lets us reject a FIFO even if the path is replaced after
     # the picker/host checked it. It has no effect on ordinary regular files.
     flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NONBLOCK", 0)
@@ -38,12 +41,12 @@ def read_file(path: Path) -> bytes:
         before = os.fstat(descriptor)
         if not stat.S_ISREG(before.st_mode):
             raise ValueError("selected path is not a file")
-        if before.st_size > MAX_INPUT_BYTES:
+        if before.st_size > limit:
             raise ValueError("material exceeds input byte limit")
         with os.fdopen(descriptor, "rb", closefd=False) as stream:
-            raw = stream.read(MAX_INPUT_BYTES + 1)
+            raw = stream.read(limit + 1)
         after = os.fstat(descriptor)
-        if len(raw) > MAX_INPUT_BYTES or after.st_size > MAX_INPUT_BYTES:
+        if len(raw) > limit or after.st_size > limit:
             raise ValueError("material exceeds input byte limit")
         if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
             raise ValueError("source changed while reading")

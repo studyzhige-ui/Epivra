@@ -36,6 +36,9 @@ from .usage import summarize
 from .web_providers import CONNECTIONS, SEARCH
 from .workspace import Workspace
 
+IPC_REQUEST_BYTES = 4 * 1024 * 1024
+UPLOAD_INPUT_BYTES = 3 * 1024 * 1024 - 8192
+
 
 class Host:
     def __init__(self, root: Path, factory=None):
@@ -549,7 +552,7 @@ class Host:
         temporary = pointer.with_suffix(".tmp")
         try:
             server = await asyncio.start_server(
-                self.connection, "127.0.0.1", 0, limit=4 * 1024 * 1024
+                self.connection, "127.0.0.1", 0, limit=IPC_REQUEST_BYTES
             )
             port = server.sockets[0].getsockname()[1]
             if temporary.exists() or temporary.is_symlink():
@@ -591,13 +594,14 @@ class Host:
 
 async def send(root: Path, request: dict):
     pointer = json.loads((root / ".epivra/host.json").read_text(encoding="utf-8"))
+    payload = (json.dumps({**request, "token": pointer["token"]}) + "\n").encode()
+    if len(payload) > IPC_REQUEST_BYTES:
+        raise ValueError("request exceeds host IPC limit")
     reader, writer = await asyncio.open_connection(
-        "127.0.0.1", pointer["port"], limit=4 * 1024 * 1024
+        "127.0.0.1", pointer["port"], limit=IPC_REQUEST_BYTES
     )
     try:
-        writer.write(
-            (json.dumps({**request, "token": pointer["token"]}) + "\n").encode()
-        )
+        writer.write(payload)
         await writer.drain()
         # Parsing has its own configured timeout. Losing a client must not imply failure.
         timeout = (
@@ -827,11 +831,7 @@ def main():
                 source=args.source, destination=str(args.destination.resolve())
             )
         if args.action == "upload":
-            raw = args.file.read_bytes()
-            if len(raw) > 3 * 1024 * 1024 - 8192:
-                raise ValueError(
-                    "file exceeds upload IPC limit; authorize its directory instead"
-                )
+            raw = read_file(args.file, maximum=UPLOAD_INPUT_BYTES)
             request.update(
                 expected=args.expected,
                 name=args.file.name,
@@ -843,7 +843,9 @@ def main():
                 expected=args.expected,
                 receipt_id=args.receipt_id,
                 evidence=args.evidence,
-                result=json.loads(args.response_file.read_text(encoding="utf-8")),
+                result=json.loads(read_file(
+                    args.response_file, maximum=IPC_REQUEST_BYTES - 8192
+                ).decode("utf-8")),
             )
         if args.action == "control":
             payload = {}
