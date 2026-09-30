@@ -9,11 +9,11 @@ Epivra is a local research workbench that turns a question and authorized materi
 
 ## Download and open
 
-**Desktop 0.3.2** — no separate Python, Git, Node.js or database installation.
+**Desktop 0.3.3** — no separate Python, Git, Node.js or database installation.
 
 | Your computer | Download |
 |---|---|
-| Windows 10/11, x64 | [Download Windows ZIP](https://github.com/studyzhige-ui/Epivra/releases/download/v0.3.2/Epivra-0.3.2-windows-x64.zip) |
+| Windows 10/11, x64 | [Download Windows ZIP](https://github.com/studyzhige-ui/Epivra/releases/download/v0.3.3/Epivra-0.3.3-windows-x64.zip) |
 
 1. **Windows:** extract the entire ZIP and double-click **Epivra.exe**.
 2. Your browser opens automatically. On first launch, choose a provider, enter your own API key, select a model and save.
@@ -23,7 +23,7 @@ Next time, open Epivra again. Repeated launches reopen the existing workbench.
 Closing the browser keeps research running; use **Quit** in the Epivra control window to stop the background host.
 
 These builds have **no Windows publisher certificate**; your OS may show an unknown-developer warning.
-[Release notes and SHA-256](https://github.com/studyzhige-ui/Epivra/releases/tag/v0.3.2) · [User guide](docs/USAGE.en.md)
+[Release notes and SHA-256](https://github.com/studyzhige-ui/Epivra/releases/tag/v0.3.3) · [User guide](docs/USAGE.en.md)
 
 This Windows x64 release includes built-in restricted Python analysis. Prepare it in Settings without Docker. OCR remains a separate optional download.
 
@@ -48,7 +48,8 @@ Sources, excerpts, findings, reports, and recorded usage remain in the local wor
 The Web interface switches between English and Simplified Chinese. Set the desired report language in the research request. Reports can be exported as Markdown, Word, or standalone HTML; PDF export uses the browser's print dialog.
 
 - **Model connections:** OpenAI, Claude, Gemini, Grok, DeepSeek, Qwen, Kimi, GLM, Doubao, MiniMax, Hunyuan, and ERNIE through official provider adapters. The default selection is DeepSeek / `deepseek-flash`; account availability varies.
-- **Search and reading:** Tavily, Exa, Brave, Perplexity, Bocha, a key-free DuckDuckGo fallback, and Jina reading. Network-enabled research can also use Crossref, PubMed, Europe PMC, and World Bank public data. Search can acquire available page text or relevant original passages in the same request, then read and cite them locally. Additional page retrieval is used when content is insufficient. Bocha summaries remain discovery aids. Paid generated summaries and premium search upgrades are not enabled by default.
+- **Search and reading:** Tavily, Exa, Brave, Perplexity, Bocha, and a key-free DuckDuckGo fallback. Network-enabled research can also use Crossref, PubMed, Europe PMC, and World Bank public data. Available original text is saved and relevant passages are delivered to the researcher. Missing page content is fetched directly, with Jina Reader as a fallback; no separate reader setup is required. Provider summaries remain discovery aids. Paid generated summaries and premium search upgrades are not enabled by default.
+- **Evidence selection:** local BM25 by default, with no extra API key or model download. Optional Jev uses your TypeSafe API key for semantic ranking and evidence screening.
 - **Materials:** text, CSV/TSV, text PDFs, and spreadsheets; the optional documents extra adds Docling parsing and OCR. Sources are accessed within the selected permissions.
 - **Analysis:** Python calculations, statistics and charts in the built-in Windows sandbox. OS-enforced restrictions cover network, file access, processes, memory and CPU. Timeouts and monitored output/scratch limits also apply.
 - **External MCP:** explicitly permitted tools and resources can be used by research assistants. Local-material mode disables built-in web research but may still use selected external MCP services.

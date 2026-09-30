@@ -12,13 +12,13 @@ MCP tool names, parameters, and protocol states remain stable; descriptions use 
 
 ## 1. Download, open, and quit
 
-Desktop downloads include Python and require no Git, Node.js, or database installation. Choose a package from the [GitHub Release](https://github.com/studyzhige-ui/Epivra/releases/tag/v0.3.2):
+Desktop downloads include Python and require no Git, Node.js, or database installation. Choose a package from the [GitHub Release](https://github.com/studyzhige-ui/Epivra/releases/tag/v0.3.3):
 
 | Platform | Steps |
 |---|---|
 | Windows 10/11 x64 | Download the Windows ZIP, extract the complete folder, and open **Epivra.exe**. |
 
-This is an unsigned desktop release. Windows may report an unknown publisher. macOS is no longer a build or verification target. Downloads require an authorized GitHub account while the repository is private.
+This is an unsigned desktop release. Windows may report an unknown publisher. macOS is no longer a build or verification target.
 
 
 Your browser opens automatically, showing connection settings on first launch. Opening Epivra again reuses the running workbench. Closing the browser keeps research running; use **Quit** in the Epivra control window to stop the background service. Wait for component installation to finish before quitting. Computer sleep interrupts execution.
@@ -52,7 +52,12 @@ The CLI supports provider, key, and model configuration; the searchable model pi
 
 Official adapters cover OpenAI, Claude, Gemini, Grok, DeepSeek, Qwen, Kimi, GLM, Doubao, MiniMax, Hunyuan, and ERNIE. The default is DeepSeek / `deepseek-flash`. Custom relay URLs are not supported. Model access and rate limits depend on your provider account.
 
-Search providers: Tavily, Exa, Brave, Perplexity, and Bocha. DuckDuckGo provides a key-free fallback, with no availability guarantee. Web reading uses Jina, Tavily, or Exa. Configure only the services you use.
+Search providers: Tavily, Exa, Brave, Perplexity, and Bocha. DuckDuckGo provides a key-free fallback, with no availability guarantee. Configure keys only for the search services you choose. Page content is read automatically when needed, with no separate reader setup.
+
+Choose how to retrieve and screen materials:
+
+- **Local BM25 retrieval** (default): selects original passages relevant to the research question. No extra API key or model download is required.
+- **Jev semantic retrieval and evidence screening**: uses TypeSafe to rank original passages semantically and supports targeted screening for duplicate information and evidence relationships. Expand **Configure search and evidence API keys**, choose `typesafe`, enter your own API key (`TYPESAFE_API_KEY`), select Jev, and save.
 
 Keys are stored locally in `.env`; environment variables take precedence. Defaults live in `.epivra/cli-settings.json` and apply to new research. Usage displays recorded provider counters, not an invoice or prediction of your remaining balance.
 
@@ -223,15 +228,13 @@ The owner assesses each original question against its required answer, evidence,
 
 New retrieval results, sources or research handoffs must be considered before an existing writing basis can authorize delivery. Repeated reads do not repeatedly reopen research. Identical successful web requests reuse the current direction's snapshot; the researcher can explicitly refresh when newly acquired data is needed. Publication still requires independent editorial review.
 
-After this research-contract upgrade, earlier studies remain readable and exportable; start a new study for execution. Finish existing work and restart an already running service to load the updated code.
-
 Context is managed against the selected model window for each role, reserving its configured output allowance. Reads fit the remaining capacity of the complete request instead of fixed 48,000-character context or 12,000-character result ceilings. Explicit smaller read limits are honored. Window checks retain the adapters’ local estimates and reported usage calibration; they neither fill every request nor guarantee exact use of every advertised token.
 
 
 ## Search content and external knowledge
 
-When search returns original content, Epivra saves a local source snapshot and reuses it. A separate page read is needed only for missing context, absent content or a deliberate refresh. Provider summaries remain leads rather than original evidence.
+When search returns usable original text, Epivra saves a source snapshot and delivers passages relevant to the research question, preserving their sources and original locations. More context can be read from the saved original without fetching it again. Provider summaries remain discovery leads.
 
-Settings keep provider and API key together and model selection on its own row. Save and Back remain visible while scrolling. OCR setup asks for a directory and remembers it.
+For a separate URL read, Epivra first fetches the page over HTTP and extracts its text. If no usable content can be obtained, it falls back to Jina Reader; if that also fails, it returns an explicit reading failure. Jina Reader uses key-free access by default and needs no user configuration.
 
 External knowledge remains optional standard MCP. The public application bundles no institution directory, authentication flow or database-specific plugin. Ordinary MCP tools need no format changes. Connectors returning traceable documents may opt into `result_contract: "knowledge-v1"`; this is an Epivra result mapping, not an MCP protocol requirement. See `SCHEMA` in `src/epivra/knowledge.py` for document fields and coverage levels. Other MCP tools retain ordinary result handling.

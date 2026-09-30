@@ -9,11 +9,11 @@ Epivra 是本地自主研究工作台，将问题与获授权的资料转化为�
 
 ## 下载并打开
 
-**桌面版 0.3.2**：无需安装 Python、Git、Node.js 或数据库。
+**桌面版 0.3.3**：无需安装 Python、Git、Node.js 或数据库。
 
 | 你的电脑 | 下载 |
 |---|---|
-| Windows 10/11，x64 | [下载 Windows ZIP](https://github.com/studyzhige-ui/Epivra/releases/download/v0.3.2/Epivra-0.3.2-windows-x64.zip) |
+| Windows 10/11，x64 | [下载 Windows ZIP](https://github.com/studyzhige-ui/Epivra/releases/download/v0.3.3/Epivra-0.3.3-windows-x64.zip) |
 
 1. **Windows**：完整解压 ZIP，双击其中的 **Epivra.exe**。不要在压缩包内直接运行。
 2. 浏览器会自动打开。首次进入“连接与设置”，选择供应商，填入自己的 API Key，选择模型并保存。
@@ -21,9 +21,9 @@ Epivra 是本地自主研究工作台，将问题与获授权的资料转化为�
 
 以后只需再次打开 Epivra。重复打开会复用已有工作台。关闭浏览器后研究继续；需要停止后台程序时，在 Epivra 控制窗口点击“退出”。
 
-当前包**未取得 Windows 发布者签名**，系统可能提示未知开发者。[发布说明与 SHA-256](https://github.com/studyzhige-ui/Epivra/releases/tag/v0.3.2) · [详细使用说明](docs/USAGE.md)
+当前包**未取得 Windows 发布者签名**，系统可能提示未知开发者。[发布说明与 SHA-256](https://github.com/studyzhige-ui/Epivra/releases/tag/v0.3.3) · [详细使用说明](docs/USAGE.md)
 
-此版本已内置 **Windows x64 内置受限 Python 分析**，无需 Docker。OCR 仍独立按需下载。
+Windows x64 版本包含受限 Python 分析，可在设置中准备并启用，无需 Docker。OCR 仍独立按需下载。
 
 
 ## 研究方式
@@ -46,7 +46,8 @@ Epivra 是本地自主研究工作台，将问题与获授权的资料转化为�
 Web 界面可切换简体中文与英文。报告语言请在研究需求中指定。报告可导出为 Markdown、Word 或独立 HTML；PDF 通过浏览器打印对话框导出。
 
 - **模型连接：**通过官方供应商适配器连接 OpenAI、Claude、Gemini、Grok、DeepSeek、Qwen、Kimi、GLM、Doubao、MiniMax、Hunyuan 和 ERNIE。默认选择 DeepSeek / `deepseek-flash`，实际可用性取决于账户。
-- **搜索与阅读：**支持 Tavily、Exa、Brave、Perplexity、Bocha、无需密钥的 DuckDuckGo 回退和 Jina 阅读。允许联网的研究还可使用 Crossref、PubMed、Europe PMC 和 World Bank 公共数据。 搜索可同时取得服务返回的正文或相关原文片段，并在本地按需读取、形成引用；仅在内容不足时补充网页读取。博查摘要用于筛选资料，不冒充完整原文。默认不启用另收费的生成式摘要或高级搜索。
+- **搜索与阅读：**支持 Tavily、Exa、Brave、Perplexity、Bocha 和无需密钥的 DuckDuckGo 回退。允许联网的研究还可使用 Crossref、PubMed、Europe PMC 和 World Bank 公共数据。取得的原文会保存，并筛选相关段落交给研究员；需要补读网页时直接获取正文，失败后使用 Jina Reader，无需单独配置读取服务。供应商摘要用于发现资料，不作为原文证据。默认不启用另收费的生成式摘要或高级搜索。
+- **资料筛查：**默认使用本地 BM25，无需额外密钥或下载模型。可选 Jev，使用自己的 TypeSafe API Key 进行语义排序与证据筛查。
 - **资料：**支持文本、CSV/TSV、文本 PDF 和电子表格；可选的文档扩展提供 Docling 解析与 OCR。资料访问遵守所选授权范围。
 - **分析：**Python 计算、统计与绘图在 Windows 内置沙盒运行，保留操作系统级禁网、文件权限、进程/内存/CPU 限制与超时。输出和临时文件大小采用监控限制，并非硬磁盘配额。
 - **外部 MCP：**研究助手可使用明确授权的工具和资源。仅本地资料模式关闭内建网络研究，但仍可使用所选外部 MCP 服务。
@@ -83,7 +84,7 @@ python -m venv .venv
 |---|---|
 | `src/epivra/` | 应用代码、Web 资源和界面翻译 |
 | `tools/` | 开发检查与本地诊断工具 |
-| `sandbox/` | 隔离分析镜像与执行器 |
+| `packaging/analysis/` | 内置分析环境的来源、许可证与固定依赖 |
 | `models/` | 解析模型说明及清单；模型权重保留在本地 |
 | `docs/` | 中英文使用说明及 README 图片 |
 | `.epivra/` | 本地私有研究、导入资料、设置及恢复记录；不纳入 Git |
