@@ -10,7 +10,7 @@ Web 右上角可选择简体中文或 English；切换不会清空正在填写�
 
 ## 1. 下载、打开与退出
 
-桌面版不需要安装 Python、Git、Node.js 或数据库。从 [GitHub Release](https://github.com/studyzhige-ui/Epivra/releases/tag/v0.3.3) 选择：
+桌面版不需要安装 Python、Git、Node.js 或数据库。从 [GitHub Release](https://github.com/studyzhige-ui/Epivra/releases/tag/v0.3.4) 选择：
 
 | 平台 | 操作 |
 |---|---|
@@ -78,7 +78,9 @@ python -m venv .venv
 
 单个角色连续三轮没有工具动作，或重复相同协议错误、相同的整轮失败调用序列，且没有成功操作或新研究材料时，会暂时停止该工作的自动尝试并保留原因。负责人可调整方法或补充资料；该类阻断在新材料到达后会重新评估，也可在处理原因后暂停并恢复研究。正常补查、不同操作和必要修订没有固定次数上限。未知付费调用仍不会自动重发。
 
-正常研究没有总调用次数、总 token、总费用或总耗时上限。明确的供应商拒绝有独立的恢复保护：同一控制版本内，同一操作最多自动恢复五次；达到上限后需先显式暂停并恢复，再继续尝试。该保护用于控制资源，不限制研究深度。
+失败恢复依据具体原因：限流或临时过载须满足等待条件；账户、权限和参数错误须先处理对应原因。部分成功的资料继续复用，只补查缺口；正常空结果不触发自动重试。换查询、助手或强制刷新不能绕过未解决的限制。
+
+正常研究没有总调用次数、总 token、总费用或总耗时上限。允许安全恢复的同一操作在同一控制版本内最多自动恢复五次；耗尽后须处理原因并显式暂停、恢复。恢复不会清除尚未到期的等待期限，也不会重新发送结果未知的调用。该保护控制资源，不限制研究深度。
 
 ## 4. 资料解析与数据分析
 
@@ -125,8 +127,8 @@ epivra start
 {
   "mcpServers": {
     "Epivra": {
-      "command": "D:/Projects/Python/Epivra/.venv/Scripts/epivra-mcp.exe",
-      "args": ["--root", "D:/Projects/Python/Epivra"]
+      "command": "C:/path/to/Epivra/.venv/Scripts/epivra-mcp.exe",
+      "args": ["--root", "C:/path/to/workspace"]
     }
   }
 }

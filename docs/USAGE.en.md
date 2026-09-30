@@ -12,7 +12,7 @@ MCP tool names, parameters, and protocol states remain stable; descriptions use 
 
 ## 1. Download, open, and quit
 
-Desktop downloads include Python and require no Git, Node.js, or database installation. Choose a package from the [GitHub Release](https://github.com/studyzhige-ui/Epivra/releases/tag/v0.3.3):
+Desktop downloads include Python and require no Git, Node.js, or database installation. Choose a package from the [GitHub Release](https://github.com/studyzhige-ui/Epivra/releases/tag/v0.3.4):
 
 | Platform | Steps |
 |---|---|
@@ -84,7 +84,9 @@ Epivra validates citations and numbers sources in order of first appearance. Rep
 
 After three consecutive rounds with no tool action, or the same protocol error or complete sequence of failed calls, and no successful operation or new research material, that work stops retrying automatically and retains its reason. The lead can change the method or obtain additional material. This type of block is reconsidered when new material arrives; you can also pause and resume after addressing the cause. Normal investigation, different operations, and necessary revisions have no fixed round limit. Paid calls with unknown outcomes are still never automatically resent.
 
-Normal research has no total call, token, cost, or elapsed-time cap. Explicit provider rejections have a separate recovery guard: one operation can be recovered at most five times within one control epoch. After that guard is reached, pause and resume explicitly before trying the operation again; this protects resources without limiting research depth.
+Recovery follows the reported cause: rate limits and temporary overload must satisfy their waiting conditions; account, access and parameter errors require the corresponding repair. Acquired parts are reused while missing evidence is investigated separately. Empty results do not trigger automatic retries. Changing the query, helper or refresh flag cannot bypass unresolved conditions.
+
+Normal research has no total call, token, cost, or elapsed-time cap. An operation that is safe to recover has at most five automatic retries within one control epoch. After exhaustion, address the cause and explicitly pause and resume. Resuming does not clear a future waiting deadline or resend a call with an unknown outcome. This protects resources without limiting research depth.
 
 ## 4. Parsing and analysis
 
@@ -134,8 +136,8 @@ Example client configuration; replace paths with your installation:
 {
   "mcpServers": {
     "Epivra": {
-      "command": "D:/Projects/Python/Epivra/.venv/Scripts/epivra-mcp.exe",
-      "args": ["--lang", "en", "--root", "D:/Projects/Python/Epivra"]
+      "command": "C:/path/to/Epivra/.venv/Scripts/epivra-mcp.exe",
+      "args": ["--lang", "en", "--root", "C:/path/to/workspace"]
     }
   }
 }

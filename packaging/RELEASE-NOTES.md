@@ -1,23 +1,23 @@
-# Epivra 0.3.2 · Windows x64
+# Epivra 0.3.4 · Windows x64
 
 ## 本次更新
 
-- 搜索服务返回原文时直接保存并复用，减少重复网页读取；供应商总结与原文保持区分。
-- 通用 MCP 支持可选的可追溯文档结果映射，普通 MCP 连接保持原有行为。
-- 优化连接与设置布局，返回和保存固定在顶部；OCR 安装时选择目录并记住位置。
-- 改善 MCP 超时处理及本地连接的代理行为。
-- 公开安装包不含本地图书馆插件、学校目录、登录数据或浏览器组件。
+- 研究失败按具体原因恢复：区分限流、账户、权限、参数错误及结果未知，避免盲目重试。
+- 已取得的资料、部分成功结果和已结算判断继续复用；定向补查缺口，减少重复调用。
+- 修复中断后的 HTTP/Jina 读取及 Jev 恢复，判断关联最终成功回执。
+- 限流等待与未解决的请求限制跨重启保留；并发在途成功不会误解除限制。
+- 研究负责人沿现有流程处理资料缺口，获取失败不会被当作证据充分。
 
 ## 使用与升级
 
-完整解压 ZIP 后打开 Epivra.exe。升级前退出旧程序并备份数据目录，再解压新包；不要将程序覆盖到用户数据目录。
+完整解压 ZIP 后打开 Epivra.exe。升级前退出旧程序并备份数据目录，再解压新包。历史报告仍可查看和导出；旧运行合同的未完成研究不能直接按新合同继续执行，请新建研究。
 
-Windows 10/11 x64；内置受限 Python 数据分析，无需 Docker 或单独安装 Python。分析组件在设置中准备后启用；OCR 仍是可选联网下载。macOS 不再构建或验证。
-
-当前程序未签名，Windows 可能提示未知发布者。模型及搜索 API 费用由供应商收取。工程验证不代表研究报告质量验收。
+Windows 10/11 x64。内置受限 Python 数据分析，无需 Docker 或单独安装 Python；OCR 仍是可选下载。默认 BM25，可选 Jev 使用自己的 TypeSafe API 密钥；无需下载 embedding 模型。当前程序未签名。
 
 ## Changes
 
-Search-provided original content is saved and reused, with provider summaries kept separate. Optional generic MCP document mapping preserves provenance without changing ordinary MCP tools. Settings now keep Save and Back visible; OCR setup remembers the selected directory. Local MCP proxy handling and timeouts are improved.
+Research recovery now follows the actual failure cause, separating rate limits, account/access errors, invalid parameters and unknown outcomes. Acquired sources, partial results and settled judgments are retained and reused; investigators address specific evidence gaps.
 
-No private institution plugin, school catalogue, login data or browser component is bundled. Extract the whole ZIP and open Epivra.exe. Quit the old app and back up the data directory before upgrading. Built-in restricted Python analysis requires no Docker; OCR remains optional. Windows x64 only. The application is unsigned. Engineering checks do not certify research-report quality.
+Interrupted HTTP/Jina reading and Jev recovery now resume correctly, with judgments linked to the successful receipt. Waiting deadlines and unresolved request barriers survive restart, and already-in-flight successes cannot incorrectly clear them. Evidence acquisition failures do not establish research sufficiency.
+
+Quit the old app and back up your data before upgrading. Extract the whole ZIP and open Epivra.exe. Historical reports remain readable and exportable; unfinished studies bound to an older runtime contract require a new study. Windows x64 only, unsigned; restricted Python analysis is bundled and OCR is optional. BM25 is the default; optional Jev uses your TypeSafe key and no embedding model download is required.

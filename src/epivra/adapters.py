@@ -16,8 +16,9 @@ from typing import Any
 
 import httpx
 
-from .domain import ContextCapacity, encode, identity
+from .domain import ContextCapacity, RequestNotSent, encode, identity
 from .local_security import protect_if_present
+from .recovery import PARAMETERS, diagnose, repair_on_resume, retry_delay
 
 
 def _wire_json(value):
@@ -48,20 +49,15 @@ DEFAULT_MODEL = "deepseek-flash"
 
 
 class ProviderFailure(RuntimeError):
-    def __init__(self, provider: str, status: int):
+    def __init__(self, provider: str, status: int, raw=None):
         self.provider, self.status = provider, status
-        super().__init__(f"{provider}: HTTP {status}")
+        self.diagnosis = diagnose(raw or {"http_status": status}, provider=provider)
+        instruction = self.diagnosis["instruction"] if self.diagnosis else "Inspect the provider contract."
+        super().__init__(f"{provider}: HTTP {status}. {instruction}")
 
 
 class IncompleteStream(RuntimeError):
     """The provider may have charged; no executable response was received."""
-
-
-def rate_limit_delay(raw: dict, attempt: int) -> float | None:
-    """Only an explicit rejection permits an automatic new attempt."""
-    if raw.get("http_status") == 429 and raw.get("error_kind") != "quota":
-        return max(float(2 ** min(attempt + 1, 6)), raw.get("retry_after", 0))
-    return None
 
 
 class _ChatStream:
@@ -248,7 +244,7 @@ class JsonAPI:
                     value = error.get(key)
                     if isinstance(value, str) and re.fullmatch(r"[a-z_]{1,64}", value):
                         result["provider_" + key] = value
-                if error.get("param") in {"model", "max_tokens", "max_completion_tokens", "messages", "tools", "thinking", "reasoning_effort", "output_config", "stream"}:
+                if error.get("param") in PARAMETERS:
                     result["parameter"] = error["param"]
         except (ValueError, AttributeError, TypeError):
             pass
@@ -305,10 +301,17 @@ class JsonAPI:
     @asynccontextmanager
     async def _response(self, method, path, **kwargs):
         async with asyncio.timeout(self.deadline):
-            async with self._client.stream(
-                method, self.origin + path, headers=self._headers(), **kwargs
-            ) as response:
-                yield response
+            entered = False
+            try:
+                async with self._client.stream(
+                    method, self.origin + path, headers=self._headers(), follow_redirects=False, **kwargs
+                ) as response:
+                    entered = True
+                    yield response
+            except (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout) as exc:
+                if entered:
+                    raise
+                raise RequestNotSent("Single HTTP request was not sent") from exc
 
     async def _chunks(self, response):
         total = 0
@@ -396,14 +399,11 @@ class JsonAPI:
 class ChatCompletions:
     """Shared wire protocol, with explicit vendor parameters and model capacity."""
 
-    retry_delay = staticmethod(rate_limit_delay)
+    retry_delay = staticmethod(retry_delay)
 
     @staticmethod
     def retry_on_resume(raw: dict) -> bool:
-        return (
-            raw.get("http_status") in {401, 402, 403}
-            or raw.get("error_kind") == "quota"
-        )
+        return repair_on_resume(raw)
 
     def __init__(
         self,
@@ -629,7 +629,7 @@ class ChatCompletions:
     def decode(self, raw: dict[str, Any]) -> dict[str, Any]:
         status = raw.get("http_status", 0)
         if status != 200:
-            raise ProviderFailure(self.resource, status)
+            raise ProviderFailure(self.resource, status, raw)
         if "data" not in raw:
             raise ValueError("invalid model response JSON")
         data = raw["data"]
@@ -673,11 +673,11 @@ class ChatCompletions:
 
 class DeepSeek(ChatCompletions):
     resource = "deepseek"
-    retry_delay = staticmethod(rate_limit_delay)
+    retry_delay = staticmethod(retry_delay)
 
     @staticmethod
     def retry_on_resume(raw: dict) -> bool:
-        return raw.get("http_status") in {401, 402}
+        return repair_on_resume(raw, provider="deepseek")
 
     def __init__(
         self,
@@ -730,11 +730,11 @@ class DeepSeek(ChatCompletions):
 
 class Tavily:
     resource = "tavily"
-    retry_delay = staticmethod(rate_limit_delay)
+    retry_delay = staticmethod(retry_delay)
 
     @staticmethod
     def retry_on_resume(raw: dict) -> bool:
-        return raw.get("http_status") in {401, 432, 433}
+        return repair_on_resume(raw, provider="tavily")
 
     def __init__(self, api: JsonAPI):
         self.api = api
@@ -791,7 +791,7 @@ class Tavily:
     @staticmethod
     def _data(raw: dict) -> dict:
         if raw.get("http_status") != 200:
-            raise ProviderFailure("tavily", raw.get("http_status", 0))
+            raise ProviderFailure("tavily", raw.get("http_status", 0), raw)
         data = raw.get("data")
         if not isinstance(data, dict) or not isinstance(data.get("results"), list):
             raise ValueError("invalid Tavily response: expected results array")

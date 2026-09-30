@@ -4,6 +4,7 @@ import math
 
 from .adapters import JsonAPI
 from .domain import identity
+from .recovery import retry_delay
 
 MODEL = "jev-1.13.0"
 ORIGIN = "https://api.typesafe.ai"
@@ -26,9 +27,7 @@ class Jev:
 
     @staticmethod
     def retry_delay(raw, attempt):
-        if raw.get("http_status") in {429, 529}:
-            return raw.get("retry_after", 2 ** attempt)
-        return None
+        return retry_delay(raw, attempt, provider="typesafe")
 
     @staticmethod
     def decode(raw, questions):

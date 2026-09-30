@@ -4,8 +4,9 @@ from datetime import date, datetime, timezone
 from html.parser import HTMLParser
 from urllib.parse import parse_qs, urlsplit
 
-from .adapters import JsonAPI, ProviderFailure, Tavily, rate_limit_delay
+from .adapters import JsonAPI, ProviderFailure, Tavily
 from .domain import encode, identity
+from .recovery import retry_delay
 
 CONNECTIONS = {
     "tavily": ("https://api.tavily.com", "TAVILY_API_KEY", "Authorization", "Bearer "),
@@ -98,7 +99,7 @@ class _DuckResults(HTMLParser):
 
 
 class WebProvider:
-    retry_delay = staticmethod(rate_limit_delay)
+    retry_delay = staticmethod(retry_delay)
     retry_on_resume = staticmethod(Tavily.retry_on_resume)
     validate_extract = staticmethod(Tavily.validate_extract)
 
@@ -186,7 +187,7 @@ class WebProvider:
 
     def _data(self, raw):
         if raw.get("http_status") != 200:
-            raise ProviderFailure(self.resource, raw.get("http_status", 0))
+            raise ProviderFailure(self.resource, raw.get("http_status", 0), raw)
         data = raw.get("data")
         if not isinstance(data, dict):
             raise ValueError("invalid provider JSON")

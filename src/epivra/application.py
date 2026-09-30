@@ -7,10 +7,11 @@ import time
 import uuid
 from typing import Any
 
-from .adapters import ProviderFailure, rate_limit_delay
+from .adapters import ProviderFailure
 from .agent_runtime import AgentRuntime
-from .domain import Conflict, RecoveryExhausted, RepeatedFailure
+from .domain import Conflict, RecoveryBlocked, RecoveryExhausted, RepeatedFailure
 from .harness import Harness
+from .recovery import diagnose, repair_on_resume, retry_delay
 from .storage import Store
 from .usage import summarize
 
@@ -152,7 +153,7 @@ class ResearchService:
                                     "instruction": (
                                         "This work repeated identical failures without progress. Change its inputs or method; do not recreate the same failing task."
                                         if child.ref in self.repeated_failures
-                                        else "Do not resubmit unknown paid work; assess dependency."
+                                        else "Assess the reported cause and research gap; preserve acquired evidence. Unknown paid work must not be resubmitted."
                                     ),
                                 },
                                 (child.ref,),
@@ -219,7 +220,7 @@ class ResearchService:
             # Never include provider request bodies or credential-bearing errors.
             self.errors[study] = (
                 str(exc)
-                if isinstance(exc, (ProviderFailure, RecoveryExhausted))
+                if isinstance(exc, (ProviderFailure, RecoveryBlocked, RecoveryExhausted))
                 else type(exc).__name__
             )
 
@@ -425,21 +426,28 @@ def online_service(
         return providers[name].api.authorization_identity
 
     def observe(raw, acquisition, names, reading=False):
-        provider = providers[raw["provider"]]
+        provider = providers[raw.get("provider", names[0])]
         try:
             decoded = (
                 provider.decode_extract(raw) if reading else provider.decode_search(raw)
             )
         except (ProviderFailure, ValueError, KeyError, TypeError):
+            diagnosis = diagnose(raw, provider=provider.resource, protocol=True)
+            if acquisition.get("operation"):
+                diagnosis["operation"] = acquisition["operation"]
             return {
                 "error": "source_provider_failed",
                 "provider": provider.resource,
                 "http_status": raw.get("http_status"),
                 "alternatives": [name for name in names if name != provider.resource],
-                "instruction": "Try an available alternative or revise the query/URL; no evidence was obtained.",
+                "diagnosis": diagnosis,
+                "instruction": diagnosis["instruction"],
             }
         if reading:
-            return workspace.web_snapshot(study, decoded, acquisition)
+            result = workspace.web_snapshot(study, decoded, acquisition)
+            diagnosis = diagnose(raw, provider=provider.resource)
+            return {**result, **({"diagnosis": diagnosis} if diagnosis else {}),
+                    **({"fallback_allowed": False} if raw.get("fallback_allowed") is False else {})}
         saved = (
             workspace.web_snapshot(study, decoded, acquisition)
             if decoded["sources"] else {"sources": [], "failures": decoded["failures"]}
@@ -474,7 +482,7 @@ def online_service(
                else "Choose provider only when needed; default: " + names[0]),
             schema(field, names),
             invoke,
-            identity="web-selection-v2:"
+            identity="web-selection-v3:"
             + ":".join(providers[n].identity for n in names),
             permission="network",
             roles=("lead", "investigator", "synthesizer", "writer", "reviewer"),
@@ -487,13 +495,14 @@ def online_service(
             parallel_safe=True,
             resource=names[0],
             resource_map={n: n for n in names},
-            cooldown=lambda raw: providers[raw["provider"]].retry_delay(raw, 0),
-            retry_delay=lambda raw, attempt: (
+            cooldown=lambda raw, choices=names: providers[raw.get("provider", choices[0])].retry_delay(raw, 0),
+            retry_delay=lambda raw, attempt, choices=names: (
                 0
                 if raw.get("credential_retry")
                 and raw.get("http_status") in {401, 432, 433}
-                else None
+                else providers[raw.get("provider", choices[0])].retry_delay(raw, attempt)
             ),
+            retry_on_resume=lambda raw: repair_on_resume(raw, provider=raw.get("provider", "")),
             research_fields=tuple(key for key in schema(field, names)["properties"] if key != "goal"),
             cache_research=True,
             research_authorization=authorization,
@@ -532,11 +541,13 @@ def online_service(
             try:
                 decoded = public[name].decode(raw)
             except (ProviderFailure, ValueError, KeyError, TypeError, SyntaxError):
+                diagnosis = diagnose(raw, provider=name, protocol=True)
                 return {
                     "error": "public_source_failed",
                     "provider": name,
                     "http_status": raw.get("http_status"),
-                    "instruction": "No usable evidence obtained; revise query or use another permitted source.",
+                    "diagnosis": diagnosis,
+                    "instruction": diagnosis["instruction"],
                 }
             snapshots = workspace.web_snapshot(study, decoded, acq)
             return {
@@ -561,7 +572,7 @@ def online_service(
                 resource="public:" + name,
                 parallel_safe=True,
                 research_fields=tuple(parameters["properties"]),
-                cooldown=lambda raw: rate_limit_delay(raw, 0) or spacing(raw),
+                cooldown=lambda raw: retry_delay(raw, 0) or spacing(raw),
             )
     mcp_connections = []
     if policy.get("mcp"):

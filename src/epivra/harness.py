@@ -29,9 +29,11 @@ from .domain import (
     Call,
     ContextCapacity,
     NotAllowed,
+    RecoveryBlocked,
     RecoveryExhausted,
     RepeatedFailure,
     Reply,
+    RequestNotSent,
     WorkInterrupted,
     bounded_json,
     encode,
@@ -41,6 +43,7 @@ from .domain import (
 from .evidence import delivered, window
 from .evidence_runtime import EvidenceRuntime
 from .prompts import PROMPT_VERSION, ROLES, ROUTE_PROMPT, TOOLS, WRITING_GUIDES
+from .recovery import conditions, diagnose, protocol_failure
 from .research import DISPOSITIONS, RESEARCH_KINDS, STATUSES, ResearchLedger
 from .review import report_metrics, text_metrics, units
 from .scheduling import Scheduler
@@ -1197,11 +1200,16 @@ class Harness:
         request_step=None,
         invoke_received=None,
         research_key=None,
+        recovery=None,
     ):
         runtime = getattr(self, "agent_runtime", None)
         phase = runtime.phase(study, work, "waiting_provider", resource) if runtime and request_step else nullcontext()
         with phase:
             model = self._model_for(self.store.get(study, work))
+            if request_step and recovery is None:
+                recovery = {"request": identity("model-request", getattr(model, "identity", "model"), request),
+                    "scope": identity(resource, getattr(getattr(model, "api", None), "authorization_identity", "model")),
+                    "binding": getattr(model, "identity", "model"), "conditions": conditions(request.get("wire", {}).get("payload", {}))}
             retry = self._attempt(study, operation)
             attempt = retry.body["attempt"] if retry else 0
             key = retry.body["next"] if retry else operation
@@ -1215,6 +1223,7 @@ class Harness:
                             min(0.25, retry.body["not_before"] - time.time())
                         )
                 if self.store.operation_status(study, key) is None:
+                    self.store.require_recovery(study, epoch, recovery)
                     queued_at = self.scheduler.clock()
                     tokens = (
                         request.get("wire", {}).get("estimated_input_tokens", 0)
@@ -1247,19 +1256,27 @@ class Harness:
                                     if request_step
                                     else None,
                                     **({"research_key": research_key, "step": step} if research_key else {}),
+                                    **({"recovery": recovery} if recovery else {}),
                                 },
                             )
                             if raw is None:
                                 self.store.mark_invoked(key, self.scheduler.clock())
-                                raw = (
-                                    await invoke_received(
-                                        lambda value: self.store.settle(
-                                            key, value, settled_at=self.scheduler.clock()
+                                try:
+                                    raw = (
+                                        await invoke_received(
+                                            lambda value: self.store.settle(
+                                                key, value, settled_at=self.scheduler.clock()
+                                            )
                                         )
+                                        if invoke_received
+                                        else await invoke()
                                     )
-                                    if invoke_received
-                                    else await invoke()
-                                )
+                                except RequestNotSent:
+                                    # These failures establish that this send never reached the server.
+                                    # Read/write failures and cancellation remain unknown operations.
+                                    raw = {"completion": "not_sent", "http_status": 0, "provider": resource}
+                                    if request.get("tool"):
+                                        raw = {"value": raw}
                                 self.store.settle(key, raw, settled_at=self.scheduler.clock())
                 else:
                     raw = self.store.admit(
@@ -1612,6 +1629,10 @@ class Harness:
                                 )
                         except ValueError as exc:
                             result = {"error": str(exc)}
+                        except (RecoveryBlocked, RecoveryExhausted) as exc:
+                            result = {"error": "recovery_blocked", "instruction": str(exc),
+                                "diagnosis": exc.diagnosis if isinstance(exc, RecoveryBlocked) else {
+                                    "cause": "recovery_exhausted", "action": "revise_method", "instruction": str(exc)}}
                     else:
                         result, envelope = await self._acquired(study, work_ref, control.epoch, step.ref, index, call)
                         if call.name == "web_search" and not result.get("sources") and result.get("results"):
@@ -1620,7 +1641,7 @@ class Harness:
                     try:
                         result = {**result, "relation_candidates": await self.evidence.candidates(
                             study, work, control.epoch, step.ref, index, result["ref"], self._invoke)}
-                    except ValueError as exc:
+                    except (ValueError, RecoveryBlocked, RecoveryExhausted) as exc:
                         result = {**result, "screening_error": str(exc)}
                 if not invalid and (call.name not in BUILTINS or call.name == "snapshot_local") and "error" not in result:
                     result = await self.evidence.deliver(
@@ -1641,8 +1662,10 @@ class Harness:
                         "research_receipt": self._research_receipt(study, work, call, result,
                             envelope.get("research_reuse") if call.name not in BUILTINS and not invalid else None,
                             envelope.get("research_key") if call.name not in BUILTINS and not invalid else None),
-                        "failure": identity("tool", call.name, call.arguments, result)
-                        if (invalid or call.name in BUILTINS) and "error" in result
+                        "failure": identity("tool", call.name, self._research_request(call) if call.name not in BUILTINS and not invalid else call.arguments,
+                            {k: v for k, v in result.get("diagnosis", {}).items() if k not in {"operation", "retry_after"}}
+                            or result.get("error"))
+                        if "error" in result
                         else None,
                     },
                     (step.ref,),
@@ -1728,7 +1751,7 @@ class Harness:
                    "material": "text_range" if delivered(result) else "data" if result.get("content_type") == "structured_data" else "metadata",
                    "sources": list(dict.fromkeys(sources)), "request": request,
                    "refreshed": call.arguments.get("force_refresh") is True,
-                   "binding": tool.binding if tool else "local-v7"}
+                   "binding": tool.binding if tool else "local-v8"}
         if tool:
             receipt["request_key"] = request_key or tool.research_key(request)
         if reused:
@@ -1743,16 +1766,18 @@ class Harness:
         operation = identity("tool", step, index)
         retry = self._attempt(study, operation)
         acquisition = {"work": work, "step": step, "operation": retry.body["next"] if retry else operation}
+        acquisition = envelope.get("acquisition") or acquisition
         try:
-            result = (envelope["value"] if envelope.get("research_reuse") else observe(envelope["value"], acquisition)
+            result = (envelope["value"] if envelope.get("research_reuse") or envelope.get("recovery_blocked") else observe(envelope["value"], acquisition)
                       if observe else envelope)
             encode(result)
-        except ValueError:
-            result = {"error": "invalid_external_result", "instruction": "Saved provider response is unusable; use another source or revise the request."}
+        except (ValueError, KeyError, TypeError):
+            result = protocol_failure(envelope["value"], provider=self.tools[call.name].resource)
         tool = self.tools[call.name]
         if (call.name == "fetch_web" and tool.resource == "http"
                 and call.arguments.get("provider", "http") == "http"
-                and not result.get("sources") and not envelope.get("research_reuse")
+                and not result.get("sources") and not result.get("reader_attempts")
+                and not envelope.get("recovery_blocked")
                 and envelope["value"].get("fallback_allowed", True)):
             fallback, fallback_envelope = await self._acquired(
                 study, work, epoch, step, f"{index}:jina",
@@ -1768,7 +1793,7 @@ class Harness:
             with self.store.transaction():
                 self.store.require_work(study, work, epoch)
                 receipt = self.store._put(study, "source_acquisition", {
-                    "direction": producer.body["direction"], "result": result,
+                    "direction": producer.body["direction"], "result": result, "acquisition": acquisition,
                     "research_receipt": self._research_receipt(study, producer, call, result,
                         envelope.get("research_reuse"), envelope.get("research_key")),
                 }, (work, step))
@@ -1804,8 +1829,14 @@ class Harness:
 
     async def _external(self, study, work, epoch, step, index, call):
         tool = self.tools[call.name]
-        request_key = tool.research_key(self._research_request(call))
-        if tool.cache_research and not call.arguments.get("force_refresh") and self.store.operation_status(study, identity("tool", step, index)) is None:
+        request = self._research_request(call)
+        request_key = tool.research_key(request)
+        resource = tool.resource_map.get(call.arguments.get("provider", ""), tool.resource) if tool.resource_map else tool.resource
+        recovery = {"request": identity(tool.binding, request if tool.research_fields else call.arguments),
+                    "scope": identity(resource, tool.research_authorization(request) if tool.research_authorization else "public"),
+                    "binding": tool.binding, "conditions": conditions(request)}
+        self.store.require_recovery(study, epoch, recovery, unknown_only=True)
+        if tool.cache_research and self.store.operation_status(study, identity("tool", step, index)) is None:
             producer = self.store.get(study, work)
             direction = producer.body["direction"]
             old = self.store.reusable_research_result(study, direction, request_key)
@@ -1816,17 +1847,23 @@ class Harness:
                         result = tool.observe(raw["value"], acquisition)
                         encode(result)
                         receipt = self._research_receipt(study, producer, call, result, request_key=request_key)
-                        if receipt["outcome"] not in {"ok", "empty"}:
-                            continue
-                        old = self.store.put(study, "source_acquisition", {
-                            "direction": direction, "result": result, "research_receipt": receipt,
-                        }, (acquisition["work"], acquisition["step"]))
                     except (ValueError, KeyError, TypeError):
-                        continue
+                        result = protocol_failure(raw.get("value", {}), provider=resource)
+                        receipt = self._research_receipt(study, producer, call, result, request_key=request_key)
+                    old = self.store.put(study, "source_acquisition", {
+                        "direction": direction, "result": result, "research_receipt": receipt, "acquisition": acquisition,
+                    }, (acquisition["work"], acquisition["step"]))
                     break
             if old:
                 receipt = old.body["research_receipt"]
-                return {"value": old.body["result"], "research_reuse": receipt.get("reused_from") or old.ref, "research_key": request_key}
+                diagnosis = old.body["result"].get("diagnosis", {})
+                repair_probe = (receipt["outcome"] == "blocked" and
+                    (diagnosis.get("action") in {"wait", "retry"} or
+                     (diagnosis.get("scope") in {"authorization", "access"} and diagnosis.get("operation")
+                      and epoch > self.store.admission_epoch(study, diagnosis["operation"]))))
+                if not repair_probe and (receipt["outcome"] not in {"ok", "empty"} or not call.arguments.get("force_refresh")):
+                    return {"value": old.body["result"], "research_reuse": receipt.get("reused_from") or old.ref,
+                        "research_key": request_key, "acquisition": old.body.get("acquisition")}
         if (
             tool.reuse
             and self.store.operation_status(study, identity("tool", step, index))
@@ -1846,38 +1883,47 @@ class Harness:
             )
             return {"value": value}
 
-        resource = (
-            tool.resource_map.get(call.arguments.get("provider", ""), tool.resource)
-            if tool.resource_map
-            else tool.resource
-        )
-        raw = await self._invoke(
-            study,
-            work,
-            epoch,
-            step,
-            identity("tool", step, index),
-            {"tool": call.name, "arguments": call.arguments},
-            invoke,
-            (lambda raw, n: tool.retry_delay(raw["value"], n))
-            if tool.retry_delay
-            else None,
-            (lambda raw: tool.retry_on_resume(raw["value"]))
-            if tool.retry_on_resume
-            else None,
-            resource,
-            invoke_received=received if tool.invoke_received else None,
-            research_key=request_key if tool.cache_research else None,
-        )
+        try:
+            raw = await self._invoke(
+                study,
+                work,
+                epoch,
+                step,
+                identity("tool", step, index),
+                {"tool": call.name, "arguments": call.arguments},
+                invoke,
+                (lambda raw, n: tool.retry_delay(raw["value"], n))
+                if tool.retry_delay
+                else None,
+                (lambda raw: tool.retry_on_resume(raw["value"]))
+                if tool.retry_on_resume
+                else None,
+                resource,
+                invoke_received=received if tool.invoke_received else None,
+                research_key=request_key if tool.cache_research else None,
+                recovery=recovery,
+            )
+        except (RecoveryBlocked, RecoveryExhausted) as exc:
+            if isinstance(exc, RecoveryBlocked):
+                diagnosis = {**exc.diagnosis, "operation": exc.operation}
+            else:
+                operation = identity("tool", step, index)
+                retry = self._attempt(study, operation)
+                failed = retry.body["next"] if retry else operation
+                original = self.store.result(study, failed)
+                diagnosis = {**(diagnose(original.get("value", {}), provider=resource) or {}),
+                    "operation": failed, "exhausted": True, "instruction": str(exc)}
+            return {"value": {"error": "recovery_blocked", "diagnosis": diagnosis,
+                "instruction": diagnosis["instruction"],
+                "alternatives": [name for name in (tool.resource_map or {}) if name != resource]},
+                "recovery_blocked": True, "research_key": request_key}
         if tool.cache_research:
             operation = identity("tool", step, index)
             retry = self._attempt(study, operation)
             admitted = self.store.operation_admission(
                 study, retry.body["next"] if retry else operation
             )
-            raw["research_key"] = admitted.get("research_key") or identity(
-                "legacy-research-operation", operation
-            )
+            raw["research_key"] = admitted["research_key"]
         delay = tool.cooldown(raw["value"]) if tool.cooldown else None
         if delay is not None:
             previous = [

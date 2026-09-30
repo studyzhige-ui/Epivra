@@ -6,7 +6,7 @@ import ast
 from pathlib import Path
 
 LAYERS = (
-    ("domain", frozenset({"__init__", "domain"})),
+    ("domain", frozenset({"__init__", "domain", "recovery"})),
     (
         "infrastructure",
         frozenset(
@@ -130,19 +130,20 @@ ALLOWED = {
     "model_catalog": set(),
     "model_discovery": {"model_catalog"},
     "models": {"adapters", "model_catalog", "native_models"},
-    "native_models": {"adapters", "domain"},
+    "native_models": {"recovery", "adapters", "domain"},
     "materials": {"domain", "document_parser", "platform_paths"},
     "document_parser": set(),
-    "web_providers": {"adapters", "domain", "direct_reader"},
-    "direct_reader": {"adapters"},
+    "web_providers": {"recovery", "adapters", "domain", "direct_reader"},
+    "direct_reader": {"recovery", "adapters"},
     "public_sources": {"adapters"},
     "scheduling": set(),
     "agent_runtime": set(),
-    "adapters": {"domain", "local_security"},
+    "adapters": {"recovery", "domain", "local_security"},
     "__init__": set(),
     "domain": set(),
+    "recovery": {"domain"},
     "prompts": set(),
-    "storage": {"domain", "usage", "citations", "review", "local_security", "writing"},
+    "storage": {"recovery", "domain", "usage", "citations", "review", "local_security", "writing"},
     "local_security": set(),
     "diagnostics": {"domain", "review"},
     "citations": {"markdown_rules"},
@@ -150,8 +151,8 @@ ALLOWED = {
     "usage": set(),
     "context": {"domain", "evidence"},
     "evidence": {"domain"},
-    "jev": {"domain", "adapters"},
-    "evidence_runtime": {"domain", "context", "evidence"},
+    "jev": {"recovery", "domain", "adapters"},
+    "evidence_runtime": {"recovery", "domain", "context", "evidence"},
     "research": {"domain", "evidence"},
     "writing": {"domain", "research", "citations", "context", "review"},
     "review": {"domain"},
@@ -162,6 +163,7 @@ ALLOWED = {
     "native_analysis": {"analysis", "local_security", "sandbox_windows"},
     "analysis_runtime": {"native_analysis", "analysis", "domain", "storage", "workspace", "scheduling"},
     "harness": {
+        "recovery",
         "evidence",
         "evidence_runtime",
         "analysis_runtime",
@@ -178,6 +180,7 @@ ALLOWED = {
         "review",
     },
     "application": {
+        "recovery",
         "jev",
         "agent_runtime",
         "public_sources",

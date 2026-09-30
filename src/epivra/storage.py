@@ -18,6 +18,7 @@ from .domain import (
     Control,
     NotAllowed,
     OwnershipError,
+    RecoveryBlocked,
     RuntimeMismatch,
     UnknownOutcome,
     WorkInterrupted,
@@ -25,6 +26,7 @@ from .domain import (
     identity,
 )
 from .local_security import protect
+from .recovery import diagnose
 from .writing import WritingWorkspace
 
 
@@ -129,6 +131,9 @@ class Store:
                 self.db.execute(
                     "CREATE INDEX IF NOT EXISTS operation_study_status ON operations(study,status)"
                 )
+                for field in ("request", "scope"):
+                    self.db.execute(f"CREATE INDEX IF NOT EXISTS operation_recovery_{field} "
+                        f"ON operations(study,json_extract(admission,'$.recovery.{field}'))")
                 self.db.execute("PRAGMA user_version=2004")
         except BaseException:
             if hasattr(self, "db"):
@@ -353,9 +358,85 @@ class Store:
             "SELECT * FROM artifacts WHERE study=? AND kind IN ('observation','source_acquisition') "
             "AND json_extract(body,'$.direction')=? "
             "AND json_extract(body,'$.research_receipt.request_key')=? "
-            "AND json_extract(body,'$.research_receipt.outcome') IN ('ok','empty') "
             "ORDER BY seq DESC LIMIT 1", (study, direction, request_key)).fetchone()
         return self._artifact(row) if row else None
+
+    def require_recovery(self, study, epoch, recovery, *, unknown_only=False):
+        """Derive send barriers from existing receipts, across steps and helpers."""
+        import json
+
+        if not recovery:
+            return
+        if unknown_only:
+            row = self.db.execute(
+                "SELECT id FROM operations WHERE study=? AND status='unknown' "
+                "AND json_extract(admission,'$.recovery.request')=? LIMIT 1",
+                (study, recovery["request"]),
+            ).fetchone()
+            if row:
+                raise UnknownOutcome(row["id"])
+            return
+        rows = self.db.execute(
+            "SELECT id,epoch,status,admission FROM operations WHERE study=? "
+            "AND (json_extract(admission,'$.recovery.request')=? "
+            "OR json_extract(admission,'$.recovery.scope')=?) ORDER BY rowid DESC",
+            (study, recovery["request"], recovery["scope"]),
+        ).fetchall()
+        latest_request = False
+        successful = []
+        transient = 0
+        for row in rows:
+            admission = json.loads(row["admission"])
+            previous = admission["recovery"]
+            same_request = previous["request"] == recovery["request"]
+            same_scope = previous["scope"] == recovery["scope"]
+            if row["status"] == "unknown":
+                if same_request:
+                    raise UnknownOutcome(row["id"])
+                continue
+            diagnosis = admission.get("failure")
+            request_candidate = same_request and not latest_request
+            latest_request |= same_request
+            if not diagnosis:
+                successful.append(admission)
+                continue
+            # An already-in-flight success does not establish repair after a failure.
+            settled_at = admission.get("timing", {}).get("settled_at", math.inf)
+            verified = [item["recovery"] for item in successful
+                        if item.get("timing", {}).get("invoked_at", 0) >= settled_at]
+            healed_request = any(item["request"] == recovery["request"] for item in verified)
+            healed_scope = any(item["scope"] == recovery["scope"] for item in verified)
+            if same_scope and diagnosis["action"] == "wait":
+                deadline = self.db.execute(
+                    "SELECT MAX(json_extract(body,'$.not_before')) FROM artifacts WHERE study=? "
+                    "AND kind IN ('retry','cooldown') AND "
+                    "COALESCE(json_extract(body,'$.previous'),json_extract(body,'$.operation'))=?",
+                    (study, row["id"]),
+                ).fetchone()[0]
+                deadline = max(deadline or 0, diagnosis.get("not_before", 0))
+                if deadline > time.time():
+                    raise RecoveryBlocked(row["id"], {**diagnosis, "not_before": deadline})
+            if (row["epoch"] == epoch and diagnosis["action"] in {"wait", "retry"}
+                    and ((same_request and not healed_request) or
+                         (same_scope and not healed_scope and diagnosis["action"] == "wait"))):
+                transient += 1
+                if transient >= 6:
+                    raise RecoveryBlocked(row["id"], {**diagnosis,
+                        "instruction": "Automatic recovery exhausted for this request; assess the gap or explicitly resume after repair."})
+            parameter = diagnosis.get("parameter")
+            if diagnosis["cause"] == "invalid_request" and parameter and same_scope:
+                before = previous.get("conditions", {}).get(parameter, previous.get("binding"))
+                after = recovery.get("conditions", {}).get(parameter, recovery.get("binding"))
+                corrected = any(item["scope"] == recovery["scope"] and
+                    item.get("conditions", {}).get(parameter, item.get("binding")) == after for item in verified)
+                if before == after and not corrected:
+                    raise RecoveryBlocked(row["id"], diagnosis)
+            if diagnosis["scope"] in {"authorization", "access"}:
+                same_access = diagnosis["scope"] == "authorization" or previous.get("binding") == recovery.get("binding")
+                if same_scope and not healed_scope and same_access and row["epoch"] == epoch and not admission.get("credential_retry"):
+                    raise RecoveryBlocked(row["id"], diagnosis)
+            elif request_candidate and diagnosis["action"] not in {"wait", "retry"}:
+                raise RecoveryBlocked(row["id"], diagnosis)
 
     def settled_research_operations(self, study, direction, request_key):
         """Recover normalization after interruption without reissuing paid work."""
@@ -559,7 +640,7 @@ class Store:
                 "direction",
                 {
                     "request": request,
-                    "runtime": "continuous-research-v7",
+                    "runtime": "continuous-research-v8",
                     "policy": policy,
                 },
             )
@@ -756,7 +837,7 @@ class Store:
             return result
 
     def require_runtime(self, study: str, direction: str) -> None:
-        if self.get(study, direction).body.get("runtime") != "continuous-research-v7":
+        if self.get(study, direction).body.get("runtime") != "continuous-research-v8":
             raise RuntimeMismatch(
                 "Archived research runtime: read-only audit; start a new study"
             )
@@ -1167,6 +1248,7 @@ class Store:
                     raise UnknownOutcome(operation_id)
                 return json.loads(row["result"])
             direction = self.control(study).direction
+            self.require_recovery(study, epoch, (admission or {}).get("recovery"))
             self.db.execute(
                 "INSERT INTO operations"
                 "(id,study,work,direction,epoch,request,status,result,request_step,admission) "
@@ -1438,6 +1520,13 @@ class Store:
             admission = json.loads(row["admission"]) if row["admission"] else None
             if admission is not None:
                 admission.setdefault("timing", {}).setdefault("settled_at", float(at))
+                raw = result.get("value", result) if isinstance(result, dict) else {}
+                admission["failure"] = diagnose(raw, provider=admission.get("resource", ""))
+                failure = admission["failure"]
+                if failure and failure["action"] == "wait" and "retry_after" in failure:
+                    failure["not_before"] = float(at) + failure["retry_after"]
+                if isinstance(raw, dict) and raw.get("credential_retry") is True:
+                    admission["credential_retry"] = True
             self.db.execute(
                 "UPDATE operations SET status='succeeded',result=?,admission=? WHERE id=?",
                 (

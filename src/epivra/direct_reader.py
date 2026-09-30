@@ -10,7 +10,8 @@ import httpx
 from bs4 import BeautifulSoup
 from markdownify import MarkdownConverter
 
-from .adapters import JsonAPI, Tavily, rate_limit_delay
+from .adapters import JsonAPI, Tavily
+from .recovery import retry_delay
 
 
 def extract_html(content, url, encoding=None):
@@ -57,7 +58,7 @@ class DirectReader:
     authorization_identity = "public-http-no-credentials-v1"
     credential_env = None
     validate_extract = staticmethod(Tavily.validate_extract)
-    retry_delay = staticmethod(rate_limit_delay)
+    retry_delay = staticmethod(retry_delay)
 
     def __init__(self):
         self.api = self

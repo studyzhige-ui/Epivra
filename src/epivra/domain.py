@@ -44,6 +44,18 @@ class RecoveryExhausted(RuntimeError):
     """Explicit provider rejections exhausted recovery for this control epoch."""
 
 
+class RequestNotSent(RuntimeError):
+    """The single-request transport established failure before sending."""
+
+
+class RecoveryBlocked(RuntimeError):
+    """A known failure requires a cause-related change before another send."""
+
+    def __init__(self, operation, diagnosis):
+        self.operation, self.diagnosis = operation, diagnosis
+        super().__init__(diagnosis["instruction"])
+
+
 class OwnershipError(RuntimeError):
     """Another host owns this database."""
 

@@ -11,8 +11,9 @@ from copy import deepcopy
 from typing import Any
 from urllib.parse import quote
 
-from .adapters import JsonAPI, ProviderFailure, encode_state, rate_limit_delay
+from .adapters import JsonAPI, ProviderFailure, encode_state
 from .domain import ContextCapacity, encode, identity
+from .recovery import repair_on_resume, retry_delay
 
 
 def _state(context):
@@ -30,21 +31,18 @@ def _result(observation):
 
 def _data(raw, provider):
     if raw.get("http_status") != 200:
-        raise ProviderFailure(provider, raw.get("http_status", 0))
+        raise ProviderFailure(provider, raw.get("http_status", 0), raw)
     if not isinstance(raw.get("data"), dict):
         raise ValueError("invalid native response JSON")
     return raw["data"]
 
 
 class _Native:
-    retry_delay = staticmethod(rate_limit_delay)
+    retry_delay = staticmethod(retry_delay)
 
     @staticmethod
     def retry_on_resume(raw):
-        return raw.get("http_status") in {401, 402, 403} or raw.get("error_kind") in {
-            "quota",
-            "authentication",
-        }
+        return repair_on_resume(raw)
 
     def __init__(self, api, model, max_tokens, context_tokens, stream, options):
         if stream:

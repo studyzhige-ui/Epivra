@@ -3,8 +3,9 @@
 import asyncio
 
 from .context import fit_read_result
-from .domain import Call, NotAllowed, identity
+from .domain import Call, NotAllowed, RecoveryBlocked, RecoveryExhausted, identity
 from .evidence import INDEX_VERSION, bm25, chunks, expanded_ranges, selection, window
+from .recovery import conditions, diagnose, repair_on_resume
 
 RUBRIC = "evidence-decisions-v1"
 
@@ -36,6 +37,11 @@ class EvidenceRuntime:
         except ValueError as exc:
             return {**base, "selection_error": str(exc),
                     "instruction": "Acquired originals remain available via read_source; selection did not succeed."}
+        except (RecoveryBlocked, RecoveryExhausted) as exc:
+            return {**base, "selection_error": str(exc),
+                    "diagnosis": exc.diagnosis if isinstance(exc, RecoveryBlocked) else {
+                        "cause": "recovery_exhausted", "action": "revise_method", "instruction": str(exc)},
+                    "instruction": "Acquired originals remain available via read_source; assess the selection failure before another request."}
         return compose(page)
 
     async def run(self, study, work, epoch, step, index, call, invoke, capacity, fits):
@@ -58,17 +64,28 @@ class EvidenceRuntime:
                        provider.api.authorization_identity, request)
         # Execution identity survives credential replacement; cache identity does not.
         operation = identity("evidence", step, index, RUBRIC, provider.identity, request)
+        recovery = {"request": identity(RUBRIC, provider.identity, request),
+                    "scope": identity("typesafe", provider.api.authorization_identity),
+                    "binding": provider.identity, "conditions": conditions(request)}
+        self.store.require_recovery(study, epoch, recovery, unknown_only=True)
         existing = self.store.matching(study, "evidence_judgment", {"request_key": key})
         if existing and self.store.operation_status(study, operation) is None:
             return existing[-1]
         acquisition = {"work": work.ref, "step": step, "operation": operation}
         answers = None
+        def decode(raw, acquisition):
+            diagnosis = diagnose(raw, provider="typesafe")
+            if diagnosis:
+                raise RecoveryBlocked(acquisition["operation"], diagnosis)
+            return provider.decode(raw, questions)
         if self.store.operation_status(study, operation) is None:
             for previous, raw in self.store.settled_research_operations(study, work.body["direction"], key):
-                try:
-                    answers = provider.decode(raw["value"], questions)
-                except (ValueError, KeyError, TypeError):
+                diagnosis = diagnose(raw["value"], provider="typesafe")
+                if (diagnosis and (diagnosis["action"] in {"wait", "retry"} or
+                    (diagnosis["scope"] in {"authorization", "access"}
+                     and epoch > self.store.admission_epoch(study, previous["operation"])))):
                     continue
+                answers = decode(raw["value"], previous)
                 acquisition = previous
                 break
         async def send():
@@ -78,9 +95,13 @@ class EvidenceRuntime:
                 study, work.ref, epoch, step, operation,
                 {"tool": "jev_decision", "wire": {"payload": request}},
                 send, lambda result, attempt: provider.retry_delay(result["value"], attempt),
-                resource="typesafe", research_key=key,
+                retry_on_resume=lambda result: repair_on_resume(result["value"], provider="typesafe"),
+                resource="typesafe", research_key=key, recovery=recovery,
             )
-            answers = provider.decode(raw["value"], questions)
+            attempts = self.store.matching(study, "retry", {"operation": operation})
+            if attempts:
+                acquisition["operation"] = attempts[-1].body["next"]
+            answers = decode(raw["value"], acquisition)
         key = self.store.operation_admission(study, acquisition["operation"]).get("research_key", key)
         with self.store.transaction():
             self.store.require_execution(study, work.ref, epoch, step)
