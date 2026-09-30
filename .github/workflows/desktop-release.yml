@@ -122,8 +122,9 @@ jobs:
                   raise RuntimeError(f"GitHub API failed: {endpoint}; {result.stderr}")
               return json.loads(result.stdout)
 
-          tagged = api("commits/" + tag)
-          assert tagged is None or tagged["sha"] == sha, "Existing version tag points to different source; use a new version"
+          tag_ref = api("git/ref/tags/" + tag)
+          tagged = api("commits/tags/" + tag) if tag_ref is not None else None
+          assert tag_ref is None or (tagged is not None and tagged["sha"] == sha), "Existing version tag points to different source; use a new version"
           existing = api("releases/tags/" + tag)
           assert existing is None or tagged is not None, "Existing release has no source tag"
           if existing:
