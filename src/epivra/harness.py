@@ -7,7 +7,7 @@ import math
 import re
 import time
 from collections.abc import Awaitable, Callable
-from contextlib import nullcontext
+from contextlib import AbstractAsyncContextManager, nullcontext
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -87,6 +87,7 @@ class Tool:
     research_fields: tuple[str, ...] = ()
     cache_research: bool = False
     research_authorization: Callable[[dict[str, Any]], str] | None = None
+    turn: Callable[[dict[str, Any], Callable[[], None]], AbstractAsyncContextManager] | None = None
 
     @property
     def binding(self) -> str:
@@ -1201,6 +1202,7 @@ class Harness:
         invoke_received=None,
         research_key=None,
         recovery=None,
+        execution_turn=None,
     ):
         runtime = getattr(self, "agent_runtime", None)
         phase = runtime.phase(study, work, "waiting_provider", resource) if runtime and request_step else nullcontext()
@@ -1234,7 +1236,10 @@ class Harness:
                     def check():
                         self.store.require_execution(study, work, epoch, step)
 
-                    turn = (lambda: runtime.turn(study, work, check)) if runtime and request_step else None
+                    turn = (
+                        (lambda: execution_turn(check)) if execution_turn else
+                        (lambda: runtime.turn(study, work, check)) if runtime and request_step else None
+                    )
                     async with self.scheduler.slot(
                         resource,
                         check,
@@ -1904,6 +1909,7 @@ class Harness:
                 invoke_received=received if tool.invoke_received else None,
                 research_key=request_key if tool.cache_research else None,
                 recovery=recovery,
+                execution_turn=(lambda check: tool.turn(call.arguments, check)) if tool.turn else None,
             )
         except (RecoveryBlocked, RecoveryExhausted) as exc:
             if isinstance(exc, RecoveryBlocked):

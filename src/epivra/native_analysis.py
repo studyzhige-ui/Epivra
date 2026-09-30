@@ -79,9 +79,16 @@ def regular(path):
 def measured(folder, maximum):
     total, count = 0, 0
     regular(folder)
+    if os.name == "nt":
+        from .sandbox_windows import reject_named_streams
+        # Directories, including the monitored root, can own NTFS data streams.
+        reject_named_streams(folder)
     for base, directories, files in os.walk(folder, followlinks=False):
         for name in directories + files:
-            info = regular(Path(base) / name)
+            path = Path(base) / name
+            info = regular(path)
+            if os.name == "nt":
+                reject_named_streams(path)
             count += 1
             total += info.st_size if stat.S_ISREG(info.st_mode) else 0
             if count > 1000 or total > maximum:
@@ -213,6 +220,7 @@ class NativeSandbox:
         files = []
         if status == "succeeded":
             measured(outputs, config["output_mb"] * 1024 * 1024)
+            measured(scratch, config["output_mb"] * 1024 * 1024)
             for path in sorted(outputs.rglob("*")):
                 info = regular(path)
                 if not stat.S_ISREG(info.st_mode):

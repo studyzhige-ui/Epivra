@@ -26,7 +26,13 @@ Desktop acceptance relocates the application, removes system Python from PATH,
 and checks launch, authentication, duplicate launch, parser subprocesses, Tk,
 shutdown and restart, using empty data and no provider keys.
 
-GitHub builds on windows-2022. Manual dispatch builds artifacts only; matching
-v0.3.x tags publish a release marked Latest after checks. Artifacts remain unsigned.
-Research-report quality is deferred. Full local regression suites stay outside
-Git tracking; runtime and desktop acceptance tools remain in the repository.
+GitHub builds on windows-2022. Manual dispatch builds artifacts only by default;
+explicitly selecting `publish` or pushing a matching v0.3.x tag publishes a release
+marked Latest after checks. Publication verifies the archive checksum and its
+clean source commit/version provenance. Artifacts remain unsigned.
+Existing release assets are never overwritten: a retry skips identical uploaded
+SHA-256 digests, may add missing files, and stops if existing bytes differ.
+
+Public offline regressions and desktop acceptance tools are tracked in the
+repository; see [development checks](../docs/DEVELOPMENT.md). Private evaluations
+and paid-provider research-quality checks are separate from release acceptance.

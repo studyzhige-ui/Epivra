@@ -127,7 +127,18 @@ jobs:
           existing = api("releases/tags/" + tag)
           assert existing is None or tagged is not None, "Existing release has no source tag"
           if existing:
-              subprocess.run(["gh", "release", "upload", tag, str(path), str(check), "--clobber", "--repo", repo], check=True)
+              assets = {item["name"]: item for item in existing.get("assets", [])}
+              pending = []
+              for artifact in (path, check):
+                  with artifact.open("rb") as stream:
+                      digest = "sha256:" + hashlib.file_digest(stream, "sha256").hexdigest()
+                  asset = assets.get(artifact.name)
+                  if asset is not None:
+                      assert asset.get("state") == "uploaded" and asset.get("digest") == digest, "Existing release asset differs; use a new version, never overwrite"
+                  else:
+                      pending.append(str(artifact))
+              if pending:
+                  subprocess.run(["gh", "release", "upload", tag, *pending, "--repo", repo], check=True)
               subprocess.run(["gh", "release", "edit", tag, "--latest", "--draft=false", "--prerelease=false", "--repo", repo], check=True)
           else:
               subprocess.run(["gh", "release", "create", tag, str(path), str(check), "--target", sha, "--latest", "--repo", repo,

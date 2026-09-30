@@ -113,8 +113,7 @@ class App:
                 ),
                 503,
             )
-        # A status error is a research blocker, not a failed read.
-        if result.get("error") and not (action == "status" and "control" in result):
+        if host.response_failed(action, result):
             messages = {
                 "Conflict": tr("研究状态已变化，请刷新并重新阅读策略后确认。"),
                 "NotAllowed": tr("当前状态不允许操作，请先暂停并等待在途工作结束。"),

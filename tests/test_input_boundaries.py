@@ -38,7 +38,11 @@ class WireStream(httpx.AsyncByteStream):
         self.closed = True
 
 
-COMPRESS = {"identity": lambda raw: raw, "gzip": gzip.compress, "deflate": zlib.compress}
+COMPRESS = {
+    "identity": lambda raw: raw,
+    "gzip": gzip.compress,
+    "deflate": zlib.compress,
+}
 
 
 class HTTPInputTests(unittest.IsolatedAsyncioTestCase):
@@ -54,10 +58,16 @@ class HTTPInputTests(unittest.IsolatedAsyncioTestCase):
             "iso-8859-1": "Résumé café source 42\n",
             "utf-16": "中文 original source café 42\n",
         }
-        with tempfile.TemporaryDirectory() as folder, closing(Store(Path(folder) / "research.db")) as store:
+        with (
+            tempfile.TemporaryDirectory() as folder,
+            closing(Store(Path(folder) / "research.db")) as store,
+        ):
             reader = direct_reader.DirectReader()
             tool = Tool(
-                "Read a source", {}, reader.extract, resource="http",
+                "Read a source",
+                {},
+                reader.extract,
+                resource="http",
                 observe=lambda raw, acquisition: reader.decode_extract(raw),
             )
             model = SimpleNamespace(context_tokens=4096, max_tokens=1024)
@@ -65,35 +75,63 @@ class HTTPInputTests(unittest.IsolatedAsyncioTestCase):
             for mime in ("text/plain", "text/markdown"):
                 for compression, compress in COMPRESS.items():
                     for charset, text in encodings.items():
-                        with self.subTest(mime=mime, compression=compression, charset=charset):
+                        with self.subTest(
+                            mime=mime, compression=compression, charset=charset
+                        ):
                             wire = compress(text.encode(charset))
                             stream = WireStream(wire)
                             requests, fallback_calls = [], []
 
                             def reply(request):
                                 requests.append(request)
-                                return httpx.Response(200, headers={
-                                    "Content-Type": f"{mime}; charset={charset}",
-                                    "Content-Encoding": compression,
-                                    "Content-Length": str(len(wire)),
-                                }, stream=stream)
+                                return httpx.Response(
+                                    200,
+                                    headers={
+                                        "Content-Type": f"{mime}; charset={charset}",
+                                        "Content-Encoding": compression,
+                                        "Content-Length": str(len(wire)),
+                                    },
+                                    stream=stream,
+                                )
 
                             def client(**kwargs):
-                                return client_type(transport=httpx.MockTransport(reply), **kwargs)
+                                return client_type(
+                                    transport=httpx.MockTransport(reply), **kwargs
+                                )
 
                             async def external(study, work, epoch, step, index, call):
                                 if call.arguments.get("provider") == "jina":
                                     fallback_calls.append(call)
-                                    return {"value": {"requested_url": url, "error": "unexpected_fallback"}}
+                                    return {
+                                        "value": {
+                                            "requested_url": url,
+                                            "error": "unexpected_fallback",
+                                        }
+                                    }
                                 return {"value": await reader.extract(call.arguments)}
 
                             with (
-                                patch.object(direct_reader.httpx, "AsyncClient", side_effect=client),
-                                patch.object(direct_reader, "public_address", AsyncMock(return_value=(address, target))),
-                                patch.object(harness, "_external", side_effect=external),
+                                patch.object(
+                                    direct_reader.httpx,
+                                    "AsyncClient",
+                                    side_effect=client,
+                                ),
+                                patch.object(
+                                    direct_reader,
+                                    "public_address",
+                                    AsyncMock(return_value=(address, target)),
+                                ),
+                                patch.object(
+                                    harness, "_external", side_effect=external
+                                ),
                             ):
                                 result, _ = await harness._acquired(
-                                    "study", "work", 0, "step", 0, Call("fetch_web", {"url": url})
+                                    "study",
+                                    "work",
+                                    0,
+                                    "step",
+                                    0,
+                                    Call("fetch_web", {"url": url}),
                                 )
                             self.assertEqual(fallback_calls, [])
                             self.assertEqual(result["failures"], [])
@@ -107,14 +145,31 @@ class HTTPInputTests(unittest.IsolatedAsyncioTestCase):
         client_type = httpx.AsyncClient
         url = "https://example.com/source"
         target = httpx.URL(url)
-        wire = gzip.compress('<html><title>标题</title><main><h1>正文</h1></main></html>'.encode())
+        wire = gzip.compress(
+            "<html><title>标题</title><main><h1>正文</h1></main></html>".encode()
+        )
         stream = WireStream(wire)
-        transport = httpx.MockTransport(lambda request: httpx.Response(200, headers={
-            "content-type": "text/html; charset=utf-8", "content-encoding": "gzip",
-        }, stream=stream))
+        transport = httpx.MockTransport(
+            lambda request: httpx.Response(
+                200,
+                headers={
+                    "content-type": "text/html; charset=utf-8",
+                    "content-encoding": "gzip",
+                },
+                stream=stream,
+            )
+        )
         with (
-            patch.object(direct_reader.httpx, "AsyncClient", side_effect=lambda **kw: client_type(transport=transport, **kw)),
-            patch.object(direct_reader, "public_address", AsyncMock(return_value=(target, target))),
+            patch.object(
+                direct_reader.httpx,
+                "AsyncClient",
+                side_effect=lambda **kw: client_type(transport=transport, **kw),
+            ),
+            patch.object(
+                direct_reader,
+                "public_address",
+                AsyncMock(return_value=(target, target)),
+            ),
         ):
             result = await direct_reader.DirectReader().extract({"url": url})
         self.assertEqual(result["text"], "# 正文")
@@ -125,11 +180,17 @@ class HTTPInputTests(unittest.IsolatedAsyncioTestCase):
         for compression, compress in COMPRESS.items():
             with self.subTest(compression=compression):
                 stream = WireStream(compress('{"text":"中文 café"}'.encode()))
-                transport = httpx.MockTransport(lambda request: httpx.Response(200, headers={
-                    "content-type": "application/json; charset=utf-8",
-                    "content-encoding": compression,
-                    "x-rate-limit-limit": "50",
-                }, stream=stream))
+                transport = httpx.MockTransport(
+                    lambda request: httpx.Response(
+                        200,
+                        headers={
+                            "content-type": "application/json; charset=utf-8",
+                            "content-encoding": compression,
+                            "x-rate-limit-limit": "50",
+                        },
+                        stream=stream,
+                    )
+                )
                 async with httpx.AsyncClient(transport=transport) as client:
                     api = JsonAPI("https://example.com", "", client)
                     result = await api.request("GET", "/source")
@@ -139,11 +200,15 @@ class HTTPInputTests(unittest.IsolatedAsyncioTestCase):
 
     def test_decoded_response_preserves_charset_status_and_safe_headers(self):
         raw = "café".encode("iso-8859-1")
-        original = httpx.Response(429, headers={
-            "content-type": "text/plain; charset=iso-8859-1",
-            "content-encoding": "gzip", "content-length": "999",
-            "retry-after": "10",
-        })
+        original = httpx.Response(
+            429,
+            headers={
+                "content-type": "text/plain; charset=iso-8859-1",
+                "content-encoding": "gzip",
+                "content-length": "999",
+                "retry-after": "10",
+            },
+        )
         decoded = decoded_response(original, raw)
         self.assertEqual(decoded.status_code, 429)
         self.assertEqual(decoded.text, "café")
@@ -161,7 +226,10 @@ class FileInputTests(unittest.TestCase):
 
     def test_empty_and_exact_limit_files_are_accepted(self):
         for raw in (b"", b"x" * 16):
-            with self.subTest(length=len(raw)), patch.object(materials, "MAX_INPUT_BYTES", 16):
+            with (
+                self.subTest(length=len(raw)),
+                patch.object(materials, "MAX_INPUT_BYTES", 16),
+            ):
                 self.path.write_bytes(raw)
                 self.assertEqual(materials.read_file(self.path), raw)
 
@@ -169,7 +237,9 @@ class FileInputTests(unittest.TestCase):
         with self.path.open("wb") as stream:
             stream.truncate(materials.MAX_INPUT_BYTES + 1)
         with patch.object(materials.os, "fdopen") as fdopen:
-            with self.assertRaisesRegex(ValueError, "material exceeds input byte limit"):
+            with self.assertRaisesRegex(
+                ValueError, "material exceeds input byte limit"
+            ):
                 materials.read_file(self.path)
         fdopen.assert_not_called()
 
@@ -204,7 +274,9 @@ class FileInputTests(unittest.TestCase):
             patch.object(materials.os, "fstat", side_effect=grow_after_stat),
             patch.object(materials.os, "fdopen", side_effect=tracked_open),
         ):
-            with self.assertRaisesRegex(ValueError, "material exceeds input byte limit"):
+            with self.assertRaisesRegex(
+                ValueError, "material exceeds input byte limit"
+            ):
                 materials.read_file(self.path)
         self.assertEqual(reads, [17])
 
@@ -229,7 +301,9 @@ class FileInputTests(unittest.TestCase):
             patch.object(materials, "MAX_INPUT_BYTES", 16),
             patch.object(materials.os, "fdopen", side_effect=growing_open),
         ):
-            with self.assertRaisesRegex(ValueError, "material exceeds input byte limit"):
+            with self.assertRaisesRegex(
+                ValueError, "material exceeds input byte limit"
+            ):
                 materials.read_file(self.path)
 
     def test_changed_file_under_limit_is_not_imported_as_a_mixed_snapshot(self):
@@ -271,19 +345,29 @@ class HostImportTests(unittest.IsolatedAsyncioTestCase):
         self.host = Host(self.root)
         self.addCleanup(self.host.store.close)
         control = self.host.store.create("study", "Test imports", {})
-        self.request = {"token": self.host.token, "study": "study", "expected": control.ref}
+        self.request = {
+            "token": self.host.token,
+            "study": "study",
+            "expected": control.ref,
+        }
 
     async def test_import_dispatch_rejects_sparse_file_before_read_or_parser(self):
         path = self.root / "oversized.txt"
         with path.open("wb") as stream:
             stream.truncate(materials.MAX_INPUT_BYTES + 1)
         with (
-            patch.object(Path, "read_bytes", side_effect=AssertionError("unbounded read")),
+            patch.object(
+                Path, "read_bytes", side_effect=AssertionError("unbounded read")
+            ),
             patch.object(materials.os, "fdopen") as fdopen,
             patch.object(Workspace, "upload_async", new_callable=AsyncMock) as upload,
         ):
-            with self.assertRaisesRegex(ValueError, "material exceeds input byte limit"):
-                await self.host.dispatch({**self.request, "action": "import_file", "path": str(path)})
+            with self.assertRaisesRegex(
+                ValueError, "material exceeds input byte limit"
+            ):
+                await self.host.dispatch(
+                    {**self.request, "action": "import_file", "path": str(path)}
+                )
         fdopen.assert_not_called()
         upload.assert_not_awaited()
 
@@ -291,8 +375,12 @@ class HostImportTests(unittest.IsolatedAsyncioTestCase):
         path = self.root / "原文.md"
         raw = "# 中文材料\n\nRésumé café\n".encode()
         path.write_bytes(raw)
-        with patch.object(Path, "read_bytes", side_effect=AssertionError("unbounded read")):
-            result = await self.host.dispatch({**self.request, "action": "import_file", "path": str(path)})
+        with patch.object(
+            Path, "read_bytes", side_effect=AssertionError("unbounded read")
+        ):
+            result = await self.host.dispatch(
+                {**self.request, "action": "import_file", "path": str(path)}
+            )
         source = self.host.store.get("study", result["source"])
         self.assertEqual(source.body["origin"], path.name)
         self.assertEqual(source.body["text"], raw.decode())
@@ -301,12 +389,20 @@ class HostImportTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_existing_base64_upload_api_does_not_read_local_file(self):
         raw = "上传材料".encode()
-        with patch("epivra.host.read_file", side_effect=AssertionError("unexpected local read")):
-            result = await self.host.dispatch({
-                **self.request, "action": "upload", "name": "upload.txt",
-                "data": base64.b64encode(raw).decode(),
-            })
-        self.assertEqual(self.host.store.get("study", result["source"]).body["text"], raw.decode())
+        with patch(
+            "epivra.host.read_file", side_effect=AssertionError("unexpected local read")
+        ):
+            result = await self.host.dispatch(
+                {
+                    **self.request,
+                    "action": "upload",
+                    "name": "upload.txt",
+                    "data": base64.b64encode(raw).decode(),
+                }
+            )
+        self.assertEqual(
+            self.host.store.get("study", result["source"]).body["text"], raw.decode()
+        )
 
 
 class CLIInputTests(unittest.TestCase):
@@ -321,7 +417,8 @@ class CLIInputTests(unittest.TestCase):
         output = io.StringIO()
         with (
             patch.object(sys, "argv", ["epivra", "--root", str(self.root), *arguments]),
-            patch.object(host, "send", sent), redirect_stdout(output),
+            patch.object(host, "send", sent),
+            redirect_stdout(output),
         ):
             try:
                 host.main()
@@ -336,7 +433,9 @@ class CLIInputTests(unittest.TestCase):
         for raw in (b"normal", b"x" * host.UPLOAD_INPUT_BYTES):
             with self.subTest(length=len(raw)):
                 self.path.write_bytes(raw)
-                with patch.object(Path, "read_bytes", side_effect=AssertionError("unbounded read")):
+                with patch.object(
+                    Path, "read_bytes", side_effect=AssertionError("unbounded read")
+                ):
                     sent, result = self.upload()
                 self.assertEqual(result, {"ok": True})
                 request = sent.call_args.args[1]
@@ -345,9 +444,11 @@ class CLIInputTests(unittest.TestCase):
 
     def test_cli_upload_rejects_sparse_oversize_before_read_or_send(self):
         with self.path.open("wb") as stream:
-            stream.truncate(4 * 1024**3)
+            stream.truncate(host.UPLOAD_INPUT_BYTES + 1)
         with (
-            patch.object(Path, "read_bytes", side_effect=AssertionError("unbounded read")),
+            patch.object(
+                Path, "read_bytes", side_effect=AssertionError("unbounded read")
+            ),
             patch.object(materials.os, "fdopen") as fdopen,
         ):
             sent, result = self.upload()
@@ -390,9 +491,19 @@ class CLIInputTests(unittest.TestCase):
         sent.assert_not_called()
 
     def test_cli_reconciliation_file_is_also_bounded(self):
-        arguments = ["reconcile", "study", "operation", "--expected", "control",
-                     "--receipt-id", "receipt", "--evidence", "offline receipt",
-                     "--response-file", str(self.path)]
+        arguments = [
+            "reconcile",
+            "study",
+            "operation",
+            "--expected",
+            "control",
+            "--receipt-id",
+            "receipt",
+            "--evidence",
+            "offline receipt",
+            "--response-file",
+            str(self.path),
+        ]
         self.path.write_text('{"text":"已收到"}', encoding="utf-8")
         sent, result = self.invoke(*arguments)
         self.assertEqual(result, {"ok": True})
@@ -414,9 +525,13 @@ class IPCRequestTests(unittest.IsolatedAsyncioTestCase):
             (root / ".epivra/host.json").write_text('{"port":1,"token":"fake"}')
             with (
                 patch.object(host, "IPC_REQUEST_BYTES", 100),
-                patch.object(host.asyncio, "open_connection", new_callable=AsyncMock) as connect,
+                patch.object(
+                    host.asyncio, "open_connection", new_callable=AsyncMock
+                ) as connect,
             ):
-                with self.assertRaisesRegex(ValueError, "request exceeds host IPC limit"):
+                with self.assertRaisesRegex(
+                    ValueError, "request exceeds host IPC limit"
+                ):
                     await host.send(root, {"action": "reconcile", "result": "中" * 30})
             connect.assert_not_awaited()
 

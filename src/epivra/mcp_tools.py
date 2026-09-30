@@ -47,6 +47,9 @@ def connect_tools(store, study, policy):
             async def received(args, receive, c=connection, d=definition, r=resource):
                 return await c.invoke(d, args, r, receive=receive)
 
+            def turn(args, check, c=connection, d=definition, r=resource):
+                return c.turn(d, args, r, check=check)
+
             def observe(
                 raw,
                 acquisition,
@@ -143,5 +146,6 @@ def connect_tools(store, study, policy):
                 invoke_received=received,
                 resource="mcp:" + server,
                 parallel_safe=False,
+                turn=turn,
             )
     return result, connections

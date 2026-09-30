@@ -40,6 +40,13 @@ IPC_REQUEST_BYTES = 4 * 1024 * 1024
 UPLOAD_INPUT_BYTES = 3 * 1024 * 1024 - 8192
 
 
+def response_failed(action: str, response: dict) -> bool:
+    """A status with control can describe blocked work; error-only reads failed."""
+    return bool(response.get("error")) and not (
+        action == "status" and "control" in response
+    )
+
+
 class Host:
     def __init__(self, root: Path, factory=None):
         self.root = root.resolve()
@@ -437,7 +444,7 @@ class Host:
 
             for client in self.clients.get(study, []):
                 if isinstance(client, MCPConnection):
-                    await client.close()
+                    await client.reset()
             return {"reloaded": True}
         if action == "control":
             result = self.store.command(
