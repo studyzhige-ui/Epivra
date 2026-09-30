@@ -54,6 +54,7 @@ class AgentRuntime:
 
     @asynccontextmanager
     async def turn(self, study, work, check):
+        check()
         key = (study, work)
         if key in self.active or key in self.pending:
             raise RuntimeError("work already owns an Agent turn")
@@ -62,7 +63,12 @@ class AgentRuntime:
         self.queues.setdefault(study, deque()).append((key, future))
         self._drain()
         try:
-            await future
+            # A queued request has not crossed durable admission. It must be
+            # able to withdraw even if another study's provider never returns.
+            # asyncio.wait does not cancel the shared future on timeout.
+            while not future.done():
+                check()
+                await asyncio.wait((future,), timeout=0.25)
             check()
             yield
         finally:

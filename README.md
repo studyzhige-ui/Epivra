@@ -101,12 +101,9 @@ See the [user guide](docs/USAGE.en.md) for configuration, materials, MCP, backup
 
 ```powershell
 python -m pip install -e ".[mcp]" ruff mypy build
-python tools/check_architecture.py
-ruff check src tools
-mypy
-python -m build --wheel
+python tools/check_source.py --wheel-dir dist
 ```
 
-These checks run without model or search API calls. Regression suites and evaluation materials are maintained locally and are not included in this repository. Desktop builds retain native application smoke checks.
+Requires Node.js 22+ for frontend checks. The public offline regression suite runs on pull requests, main, and desktop builds without model or search API calls. Private quality evaluations remain local. Desktop builds retain native application smoke checks. See [architecture and validation](docs/DEVELOPMENT.md).
 
 For analysis from source, first run `.venv/Scripts/python.exe tools/build_analysis_bundle.py`, then prepare the component in Settings. This developer build downloads pinned inputs and verifies the sandbox. Desktop users do not run it.

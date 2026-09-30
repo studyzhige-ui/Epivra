@@ -21,6 +21,16 @@ from .local_security import protect_if_present
 from .recovery import PARAMETERS, diagnose, repair_on_resume, retry_delay
 
 
+def decoded_response(response: httpx.Response, content: bytes) -> httpx.Response:
+    """Buffer bytes already decoded by httpx without applying wire encoding twice."""
+    headers = {
+        key: value
+        for key, value in response.headers.items()
+        if key.lower() not in {"content-encoding", "content-length"}
+    }
+    return httpx.Response(response.status_code, headers=headers, content=content)
+
+
 def _wire_json(value):
     """Decode received JSON into values the immutable receipt can preserve."""
     result = json.loads(value)
@@ -327,14 +337,7 @@ class JsonAPI:
         data = bytearray()
         async for chunk in self._chunks(response):
             data.extend(chunk)
-        headers = {
-            k: v
-            for k, v in response.headers.items()
-            if k.lower() not in {"content-encoding", "content-length"}
-        }
-        return httpx.Response(
-            response.status_code, headers=headers, content=bytes(data)
-        )
+        return decoded_response(response, bytes(data))
 
     async def _lines(self, response):
         pending = bytearray()

@@ -1,5 +1,6 @@
 name: Source validation
 on:
+  pull_request:
   push:
     branches: [main]
   workflow_dispatch:
@@ -10,17 +11,20 @@ concurrency:
   cancel-in-progress: true
 jobs:
   validate:
-    if: github.ref == 'refs/heads/main'
     runs-on: windows-2022
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.ref }}
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
           architecture: x64
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
       - name: Allocate isolated development check paths
         shell: python
         run: |
@@ -46,14 +50,7 @@ jobs:
           import os, subprocess
           from pathlib import Path
           p = os.environ['DEV_CHECK_PYTHON']
-          commands = [
-              [p, 'tools/check_architecture.py'],
-              [p, '-m', 'ruff', 'check', 'src', 'tools'],
-              [p, '-m', 'mypy'],
-              [p, '-m', 'build', '--wheel', '--outdir', str(Path(os.environ['DEV_CHECK_ROOT']) / 'wheels')],
-          ]
-          for command in commands:
-              subprocess.run(command, check=True)
+          subprocess.run([p, 'tools/check_source.py', '--wheel-dir', str(Path(os.environ['DEV_CHECK_ROOT']) / 'wheels')], check=True)
       - name: Remove only this validation environment
         if: always() && env.DEV_CHECK_ROOT != ''
         shell: python

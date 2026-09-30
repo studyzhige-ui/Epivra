@@ -10,7 +10,7 @@ import httpx
 from bs4 import BeautifulSoup
 from markdownify import MarkdownConverter
 
-from .adapters import JsonAPI, Tavily
+from .adapters import JsonAPI, Tavily, decoded_response
 from .recovery import retry_delay
 
 
@@ -109,7 +109,7 @@ class DirectReader:
                             except ValueError as exc:
                                 return {**raw, "error": str(exc)}
                         else:
-                            text = httpx.Response(200, headers=response.headers, content=bytes(body)).text.strip()
+                            text = decoded_response(response, bytes(body)).text.strip()
                             title = ""
                         if not text:
                             return {**raw, "error": "empty_page"}

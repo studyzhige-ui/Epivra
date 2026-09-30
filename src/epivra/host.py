@@ -17,6 +17,7 @@ from .application import online_service
 from .components import documents
 from .local_security import private_directory, protect, protect_if_present
 from .locale import LANGUAGES, configure, tr
+from .materials import read_file
 from .model_catalog import OFFICIAL_PROVIDERS
 from .models import freeze_model_settings
 from .native_analysis import NativeSandbox
@@ -382,7 +383,7 @@ class Host:
                 path = Path(request["path"]).expanduser().resolve(strict=True)
                 if not path.is_file():
                     raise ValueError("selected path is not a file")
-                name, raw = path.name, await asyncio.to_thread(path.read_bytes)
+                name, raw = path.name, await asyncio.to_thread(read_file, path)
             else:
                 name = request["name"]
                 raw = base64.b64decode(request["data"], validate=True)
