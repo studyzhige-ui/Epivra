@@ -59,7 +59,6 @@ class ResearchService:
             control_ref = control.ref
             try:
                 await self._drive(study)
-                return
             except Conflict:
                 c = self.store.control(study)
                 if c.paused or c.cancelled:
@@ -67,7 +66,13 @@ class ResearchService:
                 if c.ref == control_ref:
                     self.errors[study] = "Conflict"
                     return
-                await asyncio.sleep(0)
+            # _drive also absorbs ordinary provider/work failures. A control
+            # command accepted while that older turn was settling still owns
+            # the next epoch, regardless of how the old drive exited.
+            c = self.store.control(study)
+            if c.paused or c.cancelled or c.ref == control_ref:
+                return
+            await asyncio.sleep(0)
 
     async def _drive(self, study: str) -> None:
         active: dict[str, asyncio.Task] = {}

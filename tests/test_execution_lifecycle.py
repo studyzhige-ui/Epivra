@@ -6,6 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from epivra.agent_runtime import AgentRuntime
 from epivra.application import ResearchService
@@ -308,6 +309,76 @@ class AgentQueueTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(runtime.queues)
 
 
+class ProviderQueueTests(unittest.IsolatedAsyncioTestCase):
+    async def test_existing_waiter_precedes_repeated_fast_new_requests(self):
+        scheduler = Scheduler(capacity=1)
+        order = []
+
+        async def waiter():
+            async with scheduler.slot("shared", lambda: None):
+                order.append("waiting")
+
+        async with scheduler.slot("shared", lambda: None):
+            task = asyncio.create_task(waiter())
+            await until(lambda: scheduler.waiting.get("shared") == 1)
+        for _ in range(5):
+            async with scheduler.slot("shared", lambda: None):
+                order.append("new")
+                await asyncio.sleep(0)
+        await asyncio.wait_for(task, 1)
+        self.assertEqual(order, ["waiting", *(["new"] * 5)])
+        self.assertFalse(scheduler.queues["shared"])
+        self.assertEqual(scheduler.active["shared"], 0)
+        self.assertEqual(scheduler.waiting["shared"], 0)
+
+    async def test_cancelled_queue_head_does_not_block_next_waiter(self):
+        scheduler = Scheduler(capacity=1)
+        order = []
+
+        async def waiter(name):
+            async with scheduler.slot("shared", lambda: None):
+                order.append(name)
+
+        async with scheduler.slot("shared", lambda: None):
+            first = asyncio.create_task(waiter("cancelled"))
+            second = asyncio.create_task(waiter("waiting"))
+            await until(lambda: scheduler.waiting.get("shared") == 2)
+            first.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await first
+        async with scheduler.slot("shared", lambda: None):
+            order.append("new")
+        await asyncio.wait_for(second, 1)
+        self.assertEqual(order, ["waiting", "new"])
+        self.assertFalse(scheduler.queues["shared"])
+        self.assertEqual(scheduler.waiting["shared"], 0)
+
+    async def test_agent_wait_neither_reserves_nor_heads_provider_queue(self):
+        scheduler, runtime = Scheduler(capacity=1), AgentRuntime(1)
+
+        async def model():
+            async with scheduler.slot(
+                "shared", lambda: None,
+                turn=lambda: runtime.turn("queued", "model", lambda: None),
+            ):
+                self.fail("model should remain queued until cancelled")
+
+        async with runtime.turn("other", "slow-model", lambda: None):
+            task = asyncio.create_task(model())
+            await until(lambda: bool(runtime.pending))
+            async with asyncio.timeout(1):
+                async with scheduler.slot("shared", lambda: None):
+                    self.assertEqual(scheduler.active["shared"], 1)
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+        self.assertFalse(runtime.pending)
+        self.assertFalse(runtime.active)
+        self.assertFalse(scheduler.queues["shared"])
+        self.assertEqual(scheduler.active["shared"], 0)
+        self.assertEqual(scheduler.waiting["shared"], 0)
+
+
 class EpochHarness:
     def __init__(self, store, root, child):
         self.store, self.root, self.child = store, root, child
@@ -318,6 +389,7 @@ class EpochHarness:
         self.child_retried = asyncio.Event()
         self.root_calls = 0
         self.child_calls = 0
+        self.old_root_error = None
 
     def finished(self, *args):
         return False
@@ -340,6 +412,8 @@ class EpochHarness:
         if self.root_calls == 1:
             self.first_root.set()
             await self.release_old.wait()
+            if self.old_root_error is not None:
+                raise self.old_root_error
         else:
             self.second_root.set()
             await asyncio.Event().wait()
@@ -384,6 +458,31 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_resume_after_driver_stops_has_identical_recovery(self):
         await self.assert_resume(quick=False)
+
+    async def test_quick_resume_survives_old_root_non_conflict_failure(self):
+        self.harness.old_root_error = ValueError("old provider failed")
+        driver_waiting = asyncio.Event()
+        original_wait = asyncio.wait
+
+        async def observe_wait(futures, **kwargs):
+            # The failed child has been removed; only the old root and control
+            # wake remain. Fence this boundary without timing-based sleeps.
+            if len(futures) == 2 and self.child.ref in self.service.work_errors:
+                driver_waiting.set()
+            return await original_wait(futures, **kwargs)
+
+        with patch("epivra.application.asyncio.wait", observe_wait):
+            self.service.start("study")
+            await asyncio.wait_for(driver_waiting.wait(), 1)
+            self.harness.release_old.set()
+            control = self.store.command("study", "pause", self.control.ref, "pause")
+            self.store.command("study", "resume", control.ref, "resume")
+            self.service.start("study")
+            await asyncio.wait_for(self.harness.child_retried.wait(), 1)
+            await asyncio.wait_for(self.harness.second_root.wait(), 1)
+        self.assertEqual(self.harness.root_calls, 2)
+        self.assertEqual(self.harness.child_calls, 2)
+        self.assertNotIn("study", self.service.errors)
 
     async def test_duplicate_start_does_not_reset_same_epoch_errors(self):
         self.service.start("study")

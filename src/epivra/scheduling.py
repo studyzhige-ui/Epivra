@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections import deque
 from contextlib import asynccontextmanager, nullcontext
 
 
@@ -37,6 +38,8 @@ class Scheduler:
         self.active: dict[str, int] = {}
         self.waiting: dict[str, int] = {}
         self.spacing: dict[str, float] = {}
+        self.queues: dict[str, deque[object]] = {}
+        self.changed: dict[str, asyncio.Event] = {}
 
     def constrain(self, resource, interval):
         """Public service spacing, shared by every work using this scheduler."""
@@ -98,14 +101,38 @@ class Scheduler:
         """
         capacity = self.limits.get(resource, {}).get("concurrency", self.capacity)
         admitted = False
+        ticket = object()
+        queue = self.queues.setdefault(resource, deque())
+        changed = self.changed.setdefault(resource, asyncio.Event())
+        queued = False
         self.waiting[resource] = self.waiting.get(resource, 0) + 1
         try:
             while True:
                 check()
+                if not queued:
+                    queue.append(ticket)
+                    queued = True
+                    changed.set()
                 delay = self.rate_delay(resource, tokens)
-                if delay > 0 or self.active.get(resource, 0) >= capacity:
-                    await asyncio.sleep(min(0.25, delay) if delay > 0 else 0.25)
+                if (queue[0] is not ticket or delay > 0
+                        or self.active.get(resource, 0) >= capacity):
+                    # Tickets stop new/fast requests barging ahead of existing
+                    # provider waiters. Release notifications wake them promptly;
+                    # timeout checks still fence control and rolling-rate expiry.
+                    changed.clear()
+                    try:
+                        async with asyncio.timeout(
+                            min(0.25, delay) if delay > 0 else 0.25
+                        ):
+                            await changed.wait()
+                    except TimeoutError:
+                        pass
                     continue
+                # A turn wait must not reserve provider capacity or block its
+                # queue. If readiness is lost, rejoin after releasing the turn.
+                queue.popleft()
+                queued = False
+                changed.set()
                 async with turn() if turn else nullcontext():
                     check()
                     if (self.active.get(resource, 0) >= capacity
@@ -122,7 +149,11 @@ class Scheduler:
                         yield at
                     finally:
                         self.active[resource] -= 1
+                        changed.set()
                     return
         finally:
+            if queued:
+                queue.remove(ticket)
+                changed.set()
             if not admitted:
                 self.waiting[resource] -= 1

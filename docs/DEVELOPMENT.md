@@ -27,7 +27,9 @@ parallel runtime or relocating unrelated business logic.
 1. An accepted `resume` advances the durable control epoch. `start()` only ensures
    a driver exists. The driver clears disposable blockers once when it enters
    the new epoch, after all older executions settle. Fast pause/resume and a
-   restart after a settled pause therefore have the same recovery semantics.
+   restart after a settled pause therefore have the same recovery semantics. Every
+   settled driver exit rechecks accepted control, including ordinary old-epoch
+   failures, so an error cannot swallow a concurrent resume.
 2. Queued, unsent work is cancellable. Both provider waits and Agent waits check
    current authority at most every 250 ms while the event loop is responsive.
    Withdrawal removes queue entries and releases live resources without creating
@@ -36,7 +38,10 @@ parallel runtime or relocating unrelated business logic.
    needed, acquire it only after initial provider readiness, then recheck quota
    and concurrency. If readiness changed, release the Agent turn and wait again.
    No provider slot is held while waiting for an Agent, and no Agent turn is held
-   while waiting for rate capacity.
+   while waiting for rate capacity. FIFO provider tickets prevent new requests
+   from overtaking existing waiters; tickets are released before waiting for an
+   Agent turn, and release/cancellation notifications promptly wake the next
+   eligible waiter.
 4. Once both resources are ready, the event loop commits the rate/concurrency
    allowance without suspension. The Harness then persists admission and marks
    invocation before calling the adapter. Waiting time is never counted as a send.
