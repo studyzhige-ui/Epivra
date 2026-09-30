@@ -120,14 +120,18 @@ not establish model quality, live provider protocol compatibility, Windows LPAC
 behavior, or OS-specific release correctness. Native platform smoke checks and
 separately authorized provider evaluations remain necessary for those claims.
 
-Optional native-browser smoke (all API responses mocked, loopback assets only):
+Native-browser smoke (all API responses mocked, loopback assets only):
 
 ```sh
-npm install --no-save playwright
-EPIVRA_CHROMIUM=/absolute/path/to/chromium node tests/browser/lifecycle-smoke.cjs
+npm install --no-save playwright@1.62.1
+npx playwright install chromium
+node tests/browser/lifecycle-smoke.cjs
 ```
 
-On PowerShell, set `$env:EPIVRA_CHROMIUM` before the Node command. This optional
-check covers native Escape/modal behavior, actual disabled form controls, retained
-File inputs, partial-import retry and save dismissal. It is not part of the
-credential-free aggregate and requires a runtime allowed to launch Chromium.
+Set `EPIVRA_CHROMIUM` (or `$env:EPIVRA_CHROMIUM` in PowerShell) to use an existing
+Chromium executable instead. This check covers native Escape/modal behavior,
+actual disabled form controls, retained File inputs, partial-import retry and
+save dismissal. Source validation runs it in a separate read-only hosted Linux
+job against the same exact head commit. Browser dependencies and screenshots are
+kept outside the checkout; there are no provider calls or user credentials.
+Local execution requires a runtime allowed to launch Chromium.

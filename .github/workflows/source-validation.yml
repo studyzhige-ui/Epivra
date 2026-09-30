@@ -57,3 +57,32 @@ jobs:
         run: |
           import os, shutil
           shutil.rmtree(os.environ['DEV_CHECK_ROOT'], ignore_errors=True)
+
+  browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      NODE_PATH: ${{ runner.temp }}/epivra-browser/node_modules
+      PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/epivra-browsers
+      EPIVRA_BROWSER_ARTIFACTS: ${{ runner.temp }}/epivra-browser-artifacts
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.ref }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install pinned browser test tools outside the checkout
+        run: |
+          npm install --prefix "$RUNNER_TEMP/epivra-browser" --no-save --package-lock=false playwright@1.62.1
+          node "$RUNNER_TEMP/epivra-browser/node_modules/playwright/cli.js" install --with-deps chromium
+      - name: Verify native browser lifecycles with offline API fixtures
+        run: node tests/browser/lifecycle-smoke.cjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: browser-lifecycle
+          path: ${{ runner.temp }}/epivra-browser-artifacts/*.png
+          if-no-files-found: ignore
+          retention-days: 14

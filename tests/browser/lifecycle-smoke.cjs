@@ -1,5 +1,6 @@
 /* Optional real-browser check: npm install --no-save playwright, then
- * EPIVRA_CHROMIUM=/path/to/chromium node tests/browser/lifecycle-smoke.cjs
+ * npx playwright install chromium; node tests/browser/lifecycle-smoke.cjs
+ * Set EPIVRA_CHROMIUM to use an existing Chromium executable instead.
  * Serves the shipped web assets; every API is mocked on loopback. No providers.
  */
 const assert = require('node:assert/strict');
@@ -21,10 +22,10 @@ const server = http.createServer(async (req, res) => {
 });
 (async () => {
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
-  let browser;
+  let browser, page;
   try {
-    browser = await chromium.launch({headless:true, executablePath:process.env.EPIVRA_CHROMIUM || '/usr/bin/chromium', args:['--no-sandbox']});
-    const page = await browser.newPage();
+    browser = await chromium.launch({headless:true, executablePath:process.env.EPIVRA_CHROMIUM, args:['--no-sandbox']});
+    page = await browser.newPage();
     const errors = [], calls = [];
     page.on('pageerror', error => errors.push(error.message));
     const config = {defaults:{provider:'deepseek', model:'saved-model'},
@@ -146,6 +147,16 @@ const server = http.createServer(async (req, res) => {
     assert.equal(await page.locator('#settings-dialog').evaluate(el => el.open), false);
     assert.deepEqual(errors, []);
     console.log('Browser lifecycle smoke passed: Escape/stale settings, full creation locks, partial-import retry, retained draft/File inputs, save dismissal');
+    if (process.env.EPIVRA_BROWSER_ARTIFACTS) {
+      await fs.mkdir(process.env.EPIVRA_BROWSER_ARTIFACTS, {recursive:true});
+      await page.screenshot({path:path.join(process.env.EPIVRA_BROWSER_ARTIFACTS, 'lifecycle-passed.png'), fullPage:true});
+    }
+  } catch (error) {
+    if (page && process.env.EPIVRA_BROWSER_ARTIFACTS) {
+      await fs.mkdir(process.env.EPIVRA_BROWSER_ARTIFACTS, {recursive:true});
+      await page.screenshot({path:path.join(process.env.EPIVRA_BROWSER_ARTIFACTS, 'lifecycle-failed.png'), fullPage:true}).catch(() => {});
+    }
+    throw error;
   } finally {
     await browser?.close();
     await new Promise(resolve => server.close(resolve));
