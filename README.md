@@ -1,109 +1,67 @@
 <p align="center"><img src="src/epivra/web/favicon.svg" width="72" alt="Epivra" /></p>
 <h1 align="center">Epivra</h1>
-<p align="center">Autonomous research on your desktop</p>
+<p align="center">AI research workbench</p>
 <p align="center"><strong>English</strong> · <a href="README.zh-CN.md">简体中文</a></p>
+
+Epivra is a locally run AI research application. After you approve a research plan, it automatically gathers and analyzes information from public web sources or supplied documents, then writes and reviews a report with source citations.
+
+[User guide](docs/USAGE.en.md) · [Release notes](https://github.com/studyzhige-ui/Epivra/releases/tag/v0.3.5)
 
 ![Epivra workbench](docs/images/home-en.png)
 
-Epivra is a local research workbench that turns a question and authorized materials into a source-linked report. It combines public web research, local documents, optional data analysis, and external MCP tools. Web, terminal, and MCP interfaces share the same local research workspace.
+## Quick start
 
-## Download and open
+**Windows 10/11 x64 · v0.3.5** · [Download ZIP](https://github.com/studyzhige-ui/Epivra/releases/download/v0.3.5/Epivra-0.3.5-windows-x64.zip)
 
-**Desktop 0.3.5** — no separate Python, Git, Node.js or database installation.
+The desktop download requires no separate Python installation. Bring your own model provider API key.
 
-| Your computer | Download |
+1. Extract the complete ZIP and run **Epivra.exe**.
+2. In the browser, open **Connections & settings** and configure a model and any search services you need.
+3. Enter a question, select the source scope and approve the research plan. Read or export the report when it is ready.
+
+Closing the browser leaves research running. Use **Quit** in the Epivra control window to stop the application. The current Windows download is unsigned.
+
+## Capabilities
+
+| Capability | What it provides |
 |---|---|
-| Windows 10/11, x64 | [Download Windows ZIP](https://github.com/studyzhige-ui/Epivra/releases/download/v0.3.5/Epivra-0.3.5-windows-x64.zip) |
+| Research | Web search and research from local text, CSV/TSV, text-layer PDFs and XLSX files |
+| Source inspection | Source content and excerpts associated with report citations |
+| Task control | Progress, pause/resume, supplementary materials and changes in direction |
+| Data analysis | Optional Python calculations, statistics and charts |
+| Export | Markdown, Word and HTML; PDF through browser printing |
+| Connections | Configurable model/search providers and external MCP tools |
 
-1. **Windows:** extract the entire ZIP and double-click **Epivra.exe**.
-2. Your browser opens automatically. On first launch, choose a provider, enter your own API key, select a model and save.
-3. Enter a research question, select the material scope, generate the route and approve it.
+The interface supports English and Simplified Chinese. OCR is an optional download from Settings. The Python analysis component is included in the desktop ZIP and must be prepared and enabled in Settings.
 
-Next time, open Epivra again. Repeated launches reopen the existing workbench.
-Closing the browser keeps research running; use **Quit** in the Epivra control window to stop the background host.
+## Data and limitations
 
-These builds have **no Windows publisher certificate**; your OS may show an unknown-developer warning.
-[Release notes and SHA-256](https://github.com/studyzhige-ui/Epivra/releases/tag/v0.3.5) · [User guide](docs/USAGE.en.md)
+- Desktop research data and settings are stored locally, by default in `%LOCALAPPDATA%\Epivra`. Quit the application and back up this directory before upgrading.
+- Research calls the configured model, search and MCP services. Related questions and source text may be sent to those services; local execution does not mean offline processing.
+- Provider calls may incur charges. Epivra has no total research cost cap.
+- Reports undergo automated review, but their conclusions depend on the model and available sources. Check important conclusions against the cited material.
 
-This Windows x64 release includes built-in restricted Python analysis. Prepare it in Settings without Docker. OCR remains a separate optional download.
+## Run from source
 
-
-## Research workflow
-
-Describe the question, intended use, and material scope, then review and approve the initial research route. A research owner investigates the question, maintains findings and unresolved conflicts, prepares the writing basis, and revises a shared manuscript. It can investigate and write directly or delegate focused tasks to assistants when useful.
-
-Approval is required once. Research continues within that authorization without further approval requests; you can pause, cancel, add materials, or adjust direction through the workbench. A saved draft is not a published result. An independent reviewer must accept the current manuscript before publication, and changes to the manuscript require another review. Reports have no default word limit.
-
-Sources, excerpts, findings, reports, and recorded usage remain in the local workspace. Citation checks and independent review support inspection; they do not guarantee that conclusions are correct.
-
-## Interfaces and capabilities
-
-| Entry | Purpose |
-|---|---|
-| `epivra --lang en web` | Browser workbench: configure connections, manage research, inspect sources, and export reports |
-| `epivra --lang en` | Interactive terminal workbench |
-| `epivra --help` | JSON commands for local automation |
-| `epivra-mcp --root <absolute-workspace-path>` | MCP access for another client; requires the MCP extra and a running host |
-
-The Web interface switches between English and Simplified Chinese. Set the desired report language in the research request. Reports can be exported as Markdown, Word, or standalone HTML; PDF export uses the browser's print dialog.
-
-- **Model connections:** OpenAI, Claude, Gemini, Grok, DeepSeek, Qwen, Kimi, GLM, Doubao, MiniMax, Hunyuan, and ERNIE through official provider adapters. The default selection is DeepSeek / `deepseek-flash`; account availability varies.
-- **Search and reading:** Tavily, Exa, Brave, Perplexity, Bocha, and a key-free DuckDuckGo fallback. Network-enabled research can also use Crossref, PubMed, Europe PMC, and World Bank public data. Available original text is saved and relevant passages are delivered to the researcher. Missing page content is fetched directly, with Jina Reader as a fallback; no separate reader setup is required. Provider summaries remain discovery aids. Paid generated summaries and premium search upgrades are not enabled by default.
-- **Evidence selection:** local BM25 by default, with no extra API key or model download. Optional Jev uses your TypeSafe API key for semantic ranking and evidence screening.
-- **Materials:** text, CSV/TSV, text PDFs, and spreadsheets; the optional documents extra adds Docling parsing and OCR. Sources are accessed within the selected permissions.
-- **Analysis:** Python calculations, statistics and charts in the built-in Windows sandbox. OS-enforced restrictions cover network, file access, processes, memory and CPU. Timeouts and monitored output/scratch limits also apply.
-- **External MCP:** explicitly permitted tools and resources can be used by research assistants. Local-material mode disables built-in web research but may still use selected external MCP services.
-
-Provider calls may incur charges. Epivra does not impose a total research time, token, or cost budget. Recorded usage is not a billing statement.
-
-## Optional components
-
-Open **Optional features** in Connections & settings:
-
-- **OCR document parsing:** choose Install, select a location in the system folder picker, and wait for dependencies and models to download and validate. The component is installed under `Epivra-OCR` in the chosen folder; its location is remembered and shown in Settings. This enables scans, images and complex documents. Downloads can require several GB. Keep Epivra running; new studies use the prepared component automatically.
-- **Built-in Python analysis:** choose Prepare built-in Python analysis, wait for local extraction and verification, then enable it. The Windows download includes Python, NumPy, pandas, SciPy, statsmodels, scikit-learn and chart/Excel/Parquet support. No Docker or separate Python installation is needed.
-
-Enable either, both or neither. Settings show preparation progress and errors.
-
-## Run from source (developers)
-
-Requires Python 3.11+ and Git. In Windows PowerShell:
+Requires Python 3.11+ and Git. On Windows PowerShell:
 
 ```powershell
 git clone https://github.com/studyzhige-ui/Epivra.git
 cd Epivra
 python -m venv .venv
-.venv/Scripts/python.exe -m pip install ".[mcp]"
+.venv/Scripts/python.exe -m pip install -e ".[mcp]"
 .venv/Scripts/epivra-desktop.exe
 ```
 
-Use `epivra-desktop --root <absolute-path>` for an existing source workspace;
-data and keys are never silently migrated. [Build desktop releases](packaging/README.md).
-
-## Workspace and repository
-
-| Path | Contents |
-|---|---|
-| `src/epivra/` | Application code, Web assets, and interface translations |
-| `tools/` | Development checks and local diagnostics |
-| `packaging/analysis/` | Native runtime provenance, license and hash-locked scientific dependencies |
-| `models/` | Parsing-model instructions and manifest; weights stay local |
-| `docs/` | English and Chinese user guides and README images |
-| `.epivra/` | Private local research, imported materials, settings, and recovery records; excluded from Git |
-| `.env` | Local provider credentials; excluded from Git |
-| `mcp-servers.json` | Local MCP connections and permissions; excluded from Git |
-
-Desktop data lives in `%LOCALAPPDATA%\Epivra` on Windows. Open it from the control window. User files such as `.epivra/` and `.env` are inside this data folder, separate from the application. Quit Epivra and back up the complete data folder before replacing the app. Source CLI/Web commands still use the current workspace unless `--root` is specified. Saved responses are reused during recovery; calls with unknown outcomes are not automatically repeated. Studies created with incompatible runtime contracts remain available for inspection and export but cannot be silently resumed.
-
-See the [user guide](docs/USAGE.en.md) for configuration, materials, MCP, backups, and troubleshooting.
+Use `--root <absolute-path>` with the desktop command to open an existing workspace. Terminal and MCP configuration are covered in the [user guide](docs/USAGE.en.md). Source installations require a separate analysis component build; see [desktop build instructions](packaging/README.md).
 
 ## Development checks
 
+Requires Node.js 22+ in addition to the source environment above.
+
 ```powershell
-python -m pip install -e ".[mcp]" ruff mypy build
-python tools/check_source.py --wheel-dir dist
+.venv/Scripts/python.exe -m pip install ruff mypy build
+.venv/Scripts/python.exe tools/check_source.py --wheel-dir dist
 ```
 
-Requires Node.js 22+ to check the bundled JavaScript syntax. This command checks architecture constraints, Ruff, mypy and JavaScript syntax, and builds the wheel. GitHub runs the same source checks on pull requests, main and desktop builds without model or search API calls. Desktop builds also verify native analysis and application startup. Regression tests, evaluation materials and internal development documents stay local and are excluded from the public repository.
-
-For analysis from source, first run `.venv/Scripts/python.exe tools/build_analysis_bundle.py`, then prepare the component in Settings. This developer build downloads pinned inputs and verifies the sandbox. Desktop users do not run it.
+This checks the distributed source and builds a wheel. GitHub runs source checks on pull requests and main; desktop builds also verify native analysis and application startup. Regression tests, evaluation materials and internal development documents remain local.

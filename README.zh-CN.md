@@ -1,69 +1,47 @@
 <p align="center"><img src="src/epivra/web/favicon.svg" width="72" alt="Epivra" /></p>
 <h1 align="center">Epivra</h1>
-<p align="center">自主研究工作台 · 从问题到洞见</p>
+<p align="center">AI 研究工作台</p>
 <p align="center"><a href="README.md">English</a> · <strong>简体中文</strong></p>
+
+Epivra 是在本机运行的 AI 研究应用。确认研究路线后，它会自动从公开网页或用户提供的文档中搜集和分析资料，撰写并审阅带来源引用的报告。
+
+[使用说明](docs/USAGE.md) · [发布说明](https://github.com/studyzhige-ui/Epivra/releases/tag/v0.3.5)
 
 ![Epivra 中文工作台](docs/images/home-zh-CN.png)
 
-Epivra 是本地自主研究工作台，将问题与获授权的资料转化为附带来源引用的研究报告。它整合公开网络研究、本地文档、可选的数据分析和外部 MCP 工具。Web、终端与 MCP 接口共享同一个本地研究工作区。
+## 快速开始
 
-## 下载并打开
+**Windows 10/11 x64 · v0.3.5** · [下载 ZIP](https://github.com/studyzhige-ui/Epivra/releases/download/v0.3.5/Epivra-0.3.5-windows-x64.zip)
 
-**桌面版 0.3.5**：无需安装 Python、Git、Node.js 或数据库。
+桌面版无需另装 Python，需要自备模型供应商的 API Key。
 
-| 你的电脑 | 下载 |
+1. 完整解压 ZIP，运行 **Epivra.exe**。
+2. 在自动打开的浏览器中进入“连接与设置”，配置模型及所需的搜索服务。
+3. 输入问题、选择资料范围，确认研究路线后开始。完成后在工作台阅读或导出报告。
+
+关闭浏览器后研究继续运行；通过 Epivra 控制窗口的“退出”停止程序。当前 Windows 下载包未签名。
+
+## 主要能力
+
+| 能力 | 内容 |
 |---|---|
-| Windows 10/11，x64 | [下载 Windows ZIP](https://github.com/studyzhige-ui/Epivra/releases/download/v0.3.5/Epivra-0.3.5-windows-x64.zip) |
+| 资料研究 | 联网检索，或基于本地文本、CSV/TSV、文本型 PDF、XLSX 文件开展研究 |
+| 来源核查 | 查看报告引用关联的来源内容与摘录 |
+| 任务管理 | 查看进度、暂停与继续、补充资料或调整方向 |
+| 数据分析 | 可选的 Python 计算、统计与绘图 |
+| 成果导出 | Markdown、Word、HTML；PDF 通过浏览器打印 |
+| 连接扩展 | 配置模型与搜索供应商，接入外部 MCP 工具 |
 
-1. **Windows**：完整解压 ZIP，双击其中的 **Epivra.exe**。不要在压缩包内直接运行。
-2. 浏览器会自动打开。首次进入“连接与设置”，选择供应商，填入自己的 API Key，选择模型并保存。
-3. 输入研究问题、选择资料范围、生成路线，确认后开始研究。
+界面支持简体中文和英文。OCR 可在设置中按需下载安装；Python 分析组件随桌面 ZIP 提供，需要在设置中准备并启用。
 
-以后只需再次打开 Epivra。重复打开会复用已有工作台。关闭浏览器后研究继续；需要停止后台程序时，在 Epivra 控制窗口点击“退出”。
+## 数据与使用边界
 
-当前包**未取得 Windows 发布者签名**，系统可能提示未知开发者。[发布说明与 SHA-256](https://github.com/studyzhige-ui/Epivra/releases/tag/v0.3.5) · [详细使用说明](docs/USAGE.md)
+- 桌面版的研究数据和设置默认保存在 `%LOCALAPPDATA%\Epivra`。升级前退出程序并备份该目录。
+- 研究会调用所配置的模型、搜索和 MCP 服务，相关问题和资料内容可能发送给这些服务。本地运行不代表离线处理。
+- 供应商调用可能收费，Epivra 不设置研究总费用上限。
+- 报告经过自动审阅，但结论仍受模型和资料质量影响，关键判断需结合引用来源核查。
 
-Windows x64 版本包含受限 Python 分析，可在设置中准备并启用，无需 Docker。OCR 仍独立按需下载。
-
-
-## 研究方式
-
-描述问题、用途与资料范围，阅读并批准初始研究路线。研究负责人调查问题，维护发现和待解冲突，整理写作依据，并持续修订共享稿件。负责人可以直接调查和写作，也可以按需将具体任务交给助手。
-
-研究只需初次批准，之后在已授权范围内自主推进，不再要求重复审批。你可以通过工作台暂停、取消、补充资料或调整方向。保存草稿不等于发布结果：当前稿件必须经过独立审稿者认可才能发布，修改后的稿件需要重新审阅。报告没有默认字数上限。
-
-来源、摘录、研究发现、报告和已记录用量保存在本地工作区。引用检查和独立审阅便于核查，但不保证研究结论正确。
-
-## 入口与能力
-
-| 入口 | 用途 |
-|---|---|
-| `epivra --lang zh-CN web` | 浏览器工作台：配置连接、管理研究、核查来源、导出报告 |
-| `epivra --lang zh-CN` | 交互式终端工作台 |
-| `epivra --help` | 用于本地自动化的 JSON 命令 |
-| `epivra-mcp --root <工作区绝对路径>` | 向其他客户端提供 MCP 接口；需要 MCP 扩展和已运行的宿主 |
-
-Web 界面可切换简体中文与英文。报告语言请在研究需求中指定。报告可导出为 Markdown、Word 或独立 HTML；PDF 通过浏览器打印对话框导出。
-
-- **模型连接：**通过官方供应商适配器连接 OpenAI、Claude、Gemini、Grok、DeepSeek、Qwen、Kimi、GLM、Doubao、MiniMax、Hunyuan 和 ERNIE。默认选择 DeepSeek / `deepseek-flash`，实际可用性取决于账户。
-- **搜索与阅读：**支持 Tavily、Exa、Brave、Perplexity、Bocha 和无需密钥的 DuckDuckGo 回退。允许联网的研究还可使用 Crossref、PubMed、Europe PMC 和 World Bank 公共数据。取得的原文会保存，并筛选相关段落交给研究员；需要补读网页时直接获取正文，失败后使用 Jina Reader，无需单独配置读取服务。供应商摘要用于发现资料，不作为原文证据。默认不启用另收费的生成式摘要或高级搜索。
-- **资料筛查：**默认使用本地 BM25，无需额外密钥或下载模型。可选 Jev，使用自己的 TypeSafe API Key 进行语义排序与证据筛查。
-- **资料：**支持文本、CSV/TSV、文本 PDF 和电子表格；可选的文档扩展提供 Docling 解析与 OCR。资料访问遵守所选授权范围。
-- **分析：**Python 计算、统计与绘图在 Windows 内置沙盒运行，保留操作系统级禁网、文件权限、进程/内存/CPU 限制与超时。输出和临时文件大小采用监控限制，并非硬磁盘配额。
-- **外部 MCP：**研究助手可使用明确授权的工具和资源。仅本地资料模式关闭内建网络研究，但仍可使用所选外部 MCP 服务。
-
-供应商调用可能收费。Epivra 不设置研究总时长、token 或费用预算；记录的用量不是账单。
-
-## 可选组件
-
-打开“连接与设置”中的“可选功能”：
-
-- **OCR 文档解析**：点击安装，在系统文件夹选择窗口中选择位置，再等待依赖与模型下载、验证完成。组件存入所选目录的 `Epivra-OCR` 子目录，位置自动记住并在设置中显示。适用于扫描件、图片和复杂文档。下载可能需要数 GB；安装期间保持 Epivra 运行。完成后新研究自动使用组件，无需手填模型路径。
-- **内置 Python 分析**：点击“准备内置 Python 分析”，等待本地解包与校验，然后勾选启用。新版 Windows 包随附 Python、NumPy、pandas、SciPy、statsmodels、scikit-learn，以及绘图、Excel/Parquet 支持。无需 Docker 或自行安装 Python。
-
-两项可以任意组合；分析环境已随安装包提供，OCR 仅在安装时下载。准备进度和失败原因显示在设置中。
-
-## 从源码运行（开发者）
+## 从源码运行
 
 需要 Python 3.11+ 和 Git。Windows PowerShell：
 
@@ -71,37 +49,19 @@ Web 界面可切换简体中文与英文。报告语言请在研究需求中指�
 git clone https://github.com/studyzhige-ui/Epivra.git
 cd Epivra
 python -m venv .venv
-.venv/Scripts/python.exe -m pip install ".[mcp]"
+.venv/Scripts/python.exe -m pip install -e ".[mcp]"
 .venv/Scripts/epivra-desktop.exe
 ```
 
-已有源码工作区可用 `epivra-desktop --root <绝对路径>` 打开，不会自动搬迁资料或密钥。
-[发行构建说明](packaging/README.md)。
-
-## 工作区与仓库结构
-
-| 路径 | 内容 |
-|---|---|
-| `src/epivra/` | 应用代码、Web 资源和界面翻译 |
-| `tools/` | 开发检查与本地诊断工具 |
-| `packaging/analysis/` | 内置分析环境的来源、许可证与固定依赖 |
-| `models/` | 解析模型说明及清单；模型权重保留在本地 |
-| `docs/` | 中英文使用说明及 README 图片 |
-| `.epivra/` | 本地私有研究、导入资料、设置及恢复记录；不纳入 Git |
-| `.env` | 本地供应商凭据；不纳入 Git |
-| `mcp-servers.json` | 本地 MCP 连接与权限；不纳入 Git |
-
-桌面版的数据位于 Windows 的 `%LOCALAPPDATA%\Epivra` ，可从控制窗口打开。表中的 `.epivra/`、`.env` 等用户文件在该数据目录内。程序与数据独立，升级前退出 Epivra 并备份整个数据目录，再替换程序文件。源码 CLI/Web 默认仍使用当前工作目录，可明确指定 `--root`。恢复时复用已保存响应；结果未知的调用不会自动重发。运行合同不兼容的研究仍可查阅和导出，但不能隐式恢复执行。
-
-配置、资料、MCP、备份与故障排查见[使用说明](docs/USAGE.md)。
+在桌面启动命令后添加 `--root <绝对路径>` 可打开已有工作区。终端与 MCP 配置见[使用说明](docs/USAGE.md)。源码安装需另行构建分析组件，步骤见[发行构建说明](packaging/README.md)。
 
 ## 开发检查
 
+在上述源码环境中，还需安装 Node.js 22+。
+
 ```powershell
-python -m pip install -e ".[mcp]" ruff mypy build
-python tools/check_source.py --wheel-dir dist
+.venv/Scripts/python.exe -m pip install ruff mypy build
+.venv/Scripts/python.exe tools/check_source.py --wheel-dir dist
 ```
 
-检查内置 JavaScript 语法需要 Node.js 22+。此命令检查架构约束、Ruff、mypy 和 JavaScript 语法，并构建 wheel。GitHub 在 PR、main 和桌面构建中执行相同的源码检查，不调用模型或搜索 API；桌面构建还验证原生分析与应用启动。回归测试、评测资料和内部开发文档保留在本地，不纳入公开仓库。
-
-源码开发者如需数据分析，先运行 `.venv/Scripts/python.exe tools/build_analysis_bundle.py`，再在设置中准备。构建下载固定版本工具链与依赖；桌面包用户无需执行。
+此命令检查公开源码并构建 wheel。GitHub 在 PR 和 main 上执行源码检查，桌面构建还验证原生分析与应用启动。回归测试、评测资料与内部开发文档仅在本地保留。
