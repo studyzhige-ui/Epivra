@@ -1,4 +1,4 @@
-"""Run the same credential-free source checks locally, on PRs and at release."""
+"""Check distributed source locally, on PRs and at release; tests stay local."""
 
 from __future__ import annotations
 
@@ -16,16 +16,14 @@ def main() -> None:
     python = sys.executable
     commands = [
         [python, "tools/check_architecture.py"],
-        [python, "-m", "ruff", "check", "src", "tools", "tests"],
+        [python, "-m", "ruff", "check", "src", "tools"],
         [python, "-m", "mypy"],
-        [python, "-m", "unittest", "discover", "-s", "tests", "-v"],
         *[["node", "--check", str(path.relative_to(root))]
           for path in sorted((root / "src/epivra/web").glob("*.js"))],
-        ["node", "--test", *[str(path.relative_to(root))
-                            for path in sorted((root / "tests/frontend").glob("*.test.cjs"))]],
     ]
     if args.wheel_dir:
         commands.append([python, "-m", "build", "--wheel", "--outdir", str(args.wheel_dir.resolve())])
+    print("Public source checks; private regression tests are run separately.", flush=True)
     for command in commands:
         print("+ " + " ".join(command), flush=True)
         subprocess.run(command, cwd=root, check=True)

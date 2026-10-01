@@ -102,6 +102,6 @@ python -m pip install -e ".[mcp]" ruff mypy build
 python tools/check_source.py --wheel-dir dist
 ```
 
-前端检查需要 Node.js 22+。公开的离线行为回归会在 PR、main 和桌面构建中执行，不调用模型或搜索 API；私有质量评测资料仍保留在本地。桌面构建保留原生应用启动验证。参见[职责边界与验证说明](docs/DEVELOPMENT.md)。
+检查内置 JavaScript 语法需要 Node.js 22+。此命令检查架构约束、Ruff、mypy 和 JavaScript 语法，并构建 wheel。GitHub 在 PR、main 和桌面构建中执行相同的源码检查，不调用模型或搜索 API；桌面构建还验证原生分析与应用启动。回归测试、评测资料和内部开发文档保留在本地，不纳入公开仓库。
 
 源码开发者如需数据分析，先运行 `.venv/Scripts/python.exe tools/build_analysis_bundle.py`，再在设置中准备。构建下载固定版本工具链与依赖；桌面包用户无需执行。

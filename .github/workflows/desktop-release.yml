@@ -60,7 +60,7 @@ jobs:
               with open("pyproject.toml", "rb") as f:
                   version = tomllib.load(f)["project"]["version"]
               assert os.environ["GITHUB_REF_NAME"] == "v" + version
-      - name: Validate source and offline behavior
+      - name: Validate distributed source
         run: python tools/check_source.py
       - name: Build and verify built-in analysis
         run: python tools/build_analysis_bundle.py

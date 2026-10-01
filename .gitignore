@@ -30,7 +30,6 @@ analysis-settings.json
 /docs/*
 !/docs/USAGE.md
 !/docs/USAGE.en.md
-!/docs/DEVELOPMENT.md
 !/docs/images/
 /docs/images/*
 !/docs/images/home-en.png
@@ -46,9 +45,10 @@ analysis-settings.json
 
 .epivra-components/
 
-# Private evaluation assets remain local; deterministic regressions are public.
+# Development tests and evaluation assets remain local.
 /eval/
 /test/
+/tests/
 /tools/dev_check.py
 
 # Private institution connector; excluded from public releases.

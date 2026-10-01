@@ -12,7 +12,7 @@
 - 补齐英文界面的资料检索、恢复提示和 Jev 原文外发说明。
 - 外部 MCP 的排队、连接准备与工具定义刷新均移到发送准入之前；暂停或取消后，不会继续发送尚未开始的读写调用，已经发送但结果未知的调用仍禁止自动重放。
 - 统一终端、网页与 MCP 的状态错误处理；其他客户端删除当前研究后，终端不会再因缺少控制版本而崩溃。
-- 补充后端、前端和真实 Chromium 回归测试，并明确研究生命周期、发送准入、输入边界和界面状态的模块职责。
+- 加强研究生命周期、发送准入、输入边界和界面状态的后端、前端及真实 Chromium 回归验证。
 
 ## 使用与升级
 
@@ -34,7 +34,7 @@ Windows 10/11 x64。内置受限 Python 数据分析，无需 Docker 或单独�
 - Complete the English evidence-retrieval, recovery and Jev data-sharing notices.
 - Move external MCP queuing, session setup and tool-definition refresh before send admission. Pause/cancel withdraws unsent reads/writes; dispatched unknown outcomes remain protected from automatic replay.
 - Share status-error handling across terminal, web and MCP interfaces, preventing terminal failure when another client deletes the selected study.
-- Add backend, frontend and real Chromium regressions, with documented ownership of lifecycle, admission, input and interface state.
+- Strengthen backend, frontend and real Chromium regression validation for lifecycle, admission, input and interface state.
 
 Quit the old app and back up its data before upgrading. Extract the complete ZIP and open Epivra.exe. Version 0.3.5 preserves the 0.3.4 data and runtime contract; unfinished studies using incompatible older contracts still require a new study, while historical reports remain readable and exportable.
 

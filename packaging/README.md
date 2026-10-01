@@ -33,6 +33,9 @@ clean source commit/version provenance. Artifacts remain unsigned.
 Existing release assets are never overwritten: a retry skips identical uploaded
 SHA-256 digests, may add missing files, and stops if existing bytes differ.
 
-Public offline regressions and desktop acceptance tools are tracked in the
-repository; see [development checks](../docs/DEVELOPMENT.md). Private evaluations
-and paid-provider research-quality checks are separate from release acceptance.
+Public source checks and desktop acceptance tools are tracked in the repository;
+see [development checks](../README.md#development-checks). Regression tests,
+evaluation materials and internal development documents stay local. GitHub checks
+the distributed source and verifies native analysis and the relocated application;
+local regressions and paid-provider research-quality checks remain separate
+validation requirements.

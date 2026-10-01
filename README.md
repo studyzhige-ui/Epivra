@@ -104,6 +104,6 @@ python -m pip install -e ".[mcp]" ruff mypy build
 python tools/check_source.py --wheel-dir dist
 ```
 
-Requires Node.js 22+ for frontend checks. The public offline regression suite runs on pull requests, main, and desktop builds without model or search API calls. Private quality evaluations remain local. Desktop builds retain native application smoke checks. See [architecture and validation](docs/DEVELOPMENT.md).
+Requires Node.js 22+ to check the bundled JavaScript syntax. This command checks architecture constraints, Ruff, mypy and JavaScript syntax, and builds the wheel. GitHub runs the same source checks on pull requests, main and desktop builds without model or search API calls. Desktop builds also verify native analysis and application startup. Regression tests, evaluation materials and internal development documents stay local and are excluded from the public repository.
 
 For analysis from source, first run `.venv/Scripts/python.exe tools/build_analysis_bundle.py`, then prepare the component in Settings. This developer build downloads pinned inputs and verifies the sandbox. Desktop users do not run it.
