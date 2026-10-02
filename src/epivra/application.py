@@ -496,7 +496,9 @@ def online_service(
                 "Only tavily supports include_domains/exclude_domains and YYYY-MM-DD start_date/end_date "
                 "(publication or update date); other providers reject these fields. "
                 if not reading
-                else "Read a public URL into a citable source; identical successful reads reuse this direction's snapshot unless force_refresh; refresh when newly acquired data is required. "
+                else "Acquire a public URL into a citable source only for missing original content, necessary additional context, or fresh acquisition. "
+                "Use read_source to read or expand an already available local source; coverage distinguishes excerpts from complete pages. "
+                "Identical successful acquisitions reuse this direction's snapshot unless force_refresh; refresh when newly acquired data is required. "
             )
             + ("Direct HTTP extraction falls back to Jina when usable text is unavailable."
                if reading and names[0] == "http"

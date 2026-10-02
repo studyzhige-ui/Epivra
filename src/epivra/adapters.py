@@ -16,6 +16,7 @@ from typing import Any
 
 import httpx
 
+from .context import ordered_state, project_history
 from .domain import ContextCapacity, RequestNotSent, encode, identity
 from .local_security import protect_if_present
 from .recovery import PARAMETERS, diagnose, repair_on_resume, retry_delay
@@ -42,17 +43,7 @@ def _wire_json(value):
 
 def encode_state(state):
     """Canonical values with a stable contract prefix before changing runtime data."""
-    first = (
-        "role",
-        "direction_ref",
-        "direction",
-        "task",
-        "shared_context",
-        "deliverable",
-        "work_ref",
-    )
-    keys = [k for k in first if k in state] + sorted(set(state) - set(first))
-    return "{" + ",".join(encode(k) + ":" + encode(state[k]) for k in keys) + "}"
+    return ordered_state(state)
 
 
 DEFAULT_MODEL = "deepseek-flash"
@@ -456,7 +447,7 @@ class ChatCompletions:
         state = {
             k: v
             for k, v in context.items()
-            if k not in {"system", "tools", "tool_versions", "provider"}
+            if k not in {"system", "tools", "tool_versions", "provider", "protected_refs"}
         }
         current = {"role": "user", "content": encode_state(state)}
         messages = [{"role": "system", "content": context["system"]}, current]
@@ -555,7 +546,7 @@ class ChatCompletions:
                             )
                     current = {
                         "role": "user",
-                        "content": encode(
+                        "content": encode_state(
                             {
                                 **{
                                     key: value
@@ -585,6 +576,18 @@ class ChatCompletions:
         estimated = self._input_tokens(
             payload, previous if mode == "continued" else None
         )
+        lifecycle = {"stage": mode, "cleared_refs": [], "bytes_before": len(encode(payload).encode("utf-8"))}
+        compaction_input = None
+        if mode == "continued" and estimated + self.max_tokens > self.context_tokens:
+            protected = {o["_ref"] for o in previous["observations"]}
+            protected.update(context.get("protected_refs", []))
+            protected.update(i["ref"] for i in state.get("inputs", []))
+            payload, public, cleared = project_history(payload, protected=protected, clear=True)
+            # A modified prefix cannot reuse the old response's measured usage.
+            estimated = self._input_tokens(payload, None)
+            lifecycle.update(stage="tool_result_clearing", cleared_refs=cleared)
+            if estimated + self.max_tokens > self.context_tokens:
+                compaction_input = public
         if estimated + self.max_tokens > self.context_tokens:
             payload["messages"] = [
                 {"role": "system", "content": context["system"]},
@@ -592,12 +595,15 @@ class ChatCompletions:
             ]
             mode = "rebuilt"
             estimated = self._input_tokens(payload, None)
+            lifecycle["stage"] = "capacity_compaction" if compaction_input is not None else "rebuild"
         if estimated + self.max_tokens > self.context_tokens:
             raise ContextCapacity("essential context exceeds provider window")
         return {
             "payload": payload,
             "window_mode": mode,
             "estimated_input_tokens": estimated,
+            "context_lifecycle": {**lifecycle, "bytes_after": len(encode(payload).encode("utf-8"))},
+            **({"compaction_input": compaction_input} if compaction_input is not None else {}),
         }
 
     @staticmethod

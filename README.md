@@ -5,13 +5,13 @@
 
 Epivra is a locally run AI research application. After you approve a research plan, it automatically gathers and analyzes information from public web sources or supplied documents, then writes and reviews a report with source citations.
 
-[User guide](docs/USAGE.en.md) · [Release notes](https://github.com/studyzhige-ui/Epivra/releases/tag/v0.3.5)
+[User guide](docs/USAGE.en.md) · [Release notes](https://github.com/studyzhige-ui/Epivra/releases/tag/v0.3.6)
 
 ![Epivra workbench](docs/images/home-en.png)
 
 ## Quick start
 
-**Windows 10/11 x64 · v0.3.5** · [Download ZIP](https://github.com/studyzhige-ui/Epivra/releases/download/v0.3.5/Epivra-0.3.5-windows-x64.zip)
+**Windows 10/11 x64 · v0.3.6** · [Download ZIP](https://github.com/studyzhige-ui/Epivra/releases/download/v0.3.6/Epivra-0.3.6-windows-x64.zip)
 
 The desktop download requires no separate Python installation. Bring your own model provider API key.
 
