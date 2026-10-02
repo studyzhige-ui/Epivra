@@ -12,6 +12,7 @@ from typing import Any
 from urllib.parse import quote
 
 from .adapters import JsonAPI, ProviderFailure, encode_state
+from .context import project_history
 from .domain import ContextCapacity, encode, identity
 from .recovery import repair_on_resume, retry_delay
 
@@ -20,7 +21,7 @@ def _state(context):
     return {
         k: v
         for k, v in context.items()
-        if k not in {"system", "tools", "tool_versions", "provider"}
+        if k not in {"system", "tools", "tool_versions", "provider", "protected_refs"}
     }
 
 
@@ -139,6 +140,17 @@ class _Native:
                         payload[self.history_key][len(old[self.history_key]) :]
                     ).encode("utf-8")
                 )
+        lifecycle = {"stage": mode, "cleared_refs": [], "bytes_before": len(encode(payload).encode("utf-8"))}
+        compaction_input = None
+        if mode == "continued" and estimated + self.max_tokens > self.context_tokens:
+            protected = {o["_ref"] for o in previous["observations"]}
+            protected.update(context.get("protected_refs", []))
+            protected.update(i["ref"] for i in state.get("inputs", []))
+            payload, public, cleared = project_history(payload, protected=protected, clear=True)
+            estimated = len(encode(payload).encode("utf-8"))
+            lifecycle.update(stage="tool_result_clearing", cleared_refs=cleared)
+            if estimated + self.max_tokens > self.context_tokens:
+                compaction_input = public
         if estimated + self.max_tokens > self.context_tokens:
             # Every requested tool has a paired receipt above. A new public-state
             # conversation may now replace the whole exchange; never carry an
@@ -146,12 +158,15 @@ class _Native:
             payload = self._payload(context, state)
             estimated = len(encode(payload).encode("utf-8"))
             mode = "rebuilt"
+            lifecycle["stage"] = "capacity_compaction" if compaction_input is not None else "rebuild"
         if estimated + self.max_tokens > self.context_tokens:
             raise ContextCapacity("essential context exceeds provider window")
         return {
             "payload": payload,
             "window_mode": mode,
             "estimated_input_tokens": estimated,
+            "context_lifecycle": {**lifecycle, "bytes_after": len(encode(payload).encode("utf-8"))},
+            **({"compaction_input": compaction_input} if compaction_input is not None else {}),
         }
 
     @staticmethod

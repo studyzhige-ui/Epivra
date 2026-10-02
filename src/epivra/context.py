@@ -2,12 +2,135 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from copy import deepcopy
 from typing import Any
 
 from .domain import Artifact, ContextCapacity, encode
 from .evidence import delivered
+
+
+def ordered_state(state):
+    """Stable contract first, working state next, actual incoming context last."""
+    fields = (
+        "role", "direction_ref", "direction", "task", "shared_context", "deliverable", "work_ref",
+        "phase", "prompt_version", "work_generation", "research_scope", "current_date",
+        "memory", "context_window", "inbox", "input_revisions", "pinned_evidence",
+        "authoring", "draft", "writing_basis", "review_progress",
+    )
+    keys = [k for k in fields if k in state]
+    keys.extend(sorted(set(state) - set(fields) - {"context"}))
+    if "context" in state:
+        keys.append("context")
+    return "{" + ",".join(encode(k) + ":" + encode(state[k]) for k in keys) + "}"
+
+
+def project_history(payload, *, protected=(), clear=False):
+    """Project only our public JSON envelopes; never inspect assistant reasoning.
+
+    Tool IDs, message grouping and signed native blocks are unchanged. Clearing
+    is a model view, not artifact deletion or a claim that a body was delivered.
+    """
+    result = deepcopy(payload)
+    protected = set(protected)
+    cleared = []
+
+    def project(value):
+        if not isinstance(value, dict):
+            return value
+        ref = value.get("observation_ref")
+        if clear and isinstance(ref, str) and ref not in protected and "result" in value:
+            cleared.append(ref)
+            return {"observation_ref": ref, "body_omitted": True,
+                    "instruction": "Read the original observation with read_artifact_range."}
+        entries = value.get("context")
+        if clear and isinstance(entries, list):
+            entries = list(entries)
+            for i, entry in enumerate(entries):
+                if (isinstance(entry, dict) and entry.get("kind") == "observation"
+                        and isinstance(entry.get("ref"), str) and entry["ref"] not in protected
+                        and "body" in entry):
+                    cleared.append(entry["ref"])
+                    entries[i] = {"ref": entry["ref"], "kind": "observation", "body_omitted": True,
+                                  "characters": len(encode(entry["body"]))}
+            value = {**value, "context": entries}
+        return value
+
+    def text_value(value):
+        try:
+            parsed = json.loads(value)
+        except (ValueError, TypeError):
+            return value
+        replacement = project(parsed)
+        return ordered_state(replacement) if replacement != parsed else value
+
+    def public_value(value):
+        if isinstance(value, dict) and "context" in value and "observation_ref" not in value:
+            # The compaction request supplies current contracts/shared state.
+            # Repeated historical snapshots consume space and are not authority.
+            return {key: value[key] for key in ("memory", "inbox", "context") if key in value}
+        return value
+
+    history = result.get("messages", result.get("contents", []))
+    public = []
+    for message in history:
+        role = message.get("role")
+        if role == "system":
+            continue
+        if role in {"assistant", "model"}:
+            # Only visible prose and tool arguments; no thinking/signature fields.
+            content = message.get("content")
+            parts = message.get("parts", content if isinstance(content, list) else [])
+            visible = []
+            if isinstance(content, str) and content:
+                visible.append({"text": content})
+            for part in parts:
+                if part.get("thought") or part.get("type") in {"thinking", "redacted_thinking"}:
+                    continue
+                if part.get("type") == "text" or "text" in part:
+                    visible.append({"text": part["text"]})
+                elif part.get("type") == "tool_use":
+                    visible.append({"name": part["name"], "arguments": part["input"]})
+                elif "functionCall" in part:
+                    call = part["functionCall"]
+                    visible.append({"name": call["name"], "arguments": call.get("args", {})})
+            for call in message.get("tool_calls", []):
+                visible.append({"name": call["function"]["name"], "arguments": call["function"]["arguments"]})
+            if visible:
+                public.append({"role": "assistant", "content": visible})
+            continue
+        if role not in {"user", "tool"}:
+            continue
+        content = message.get("content")
+        values = []
+        if isinstance(content, str):
+            message["content"] = text_value(content)
+            try:
+                values.append(public_value(json.loads(message["content"])))
+            except (ValueError, TypeError):
+                values.append(content)
+        else:
+            for part in message.get("parts", content or []):
+                if "functionResponse" in part:
+                    response = part["functionResponse"]
+                    response["response"] = project(response["response"])
+                    values.append(response["response"])
+                elif part.get("type") == "tool_result":
+                    part["content"] = text_value(part["content"])
+                    try:
+                        values.append(public_value(json.loads(part["content"])))
+                    except (ValueError, TypeError):
+                        values.append(part["content"])
+                elif "text" in part:
+                    part["text"] = text_value(part["text"])
+                    try:
+                        values.append(public_value(json.loads(part["text"])))
+                    except (ValueError, TypeError):
+                        values.append(part["text"])
+        if values:
+            public.append({"role": role, "content": values})
+    return result, public, list(dict.fromkeys(cleared))
 
 
 def page(items: list, offset: int, limit: int, capacity: int) -> dict:

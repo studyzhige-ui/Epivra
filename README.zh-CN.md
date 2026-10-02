@@ -5,13 +5,13 @@
 
 Epivra 是在本机运行的 AI 研究应用。确认研究路线后，它会自动从公开网页或用户提供的文档中搜集和分析资料，撰写并审阅带来源引用的报告。
 
-[使用说明](docs/USAGE.md) · [发布说明](https://github.com/studyzhige-ui/Epivra/releases/tag/v0.3.5)
+[使用说明](docs/USAGE.md) · [发布说明](https://github.com/studyzhige-ui/Epivra/releases/tag/v0.3.6)
 
 ![Epivra 中文工作台](docs/images/home-zh-CN.png)
 
 ## 快速开始
 
-**Windows 10/11 x64 · v0.3.5** · [下载 ZIP](https://github.com/studyzhige-ui/Epivra/releases/download/v0.3.5/Epivra-0.3.5-windows-x64.zip)
+**Windows 10/11 x64 · v0.3.6** · [下载 ZIP](https://github.com/studyzhige-ui/Epivra/releases/download/v0.3.6/Epivra-0.3.6-windows-x64.zip)
 
 桌面版无需另装 Python，需要自备模型供应商的 API Key。
 

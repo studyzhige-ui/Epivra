@@ -12,7 +12,7 @@ MCP tool names, parameters, and protocol states remain stable; descriptions use 
 
 ## 1. Download, open, and quit
 
-Desktop downloads include Python and require no Git, Node.js, or database installation. Choose a package from the [GitHub Release](https://github.com/studyzhige-ui/Epivra/releases/tag/v0.3.5):
+Desktop downloads include Python and require no Git, Node.js, or database installation. Choose a package from the [GitHub Release](https://github.com/studyzhige-ui/Epivra/releases/tag/v0.3.6):
 
 | Platform | Steps |
 |---|---|
@@ -185,6 +185,8 @@ Installation and research roots may differ. Specify `--root` to avoid creating s
 ### Long tasks and recovery
 
 Growing directories and large materials enter the model window through bounded pages, with the original request and current approved scope retained first. Memory and evidence anchors are checked against the full context allowance before saving. Oversized working sets from older versions retain their originals and expose references for paged recovery. Retrievable material is not proof that the model has read or understood it.
+
+When long-running work approaches its model window, Epivra saves a progress summary as needed and continues, retaining original sources and canonical research records. Summaries use the configured model for that task and may incur model charges; they do not replace sources or guarantee retention of every detail. After pause, restart or interrupt/continue, settled summary responses are reused first.
 
 Pause or redirect stops new calls from the previous control epoch; already sent requests still need to settle. Recovery reuses saved responses. Unknown outcomes block automatic resubmission: resolve the reported issue before resuming instead of creating a duplicate study. Incompatible model or tool contracts may prevent continuing old work; back up the workspace before upgrading.
 

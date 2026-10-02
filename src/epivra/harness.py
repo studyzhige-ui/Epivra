@@ -42,7 +42,14 @@ from .domain import (
 )
 from .evidence import delivered, window
 from .evidence_runtime import EvidenceRuntime
-from .prompts import PROMPT_VERSION, ROLES, ROUTE_PROMPT, TOOLS, WRITING_GUIDES
+from .prompts import (
+    COMPACT_PROMPT,
+    PROMPT_VERSION,
+    TOOLS,
+    WRITING_GUIDES,
+    system_prompt,
+    tool_description,
+)
 from .recovery import conditions, diagnose, protocol_failure
 from .research import DISPOSITIONS, RESEARCH_KINDS, STATUSES, ResearchLedger
 from .review import report_metrics, text_metrics, units
@@ -658,7 +665,7 @@ class Harness:
             "snapshot_local",
         }
         result: dict[str, dict[str, Any]] = {
-            name: {"description": TOOLS.get(name, name), "parameters": schema}
+            name: {"description": tool_description(name, role), "parameters": schema}
             for name, (allowed, schema) in BUILTINS.items()
             if allowed in (role, "all")
             or (research and (name in shared_research or allowed == "research"))
@@ -678,12 +685,12 @@ class Harness:
             result.pop("prepare_writing", None)
         elif role == "writer":
             original = BUILTINS["prepare_writing"][1]
-            result["prepare_writing"] = {"description": TOOLS["prepare_writing"], "parameters": {
+            result["prepare_writing"] = {"description": tool_description("prepare_writing", role), "parameters": {
                 **original, "properties": {k: v for k, v in original["properties"].items() if k != "updates"}}}
         if role == "reviewer" and policy.get("_review_mode") == "check":
             result.pop("submit_review")
             result["finish_work"] = {
-                "description": TOOLS["finish_work"],
+                "description": tool_description("finish_work", role),
                 "parameters": BUILTINS["finish_work"][1],
             }
         if policy.get("evidence_provider") != "jev":
@@ -878,13 +885,14 @@ class Harness:
         knowledge = self.research.snapshot(study)
         focused = work.body["role"] in {"investigator", "synthesizer"}
         related = self._focused_research_refs(study, work) if focused else set()
+        tools = self._schema(work.body["role"], {
+            **direction.body["policy"], "_approved": control.approved,
+            "_review_mode": work.body.get("review_mode", "final"),
+        })
         mandatory = {
             "provider": model.identity,
-            "system": (
-                ROUTE_PROMPT
-                if work.body["role"] == "lead" and not control.approved
-                else ROLES[work.body["role"]]
-            ),
+            "system": system_prompt(work.body["role"], control.approved,
+                                    work.body.get("review_mode", "final"), tools),
             "prompt_version": PROMPT_VERSION,
             "phase": "research" if control.approved else "route_approval",
             "context_scope": "assigned_research_dependencies" if focused else "current_writing_basis",
@@ -941,14 +949,7 @@ class Harness:
             "pinned_evidence": pins_override
             if pins_override is not None
             else (anchors[-1].body["refs"] if anchors else []),
-            "tools": self._schema(
-                work.body["role"],
-                {
-                    **direction.body["policy"],
-                    "_approved": control.approved,
-                    "_review_mode": work.body.get("review_mode", "final"),
-                },
-            ),
+            "tools": tools,
             "tool_versions": {name: tool.binding for name, tool in self.tools.items()},
         }
         if not mandatory["inbox"]:
@@ -964,7 +965,24 @@ class Harness:
                 "total_units": len(parts),
                 "inputs": self._relations(study, report),
             }
-        candidates = self._steps(study, "observation", work.ref, limit=64)
+        memories = self._steps(study, "memory", work.ref, limit=1)
+        active_memory = memory_override if memory_override is not None else (memories[-1] if memories else None)
+        checkpoint_memory = active_memory if isinstance(active_memory, Artifact) else (memories[-1] if memories else None)
+        checkpoint = checkpoint_memory.body.get("checkpoint") if checkpoint_memory else None
+        keep_refs = set(self._handoff_inputs(study, work))
+        if isinstance(active_memory, Artifact):
+            keep_refs.update(active_memory.body.get("refs", []))
+        if checkpoint_memory and checkpoint:
+            mandatory["context_window"] = {"memory_ref": checkpoint_memory.ref, **checkpoint}
+
+        def uncovered(item):
+            return not checkpoint or item.seq > checkpoint["through_seq"] or item.ref in keep_refs
+
+        candidates = [a for a in self._steps(study, "observation", work.ref, limit=64) if uncovered(a)]
+        candidates.extend(
+            item for ref in keep_refs
+            if (item := self.store.get(study, ref)).kind in {"note", "observation"}
+        )
         # Readiness and canonical findings arrive as original artifacts. The
         # editor sees the exact basis used by its bound report, not a new summary.
         basis_ref = (
@@ -986,7 +1004,7 @@ class Harness:
 
         if work.body["role"] == "reviewer":
             candidates.append(report)
-        candidates.extend(self._steps(study, "note", work.ref, limit=64))
+        candidates.extend(a for a in self._steps(study, "note", work.ref, limit=64) if uncovered(a))
         if plan is not None and direction.ref in plan.parents:
             candidates.append(plan)
         if focused:
@@ -1062,12 +1080,6 @@ class Harness:
             if section not in directories:
                 raise ValueError("context section unavailable to this work")
             return page(directories[section], offset, limit, capacity // 3)
-        memories = self._steps(study, "memory", work.ref, limit=1)
-        active_memory = (
-            memory_override
-            if memory_override is not None
-            else (memories[-1] if memories else None)
-        )
         revision_refs = list(self._handoff_inputs(study, work))
         if isinstance(active_memory, Artifact):
             revision_refs.extend(active_memory.body.get("refs", []))
@@ -1087,9 +1099,12 @@ class Harness:
                 mandatory[key] = []
         # Reserve the complete task and memory before allocating any growing directory.
         steps = self._steps(study, "step", work.ref, limit=1)
+        input_step = steps[-1].ref if steps else None
+        if steps and steps[-1].body["request"].get("phase") == "context_compaction":
+            input_step = self._context_input_step(study, steps[-1]).ref
         pending = [
-            a for a in (self.store.related(study, "observation", steps[-1].ref) if steps else [])
-            if a.body.get("step") == steps[-1].ref
+            a for a in (self.store.related(study, "observation", input_step) if input_step else [])
+            if a.body.get("step") == input_step
             and (a.body.get("tool") in READ_TOOLS or delivered(a.body.get("result")))
             and "error" not in a.body.get("result", {})
         ]
@@ -1153,6 +1168,7 @@ class Harness:
             direct_refs=[item["ref"] for item in directories["inputs"]],
             priority_refs=priority_refs,
         )
+        request["protected_refs"] = sorted(keep_refs | priority_refs)
         prepare = getattr(model, "prepare", None)
         if prepare:
             request = fit_provider(request, prepare, priority_refs=priority_refs)
@@ -1161,8 +1177,13 @@ class Harness:
             previous = None
             steps = self._steps(study, "step", work.ref, limit=1)
             if steps:
-                last = steps[-1]
-                if "wire" in last.body["request"]:
+                last: Artifact | None = steps[-1]
+                if last and last.body["request"].get("phase") == "context_compaction":
+                    if checkpoint and checkpoint.get("step") == last.ref:
+                        last = None  # Committed checkpoint starts a fresh research window.
+                    else:
+                        last = self._context_input_step(study, last)
+                if last and "wire" in last.body["request"]:
                     previous = {
                         "request": last.body["request"]["wire"]["payload"],
                         "response": self._result(
@@ -1177,6 +1198,97 @@ class Harness:
                         previous = None
             request["wire"] = prepare(request, previous)
         return request
+
+    def _context_input_step(self, study, step):
+        while step.body["request"].get("phase") == "context_compaction":
+            step = self.store.get(study, step.body["request"]["compaction"]["input_step"])
+        return step
+
+    def _compaction_request(self, study, work, request):
+        """Use the ordinary model step/receipt path, with one memory action."""
+        model = self._model_for(work)
+        steps = self._steps(study, "step", work.ref, limit=1)
+        last = steps[-1]
+        if last.body["request"].get("phase") == "context_compaction":
+            old = last.body["request"]
+            receipt_step = old["compaction"].get("receipt_step", last.ref)
+            if self._result(study, identity("model", work.ref, receipt_step)) is None:
+                raise ContextCapacity("previous compaction has no settled receipt; old window retained")
+            if (any(old[key] != request[key] for key in ("provider", "direction_ref", "task", "work_ref"))
+                    or old["tools"]["save_memory"]["parameters"] != request["tools"]["save_memory"]["parameters"]
+                    or old["compaction"]["input_snapshot"] != identity("compaction-input", old["history"])):
+                raise ContextCapacity("previous compaction contract changed; settled response retained")
+            # Explicit continuation creates a new adoption under the current
+            # execution generation. The old paid request/response remain frozen;
+            # new inbox messages are received by the next real research request.
+            compact = deepcopy(old)
+            compact.pop("work_generation", None)
+            if "work_generation" in request:
+                compact["work_generation"] = request["work_generation"]
+            compact["compaction"]["receipt_step"] = receipt_step
+            compact["wire"]["context_lifecycle"]["stage"] = "summary_replay"
+            return compact
+        records = [*self._steps(study, "observation", work.ref), *self._steps(study, "note", work.ref)]
+        memories = self._steps(study, "memory", work.ref, limit=1)
+        compact = {k: v for k, v in request.items() if k != "wire"}
+        compact.update(
+            system=COMPACT_PROMPT,
+            phase="context_compaction",
+            context=[],
+            history=request["wire"]["compaction_input"],
+            tools={"save_memory": request["tools"]["save_memory"]},
+            compaction={
+                "input_step": self._context_input_step(study, last).ref,
+                "through_seq": max((a.seq for a in records), default=steps[-1].seq),
+                "predecessor": memories[-1].ref if memories else None,
+                "input_snapshot": identity("compaction-input", request["wire"]["compaction_input"]),
+            },
+        )
+        prepare = getattr(model, "prepare")
+        compact = fit_provider(compact, prepare)
+        compact["wire"] = prepare(compact, None)
+        compact["wire"]["context_lifecycle"]["stage"] = "summary_compaction"
+        return compact
+
+    def _complete_compaction(self, study, work, epoch, step, reply):
+        schema = step.body["request"]["tools"]
+        if len(reply.calls) != 1 or reply.calls[0].name != "save_memory":
+            raise ContextCapacity("compaction requires one save_memory action; settled response retained")
+        call = reply.calls[0]
+        try:
+            self._validate_call(call, schema)
+            if not call.arguments["text"].strip():
+                raise ValueError("empty checkpoint")
+            for ref in call.arguments["refs"]:
+                if self._read_denial(study, self.store.get(study, ref).kind):
+                    raise ValueError("checkpoint references an unreadable record")
+            body = self._memory_body(study, work, step.ref, call.arguments)
+        except ValueError as exc:
+            raise ContextCapacity("compaction checkpoint could not be adopted; settled response retained") from exc
+        with self.store.transaction():
+            self.store.require_execution(study, work.ref, epoch, step.ref)
+            memory = self.store._put(study, "memory", body, (work.ref, step.ref, *call.arguments["refs"]))
+            self.store._put(study, "observation",
+                {"step": step.ref, "index": 0, "tool": "save_memory", "result": {"ref": memory.ref},
+                 "failure": None, "direction": work.body["direction"]}, (work.ref, step.ref))
+            self.store._put(study, "step_done", {"step": step.ref, "failure": None}, (work.ref, step.ref))
+        return "continue"
+
+    def _memory_body(self, study, work, step, args):
+        current = self._steps(study, "memory", work.ref, limit=1)
+        checkpoint = current[-1].body.get("checkpoint") if current else None
+        compaction = self.store.get(study, step).body["request"].get("compaction")
+        if compaction:
+            checkpoint = {**compaction, "step": step}
+        body = {**args, "producer": work.ref, **({"checkpoint": checkpoint} if checkpoint else {})}
+        prospective = Artifact(identity("memory-preview", args), study, "memory", body, (work.ref, step), 0)
+        try:
+            self._request(study, work, memory_override=prospective, prepare_wire=False)
+        except ContextCapacity as exc:
+            raise ValueError(
+                "memory update exceeds remaining task context; shorten it or keep details in notes; previous memory retained"
+            ) from exc
+        return body
 
     def _attempt(self, study: str, operation: str):
         retries = self.store.matching(study, "retry", {"operation": operation}, limit=1)
@@ -1439,6 +1551,11 @@ class Harness:
                     and steps[0].body["request"]["provider"] != model.identity
                 ):
                     raise NotAllowed("work is bound to its original model")
+                request = self._request(study, work)
+                unadopted_summary = (steps and steps[-1].body["request"].get("phase") == "context_compaction"
+                                     and request.get("context_window", {}).get("step") != steps[-1].ref)
+                if "compaction_input" in request.get("wire", {}) or unadopted_summary:
+                    request = self._compaction_request(study, work, request)
                 step = self.store.put(
                     study,
                     "step",
@@ -1447,7 +1564,7 @@ class Harness:
                         "epoch": control.epoch,
                         "progress": self._progress(study),
                         "message_watermark": self._message_watermark(study, work_ref),
-                        "request": self._request(study, work),
+                        "request": request,
                     },
                     (work_ref,),
                 )
@@ -1469,27 +1586,33 @@ class Harness:
                 },
             )
             if any(
-                current_schema.get(name) != spec
+                name not in current_schema or current_schema[name]["parameters"] != spec["parameters"]
                 for name, spec in step.body["request"]["tools"].items()
             ):
                 raise NotAllowed("pending work requires its original tool contracts")
-            raw = await self._invoke(
-                study,
-                work_ref,
-                control.epoch,
-                step.ref,
-                operation,
-                step.body["request"],
-                lambda: model.complete(step.body["request"]),
-                getattr(model, "retry_delay", None),
-                getattr(model, "retry_on_resume", None),
-                getattr(
-                    model,
-                    "quota_resource",
-                    getattr(model, "resource", "model"),
-                ),
-                request_step=step.ref,
-            )
+            receipt_step = step.body["request"].get("compaction", {}).get("receipt_step")
+            if receipt_step:
+                raw = self._result(study, identity("model", work_ref, receipt_step))
+                if raw is None:
+                    raise ContextCapacity("compaction replay requires its original settled response")
+            else:
+                raw = await self._invoke(
+                    study,
+                    work_ref,
+                    control.epoch,
+                    step.ref,
+                    operation,
+                    step.body["request"],
+                    lambda: model.complete(step.body["request"]),
+                    getattr(model, "retry_delay", None),
+                    getattr(model, "retry_on_resume", None),
+                    getattr(
+                        model,
+                        "quota_resource",
+                        getattr(model, "resource", "model"),
+                    ),
+                    request_step=step.ref,
+                )
             # Always save the external result; only then check the admission fence.
             self.store.require_execution(study, work_ref, control.epoch, step.ref)
             try:
@@ -1502,6 +1625,8 @@ class Harness:
                         "into smaller batches; do not repeat the whole response."
                     )
             except (KeyError, TypeError, ValueError) as exc:
+                if step.body["request"].get("phase") == "context_compaction":
+                    raise ContextCapacity("compaction response incomplete or invalid; settled response retained") from exc
                 self.store.observation(
                     study,
                     work_ref,
@@ -1514,6 +1639,8 @@ class Harness:
                 )
                 self._done(study, work_ref, step.ref, identity("protocol", str(exc)))
                 return "continue"
+            if step.body["request"].get("phase") == "context_compaction":
+                return self._complete_compaction(study, work, control.epoch, step, reply)
             schema = step.body["request"]["tools"]
             prefetched: set[int] = set()
             prefetch_errors = {}
@@ -2227,26 +2354,11 @@ class Harness:
             )
             return {"ref": item.ref}
         if call.name == "save_memory":
-            prospective = Artifact(
-                identity("memory-preview", args),
-                study,
-                "memory",
-                {**args, "producer": work.ref},
-                parents,
-                0,
-            )
-            try:
-                self._request(
-                    study, work, memory_override=prospective, prepare_wire=False
-                )
-            except ValueError as exc:
-                raise ValueError(
-                    "memory update exceeds remaining task context; shorten it or keep details in notes; previous memory retained"
-                ) from exc
+            body = self._memory_body(study, work, step, args)
             item = self.store.put(
                 study,
                 "memory",
-                {**args, "producer": work.ref},
+                body,
                 (*parents, *args["refs"]),
             )
             return {"ref": item.ref}

@@ -1,41 +1,37 @@
-# Epivra 0.3.5 · Windows x64
+# Epivra 0.3.6 · Windows x64
 
 ## 本次更新
 
-- 修复快速暂停、继续时研究任务无法恢复的问题；旧一轮执行结束后，统一进入已接受的新一轮，结果未知的已发送请求仍不会自动重放。
-- 协调全局 Agent 排队与供应商限流：等待不预占调用额度，发送前再次核验，按供应商公平排队，避免长时间等待后突发超额调用。
-- 暂停时及时撤回排队但尚未发送的任务，让补充材料和重新加载配置恢复可用；已经发送的请求仍正常结算。
-- 修复新建研究期间输入与文件丢失、部分材料导入失败后的恢复，以及重复打开设置导致旧响应覆盖或重开窗口的问题。
-- 统一 HTTP 解压与文本解码，修复压缩纯文本和 Markdown 的重复解压；本地文件先核验大小和类型，再进行有上限的读取。
-- CLI 上传和回执文件使用对应传输上限，编码后的 IPC 请求也会在发送前检查，避免超大文件先分配内存。
-- Windows 分析沙盒拒绝输出与临时目录中的隐藏 NTFS 数据流，并在进程结束后再次检查，修复磁盘用量监测遗漏；该机制仍是周期监测，并非操作系统硬配额。
-- 补齐英文界面的资料检索、恢复提示和 Jev 原文外发说明。
-- 外部 MCP 的排队、连接准备与工具定义刷新均移到发送准入之前；暂停或取消后，不会继续发送尚未开始的读写调用，已经发送但结果未知的调用仍禁止自动重放。
-- 统一终端、网页与 MCP 的状态错误处理；其他客户端删除当前研究后，终端不会再因缺少控制版本而崩溃。
-- 加强研究生命周期、发送准入、输入边界和界面状态的后端、前端及真实 Chromium 回归验证。
+- 整理研究上下文顺序，优先保留原需求、当前研究状态、工作记忆和最近取得的内容。
+- 长任务接近模型窗口容量时，先将可重新读取的较旧工具正文换成回读入口，再按需保存进度摘要并继续。原始资料和正式研究记录保留，可按需回读；最近读取与显式交接资料仍受保护。
+- 工作摘要通过现有执行账本持久化，暂停、重启和中断后继续时复用已结算响应，避免重新购买摘要。未知结果、无效摘要和超大记忆不会覆盖原窗口。
+- 澄清调查、核实、写作和编辑的指令与工具边界；写作者复用负责人当前问题评估，定点检查与整稿接受使用各自的交付合同。
+- 区分目录、原文、研究记录和文稿的读取，以及进度记忆、解释笔记、精确证据和正式判断；加入按当前角色与阶段选择的少量操作示例。
+- 更新工具顶层说明文字后，仍可回放原已结算响应。工具参数、权限、绑定或运行合同变化时，现有保护继续生效。
 
 ## 使用与升级
 
-先退出旧程序并备份数据目录，再完整解压 ZIP，打开 Epivra.exe。此版本沿用 0.3.4 的数据与研究运行合同；更早版本中运行合同不兼容的未完成研究仍需新建，历史报告可查看和导出。
+先退出旧程序并备份整个数据目录，再完整解压 ZIP，打开 Epivra.exe。现有工作区不会自动迁移；历史报告仍可查看和导出，不兼容运行合同的未完成研究需要新建。
 
-材料导入失败时，可以在该研究的“补充材料”中重试剩余文件；待导入文件只保留在当前页面，请在关闭页面前完成导入。原始文件不会被删除。
+长任务的进度摘要使用该任务配置的模型，可能产生模型调用费用；它是工作记忆，不替代原始资料。重要结论仍应结合引用核对。此版本没有改变默认模型、搜索供应商或研究费用策略。
 
-Windows 10/11 x64。内置受限 Python 数据分析，无需 Docker 或单独安装 Python；OCR 仍为可选下载。默认 BM25，可选 Jev 使用自己的 TypeSafe API 密钥。当前程序未签名。回归测试不调用付费模型或搜索服务，不代表真实供应商兼容性或研究质量评测。
+Windows 10/11 x64，未签名。内置受限 Python 数据分析，OCR 仍为可选下载。
+
+工程验收：127 项离线测试，123 项通过、4 项平台跳过；架构检查、Ruff、类型检查及独立审查通过。离线工程验证不证明真实模型的研究质量、摘要保真度或 token/费用收益。
 
 ## Changes
 
-- Recover consistently after quick pause/resume, including when an older execution finishes with an error. Sent requests with unknown outcomes remain blocked from automatic replay.
-- Coordinate global Agent turns with provider limits, charge rate allowance immediately before sending, and admit provider waiters fairly without holding scarce resources across unrelated waits.
-- Withdraw queued, unsent work on pause so material uploads and configuration reloads can proceed; already-sent requests continue to settle.
-- Preserve creation drafts and files, retain unimported materials for retry, and fence stale settings responses after repeated opens, dismissal or saving.
-- Decode compressed plain text and Markdown once; validate local file size/type before bounded reading.
-- Apply transport-specific file bounds to CLI uploads and receipts, and reject oversized encoded IPC requests before sending.
-- Reject hidden NTFS data streams in native-analysis output and scratch, including a post-exit check. This closes a monitoring gap; disk limits remain periodically monitored rather than OS-enforced quotas.
-- Complete the English evidence-retrieval, recovery and Jev data-sharing notices.
-- Move external MCP queuing, session setup and tool-definition refresh before send admission. Pause/cancel withdraws unsent reads/writes; dispatched unknown outcomes remain protected from automatic replay.
-- Share status-error handling across terminal, web and MCP interfaces, preventing terminal failure when another client deletes the selected study.
-- Strengthen backend, frontend and real Chromium regression validation for lifecycle, admission, input and interface state.
+- Order research context around the original request, current state, working memory and recent results.
+- When long-running work approaches its model window, replace retrievable older tool bodies with read-back handles before saving a progress summary and continuing. Original sources and canonical records remain available; recent reads and explicit handoff references remain protected.
+- Persist summaries through the existing execution ledger. Pause, restart and interrupt/continue reuse settled responses. Unknown outcomes, invalid summaries and oversized memory do not replace the previous window.
+- Align investigation, writing and review instructions with their granted tools. Writers reuse current owner assessments; scoped checks and complete-report acceptance have separate delivery contracts.
+- Clarify directory, source, record and manuscript reads, plus memory, notes, exact evidence and findings. Select a few operational examples for each actual role and phase.
+- Preserve settled-response replay after edits to top-level tool guidance. Parameter, permission, binding and runtime-contract changes remain subject to existing checks.
 
-Quit the old app and back up its data before upgrading. Extract the complete ZIP and open Epivra.exe. Version 0.3.5 preserves the 0.3.4 data and runtime contract; unfinished studies using incompatible older contracts still require a new study, while historical reports remain readable and exportable.
+Quit the old app and back up the entire data folder before upgrading. Extract the complete ZIP and open Epivra.exe. Workspaces are not migrated automatically. Historical reports remain readable and exportable; unfinished studies with incompatible runtime contracts require a new study.
 
-Retry failed material imports from the study's Supplement panel before closing the page; pending files are page-local and original files are never deleted. Windows x64 only, unsigned; restricted Python analysis is bundled and OCR is optional. Offline regression checks do not establish live-provider compatibility or research quality.
+Progress summaries use the configured model for that task and may incur model charges. They do not replace original sources; check important conclusions against citations. Default models, search providers and research cost policies are unchanged.
+
+Windows 10/11 x64 only, unsigned. Restricted Python analysis is bundled; OCR remains optional.
+
+Engineering validation: 127 offline tests, 123 passed and 4 platform skips; architecture, Ruff, type checks and independent review passed. Offline checks do not establish live research quality, summary fidelity or token/cost savings.
