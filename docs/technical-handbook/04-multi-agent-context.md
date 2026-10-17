@@ -55,7 +55,7 @@ sequenceDiagram
 
 ### 默认聚焦与按需回读
 
-Epivra 的 `_focused_research_refs` 会从委派输入和工作记忆里的引用出发，沿研究支持关系查找直接相关的记录，并考虑结论的修订版本。Investigat​​or 和 Synthesizer 的默认上下文不会平铺全部无关判断，但 `read_context` 仍提供共享研究目录的分页入口，`read_artifact_range` 等能力可以按需补读具体材料。
+Epivra 的 `_focused_research_refs` 会从委派输入和工作记忆里的引用出发，沿研究支持关系查找直接相关的记录，并考虑结论的修订版本。Investigator 和 Synthesizer 的默认上下文不会平铺全部无关判断，但 `read_context` 仍提供共享研究目录的分页入口，`read_artifact_range` 等能力可以按需补读具体材料。
 
 这不是简单的“上下文少一点”，而是**把完整的研究资料库留在外部，将当前最相关的证据送入模型窗口**。如果助手在一项实验中发现原先没有交接的定义，它仍有能力通过目录找到相关材料，再决定是否读取。这与 Anthropic 官方上下文工程文档所讨论的 Just-in-time Context Retrieval（按需检索上下文）原则一致。
 
